@@ -1,0 +1,3 @@
+[submodule "lib/fadec"]
+	path = lib/fadec
+	url = https://git.sr.ht/~aengelke/fadec

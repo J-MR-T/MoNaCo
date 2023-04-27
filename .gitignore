@@ -1,0 +1,10 @@
+*compile_commands.*
+main
+out
+.cache/**
+build/**
+tests/Output/**
+
+doc
+
+**/*.vim
