@@ -1,15 +1,9 @@
 # override this using env var or directly in the Makefile
 LLVM_BUILD_DIR=~/programming/Libs/Cpp/llvm-project/build
 
-.phony: release debug makeCMakeBearable clean setup test fadec
+.phony: release debug makeCMakeBearable clean setup test
 
 all: release
-
-fadec:
-	cd lib/fadec                                                                                   && \
-	meson setup build --buildtype=$(shell echo '$(cmake_build_type)' | tr '[:upper:]' '[:lower:]') && \
-	cd build                                                                                       && \
-	meson compile 
 
 setup:
 	mkdir -p build
@@ -31,7 +25,7 @@ debug: setup
 	touch build/isDebug
 	$(MAKE) cmake_build_type=Debug makeCMakeBearable
 
-makeCMakeBearable: setup fadec
+makeCMakeBearable: setup
 	# the - makes it continue, even if the build fails, so that the sed is executed
 	-cd build                                                                                                                               && \
 	cmake .. -DCMAKE_BUILD_TYPE=$(cmake_build_type) -DLLVM_DIR=$(LLVM_BUILD_DIR)/lib/cmake/llvm -DMLIR_DIR=$(LLVM_BUILD_DIR)/lib/cmake/mlir && \

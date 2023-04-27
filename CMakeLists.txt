@@ -49,6 +49,26 @@ include_directories(${MONACO_BINARY_DIR}/include)
 link_directories(${LLVM_BUILD_LIBRARY_DIR})
 add_definitions(${LLVM_DEFINITIONS})
 
+# Configure fadec as a target
+macro(configure_fadec fadec_src_path meson_buildtype)
+    add_custom_target(
+       fadec
+       COMMAND meson setup build --buildtype="${meson_buildtype}" && cd build && meson compile
+       BYPRODUCTS "${fadec_src_path}/build/libfadec.a"
+       WORKING_DIRECTORY "${fadec_src_path}"
+    )
+    include_directories("${fadec_src_path}")
+    include_directories("${fadec_src_path}/build")
+endmacro()
+
+set(FADEC_SRC_PATH "${MONACO_SOURCE_DIR}/lib/fadec")
+set(FADEC_LIB_PATH "${FADEC_SRC_PATH}/build/libfadec.a")
+if (CMAKE_BUILD_TYPE STREQUAL "Release")
+    configure_fadec("${FADEC_SRC_PATH}" release)
+else()
+    configure_fadec("${FADEC_SRC_PATH}" debug)
+endif()
+
 add_subdirectory(monaco)
 
 # define dialects etc.

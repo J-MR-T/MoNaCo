@@ -37,7 +37,7 @@ set(LIBS
         zstd
         tinfo
         xml2
-		${MONACO_SOURCE_DIR}/lib/fadec/build/libfadec.a
+        ${FADEC_LIB_PATH}
         )
 
 # this solves the linker errors with the target specific initialize methods
@@ -48,7 +48,7 @@ message(STATUS "LLVM link components: ${LLVM_LINK_COMPONENTS}")
 #
 file(GLOB sources "*.cpp")
 add_llvm_executable(monaco ${sources}
-    # DEPENDS ...
+    DEPENDS fadec
 )
 
 # this is necessary here too, otherwise the preprocessor doesn't tablegen files in this dir
