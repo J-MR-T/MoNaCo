@@ -1,6 +1,9 @@
 *compile_commands.*
+
+monaco
 main
 out
+
 .cache/**
 build/**
 tests/Output/**

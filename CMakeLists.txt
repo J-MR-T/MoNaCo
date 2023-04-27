@@ -69,7 +69,7 @@ else()
     configure_fadec("${FADEC_SRC_PATH}" debug)
 endif()
 
-add_subdirectory(monaco)
+add_subdirectory(src)
 
 # define dialects etc.
 # these are included directly, to not clutter the filesystem with (lib|include)/CMakeLists.txt which just include another subdirectory
