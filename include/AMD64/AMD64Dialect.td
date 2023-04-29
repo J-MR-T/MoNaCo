@@ -16,9 +16,10 @@ def AMD64_Dialect : Dialect {
     TODO
   }];
 
-  let cppNamespace = "::mlir::amd64";
+  let cppNamespace = "::amd64";
 
-  let useDefaultTypePrinterParser = 1;
+  let useDefaultTypePrinterParser = 0; // = 1 works with B dialect in blc, but not here, maybe simply because there aren't any types defined yet?
+  // TODO reevaluate this as soon as there are types
 }
 
 class AMD64_Op<string mnemonic, list<Trait> traits = []> :

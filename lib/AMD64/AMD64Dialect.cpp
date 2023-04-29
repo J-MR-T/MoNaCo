@@ -3,7 +3,7 @@
 #include "AMD64/AMD64Ops.h"
 
 using namespace mlir;
-using namespace mlir::amd64;
+using namespace amd64;
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
@@ -20,7 +20,7 @@ void AMD64Dialect::initialize() {
 #include "AMD64/AMD64Ops.cpp.inc"
       >();
 
-
+  // TODO this might have to be AMD64OpsTypes instead of AMD64Ops
   addAttributes<
 #define GET_ATTRDEF_LIST
 #include "AMD64/AMD64Ops.cpp.inc"
