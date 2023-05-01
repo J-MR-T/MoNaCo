@@ -32,5 +32,22 @@ int main(int argc, char *argv[])
 
     auto owningModRef = readMLIRMod(inputFile, ctx);
 
+    // TODO delete all of this later
+
+    auto gpr8 = amd64::gpr8Type::get(&ctx);
+    auto builder = mlir::OpBuilder(&ctx);
+    builder.setInsertionPointToStart(owningModRef->getBody());
+
+    auto imm1 = builder.create<amd64::MOV8ri>(builder.getUnknownLoc(), 1);
+    auto imm2 = builder.create<amd64::MOV8ri>(builder.getUnknownLoc(), 2);
+
+    auto add8rr = builder.create<amd64::ADD8rr>(builder.getUnknownLoc(), imm1, imm2);
+    auto add8mi = builder.create<amd64::ADD8mi>(builder.getUnknownLoc(), imm1, imm2);
+
+    mlir::Operation* generic = add8rr;
+
+    auto opInterface = mlir::dyn_cast<amd64::InstructionOpInterface>(generic);
+    auto YAAAAAY = opInterface.getFeMnemonic();
+
     return 0;
 }

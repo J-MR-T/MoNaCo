@@ -7,6 +7,7 @@ add_mlir_dialect_library(MLIRAMD64
 
         DEPENDS
         MLIRAMD64OpsIncGen
+        MLIRAMD64OpsEnumsIncGen
 
     LINK_LIBS PUBLIC
     MLIRIR
