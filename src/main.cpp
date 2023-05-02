@@ -17,6 +17,36 @@ namespace {
 #include "AMD64/Lowerings.cpp.inc"
 }
 
+// TODO delete all of this later
+void testStuff(mlir::ModuleOp mod){
+    mlir::MLIRContext* ctx = mod.getContext();
+
+    auto gpr8 = amd64::gpr8Type::get(ctx);
+    auto builder = mlir::OpBuilder(ctx);
+    auto loc = builder.getUnknownLoc();
+    builder.setInsertionPointToStart(mod.getBody());
+
+    auto imm1 = builder.create<amd64::MOV8ri>(loc, 1);
+    auto imm2 = builder.create<amd64::MOV8ri>(loc, 2);
+
+    auto add8rr = builder.create<amd64::ADD8rr>(loc, imm1, imm2);
+    auto add8mi = builder.create<amd64::ADD8mi>(loc, imm1, imm2);
+
+    mlir::Operation* generic = add8rr;
+
+    auto opInterface = mlir::dyn_cast<amd64::InstructionOpInterface>(generic);
+    auto YAAAAAY = opInterface.getFeMnemonic();
+
+    assert(YAAAAAY == FE_ADD8rr);
+
+    generic = add8mi;
+    opInterface = mlir::dyn_cast<amd64::InstructionOpInterface>(generic);
+    YAAAAAY = opInterface.getFeMnemonic();
+
+    assert(YAAAAAY == FE_ADD8mi);
+}
+
+int main(int argc, char *argv[]) {
     ArgParse::parse(argc, argv);
 
     if(ArgParse::args.help()){
@@ -36,22 +66,7 @@ namespace {
 
     auto owningModRef = readMLIRMod(inputFile, ctx);
 
-    // TODO delete all of this later
-
-    auto gpr8 = amd64::gpr8Type::get(&ctx);
-    auto builder = mlir::OpBuilder(&ctx);
-    builder.setInsertionPointToStart(owningModRef->getBody());
-
-    auto imm1 = builder.create<amd64::MOV8ri>(builder.getUnknownLoc(), 1);
-    auto imm2 = builder.create<amd64::MOV8ri>(builder.getUnknownLoc(), 2);
-
-    auto add8rr = builder.create<amd64::ADD8rr>(builder.getUnknownLoc(), imm1, imm2);
-    auto add8mi = builder.create<amd64::ADD8mi>(builder.getUnknownLoc(), imm1, imm2);
-
-    mlir::Operation* generic = add8rr;
-
-    auto opInterface = mlir::dyn_cast<amd64::InstructionOpInterface>(generic);
-    auto YAAAAAY = opInterface.getFeMnemonic();
+    testStuff(owningModRef.get());
 
     return 0;
 }
