@@ -21,7 +21,8 @@ struct RegConstraint{
     requires (N < 4)
     bool constrainsOpN(FeReg reg){
         // TODO is this right?
-        return constraints == static_cast<uint32_t>(transform(reg) << (N*8));
+		constexpr auto shiftLeftBy = N*8;
+        return (constraints & (0xFFFFFFFF << shiftLeftBy)) == static_cast<uint32_t>(transform(reg) << shiftLeftBy);
     }
 
 private:
