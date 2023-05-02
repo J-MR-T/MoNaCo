@@ -11,8 +11,12 @@
 #include "AMD64/AMD64Dialect.h"
 #include "AMD64/AMD64Ops.h"
 
-int main(int argc, char *argv[])
-{
+// for patternmatching
+#include "mlir/IR/PatternMatch.h"
+namespace {
+#include "AMD64/Lowerings.cpp.inc"
+}
+
     ArgParse::parse(argc, argv);
 
     if(ArgParse::args.help()){
