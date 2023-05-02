@@ -1,7 +1,7 @@
 # override this using env var or directly in the Makefile
 LLVM_BUILD_DIR=~/programming/Libs/Cpp/llvm-project/build
 
-.phony: release debug makeCMakeBearable clean setup test
+.phony: release debug makeCMakeBearable clean setup test relWithDebug
 
 all: release
 
@@ -16,14 +16,19 @@ test:
 	lit -svj1 tests
 
 release: setup
-	[ ! -f build/isDebug ] || $(MAKE) clean && $(MAKE) setup
+	[ -f build/isRelease ] || $(MAKE) clean && $(MAKE) setup
 	touch build/isRelease
 	$(MAKE) cmake_build_type=Release makeCMakeBearable
 
 debug: setup
-	[ ! -f build/isRelease ] || $(MAKE) clean && $(MAKE) setup
+	[ -f build/isDebug ] || $(MAKE) clean && $(MAKE) setup
 	touch build/isDebug
 	$(MAKE) cmake_build_type=Debug makeCMakeBearable
+
+relWithDebug: setup
+	[ -f build/isRelWithDebug ] || $(MAKE) clean && $(MAKE) setup
+	touch build/isRelWithDebug
+	$(MAKE) cmake_build_type=RelWithDebugInfo makeCMakeBearable
 
 makeCMakeBearable: setup
 	# the - makes it continue, even if the build fails, so that the sed is executed
