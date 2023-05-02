@@ -14,7 +14,7 @@ def InstructionOpInterface : OpInterface<"InstructionOpInterface">{
 
   let methods = [
     InterfaceMethod<"TODO", "uint32_t", "getRegConstraints">,
-    StaticInterfaceMethod<"TODO", "uint64_t", "getFeMnemonic">,
+    StaticInterfaceMethod<"TODO", "FeMnem", "getFeMnemonic">,
   ];
 
   let cppNamespace = "::amd64";

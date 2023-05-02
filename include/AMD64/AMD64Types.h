@@ -3,6 +3,9 @@
 
 #include "mlir/IR/BuiltinTypes.h"
 
+
+using FeMnem = uint64_t;
+
 #define GET_TYPEDEF_CLASSES
 #include "AMD64/AMD64OpsTypes.h.inc"
 

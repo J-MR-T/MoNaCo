@@ -35,7 +35,7 @@ void testStuff(mlir::ModuleOp mod){
     mlir::Operation* generic = add8rr;
 
     auto opInterface = mlir::dyn_cast<amd64::InstructionOpInterface>(generic);
-    auto YAAAAAY = opInterface.getFeMnemonic();
+    FeMnem YAAAAAY = opInterface.getFeMnemonic();
 
     assert(YAAAAAY == FE_ADD8rr);
 

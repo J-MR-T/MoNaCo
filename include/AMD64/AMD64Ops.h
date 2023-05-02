@@ -10,8 +10,6 @@
 // predefined interfaces
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
-// my own interfaces TODO i don't think this is right
-#include "AMD64/InstructionOpInterface.h.inc"
 
 #include "mlir/IR/Builders.h"
 
@@ -22,6 +20,9 @@
 //#include "mlir/IR/BuiltinTypeInterfaces.h"
 
 #include "AMD64/AMD64Types.h"
+
+// my own interfaces 
+#include "AMD64/InstructionOpInterface.h.inc"
 
 // TODO is this right at this point? or does it need to come before/after AMD64Ops.h.inc?
 // pull all enum type definitions in

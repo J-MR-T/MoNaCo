@@ -67,7 +67,7 @@ class Instruction<string mnemonic, list<Trait> traits = []> :
 
   bit generateGetRegConstraints = 1; // TODO instead of this bit (which doesn't exist at runtime), an OpTrait `HasRegConstraints` could be used, this would work at runtime, and could be checked using the !listelem (or smth like that) bang op
 
-  let extraClassDeclaration = "static constexpr uint64_t getFeMnemonic() { return FE_" # mnemonic # "; }" /* declaration, because getFeMnemonic is inline */ #
+  let extraClassDeclaration = "static constexpr FeMnem getFeMnemonic() { return FE_" # mnemonic # "; }" /* declaration, because getFeMnemonic is inline */ #
   !cond(generateGetRegConstraints: "uint32_t getRegConstraints();", true: "" /* no declaration, will be done automatically by the attribute */);
 
   string getRegConstraintsCode = [{ return 0; }];
