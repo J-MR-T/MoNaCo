@@ -44,6 +44,14 @@ void testStuff(mlir::ModuleOp mod){
     YAAAAAY = opInterface.getFeMnemonic();
 
     assert(YAAAAAY == FE_ADD8mi);
+
+    auto mul8r = builder.create<amd64::MUL8r>(loc, imm1, builder.getIntegerAttr(builder.getIntegerType(32), FeReg::FE_AX));
+    generic = mul8r;
+
+    opInterface = mlir::dyn_cast<amd64::InstructionOpInterface>(generic);
+    if(auto constraints = opInterface.getRegConstraints()){
+        //constraints
+    }
 }
 
 int main(int argc, char *argv[]) {

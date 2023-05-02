@@ -65,11 +65,24 @@ foreach bitwidth = [8, 16, 32, 64] in {
 class Instruction<string mnemonic, list<Trait> traits = []> :
   AMD64_Op<mnemonic, !listconcat(traits,[InstructionOpInterface])> {
 
-  let extraClassDeclaration = "static constexpr uint64_t getFeMnemonic() { return FE_" # mnemonic # "; }"; // declaration, because it's inline
+  bit generateGetRegConstraints = 1; // TODO instead of this bit (which doesn't exist at runtime), an OpTrait `HasRegConstraints` could be used, this would work at runtime, and could be checked using the !listelem (or smth like that) bang op
+
+  let extraClassDeclaration = "static constexpr uint64_t getFeMnemonic() { return FE_" # mnemonic # "; }" /* declaration, because getFeMnemonic is inline */ #
+  !cond(generateGetRegConstraints: "uint32_t getRegConstraints();", true: "" /* no declaration, will be done automatically by the attribute */);
+
+  string getRegConstraintsCode = [{ return 0; }];
+  let extraClassDefinition = !cond(generateGetRegConstraints: "uint32_t " # mnemonic # "::getRegConstraints(){ " # getRegConstraintsCode #" }", true : "");
+}
+
+def MUL8r : Instruction<"MUL8r">{
+  let generateGetRegConstraints = 0;
+  let arguments = (ins gpr8:$src1, I32Attr:$regConstraints);
+  let results = (outs gpr8:$dst);
 }
 
 multiclass Instr_rmi<string mnemonic, AMD64_GPR_Type result, AMD64_GPR_Type op1, AMD64_GPR_Type op2, list<Trait> traits = []> {
 
+  // TODO bceause these require different ops, this will be transformed from a foreach into 5 separate defs later on. Can use smth like `let results = (outs result:$dst) in {...}` for the 3 with r as dst op tho
   foreach suffix = ["rr", "rm", "mr", "ri", "mi"] in {
     def suffix : Instruction<mnemonic # suffix, traits>{
       let arguments = (ins op1:$src1, op2:$src2);
@@ -93,11 +106,18 @@ multiclass Instr_rmi<string mnemonic, AMD64_GPR_Type result, AMD64_GPR_Type op1,
 }
 
 multiclass Instr8_16_32_64_rmi<string mnemonic, list<Trait> traits = []> {
-  // TODO figure out if its possible to also do this with a foreach
-  defm "8" : Instr_rmi<mnemonic# "8",  gpr8,  gpr8,  gpr8,  traits>;
-  defm "16": Instr_rmi<mnemonic# "16", gpr16, gpr16, gpr16, traits>;
-  defm "32": Instr_rmi<mnemonic# "32", gpr32, gpr32, gpr32, traits>;
-  defm "64": Instr_rmi<mnemonic# "64", gpr64, gpr64, gpr64, traits>;
+
+  foreach suffix = ["8", "16", "32", "64"] in {
+    defvar gprType = !cast<AMD64_GPR_Type>("gpr"#suffix);
+    defm suffix : Instr_rmi<mnemonic#suffix, gprType, gprType, gprType, traits>;
+  }
+
+  /* this foreach is the same as:
+    defm "8" : Instr_rmi<mnemonic# "8",  gpr8,  gpr8,  gpr8,  traits>;
+    defm "16": Instr_rmi<mnemonic# "16", gpr16, gpr16, gpr16, traits>;
+    defm "32": Instr_rmi<mnemonic# "32", gpr32, gpr32, gpr32, traits>;
+    defm "64": Instr_rmi<mnemonic# "64", gpr64, gpr64, gpr64, traits>;
+  */
 }
 
 /* ways to define an instr:
