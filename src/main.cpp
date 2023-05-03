@@ -56,7 +56,7 @@ void testStuff(mlir::ModuleOp mod){
     if(mul8r.hasTrait<mlir::OpTrait::OperandNIsConstrainedToReg<1, FE_AX>::Impl>())
         llvm::outs() << "mul8r has Src constrained to AX trait\n";
 
-    auto regsTest = builder.create<amd64::MUL8r>(loc, imm1, imm2, builder.getI32IntegerAttr(5));
+    auto regsTest = builder.create<amd64::MUL8r>(loc, imm1, imm2, 5);
     assert(regsTest.getRegs() == 5);
 }
 

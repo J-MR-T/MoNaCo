@@ -20,6 +20,9 @@ def AMD64_Dialect : Dialect {
 
   let useDefaultTypePrinterParser = 0; // = 1 works with B dialect in blc, but not here, maybe simply because there aren't any types defined yet?
   // TODO reevaluate this as soon as there are types
+
+  // TODO as soon as llvm is rebuilt, think about this
+  //let usePropertiesForAttributes = 0;
 }
 
 class AMD64_Op<string mnemonic, list<Trait> traits = []> :

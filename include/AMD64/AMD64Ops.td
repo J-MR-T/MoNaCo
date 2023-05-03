@@ -77,7 +77,9 @@ class Instruction<string mnemonic, list<Trait> traits = []> :
   let extraClassDeclaration = "static constexpr FeMnem getFeMnemonic() { return FE_" # mnemonic # "; }" /* declaration, because getFeMnemonic is inline */;
 
   dag operands = ?;
-  let arguments = !con((ins DefaultValuedAttr<I32Attr, "0">:$regs), operands); // in this order, such that operands are just accessed through 1 based indexing, and regs can always be accessed at exactly op 0
+  // TODO I would prefer the concatenation in the order regs # operands, but that inhibits default values for regs, which is annoying
+  // TODO can hopefully be eliminated with properties later on anyway, please?
+  let arguments = !con(operands, (ins DefaultValuedAttr<I32Attr, "0">:$regs));
 }
 
 /*
@@ -156,14 +158,14 @@ def MOV8ri : Instruction<"MOV8ri"> {
 foreach bitwidth = ["8", "16", "32", "64"] in {
   defvar gprType = !cast<AMD64_GPR_Type>("gpr"#bitwidth);
 
-  def MUL # bitwidth # "r" : Instruction<"MUL" # bitwidth # "r", [Operand1IsDestN<1>, OperandNIsConstrainedToReg<1, "FE_AX">]>{
-    let operands = (ins gprType:$src1, gprType:$src2);
-    let results = (outs gprType:$dst);
-  }
+  let results = (outs gprType:$dst) in {
+    def MUL # bitwidth # "r" : Instruction<"MUL" # bitwidth # "r", [Operand1IsDestN<1>, OperandNIsConstrainedToReg<1, "FE_AX">]>{
+      let operands = (ins gprType:$src1, gprType:$src2);
+    }
 
-  def MUL # bitwidth # "m": Instruction<"MUL" # bitwidth # "m", [Operand1IsDestN<1>, OperandNIsConstrainedToReg<1, "FE_AX">]>{
-    let operands = (ins gprType:$src1, gprType:$src2);
-    let results = (outs gprType:$dst);
+    def MUL # bitwidth # "m": Instruction<"MUL" # bitwidth # "m", [Operand1IsDestN<1>, OperandNIsConstrainedToReg<1, "FE_AX">]>{
+      let operands = (ins gprType:$src1, gprType:$src2); // TODO the second one needs to be a memory operand, as soon as those exist
+    }
   }
 }
 
