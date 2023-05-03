@@ -77,7 +77,7 @@ class Instruction<string mnemonic, list<Trait> traits = []> :
   let extraClassDeclaration = "static constexpr FeMnem getFeMnemonic() { return FE_" # mnemonic # "; }" /* declaration, because getFeMnemonic is inline */;
 
   dag operands = ?;
-  let arguments = !con(operands, (ins DefaultValuedAttr<I32Attr, "0">:$regs));
+  let arguments = !con((ins DefaultValuedAttr<I32Attr, "0">:$regs), operands); // in this order, such that operands are just accessed through 1 based indexing, and regs can always be accessed at exactly op 0
 }
 
 /*
