@@ -70,16 +70,32 @@ class OperandNIsConstrainedToReg<int N, string reg>
 
 // === ops (= instructions) ===
 
+// this is heavily based on mlir/test/lib/Dialect/Test/TestOps.td/cpp/h
+// TODO property test, move to a proper (haha) place
+def ResultRegistersProp : Property<"ResultRegisters"> {
+  let convertToAttribute = "$_storage.asAttribute($_ctxt)";
+  let convertFromAttribute = "return ResultRegisters::setFromAttr($_storage, $_attr, $_diag);";
+  let hashProperty = "$_storage.hash();";
+}
+
 // use the InstructionOpInterface to inject generic functionality into all instructions
 class Instruction<string mnemonic, list<Trait> traits = []> :
   AMD64_Op<mnemonic, !listconcat(traits,[InstructionOpInterface])> {
 
-  let extraClassDeclaration = "static constexpr FeMnem getFeMnemonic() { return FE_" # mnemonic # "; }" /* declaration, because getFeMnemonic is inline */;
+  let extraClassDeclaration = "static constexpr FeMnem getFeMnemonic() { return FE_" # mnemonic # "; }" /* declaration, because getFeMnemonic is inline */ #
+    "ResultRegisters& getRegs();";
+
+  let extraClassDefinition = "ResultRegisters& amd64::"# mnemonic#"::getRegs() { return this->getProperties().regsImpl; }";
 
   dag operands = ?;
   // TODO I would prefer the concatenation in the order regs # operands, but that inhibits default values for regs, which is annoying
   // TODO can hopefully be eliminated with properties later on anyway, please?
-  let arguments = !con(operands, (ins DefaultValuedAttr<I32Attr, "0">:$regs));
+  let arguments = !con(operands, (ins ResultRegistersProp:$regsImpl));
+}
+
+def CMP8rr : Instruction<"CMP8rr">{
+  let operands = (ins gpr8:$src1, gpr8:$src2);
+  let results = (outs gpr8:$dst);
 }
 
 /*

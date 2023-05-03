@@ -13,7 +13,8 @@ def InstructionOpInterface : OpInterface<"InstructionOpInterface">{
   }];
 
   let methods = [
-    //StaticInterfaceMethod<"TODO", "ResultRegisters",  "getReg">,
+    // TODO registers as property maybe as a function ResultRegisters getRegs() { return getProperties().regs; } ? should be possible for this to be found on every Op, i think?
+    InterfaceMethod<"TODO", "ResultRegisters&", "getRegs">,
     StaticInterfaceMethod<"TODO", "FeMnem", "getFeMnemonic">,
   ];
 

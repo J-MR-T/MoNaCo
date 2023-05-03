@@ -50,14 +50,17 @@ void testStuff(mlir::ModuleOp mod){
 
     opInterface = mlir::dyn_cast<amd64::InstructionOpInterface>(generic);
 
-    if(mul8r.hasTrait<mlir::OpTrait::Operand1IsDestN<1>::Impl>())
-        llvm::outs() << "mul8r has Src=Dst trait\n";
+    assert(mul8r.hasTrait<mlir::OpTrait::Operand1IsDestN<1>::Impl>());
 
-    if(mul8r.hasTrait<mlir::OpTrait::OperandNIsConstrainedToReg<1, FE_AX>::Impl>())
-        llvm::outs() << "mul8r has Src constrained to AX trait\n";
+    assert((mul8r.hasTrait<mlir::OpTrait::OperandNIsConstrainedToReg<1, FE_AX>::Impl>()));
 
-    auto regsTest = builder.create<amd64::MUL8r>(loc, imm1, imm2, 5);
-    assert(regsTest.getRegs() == 5);
+    auto regsTest = builder.create<amd64::CMP8rr>(loc, imm1, imm2);
+    regsTest.getRegs().setRegs(FE_AX, FE_DX);
+    assert(regsTest.getRegs().getReg1() == FE_AX && regsTest.getRegs().getReg2() == FE_DX);
+
+    generic = regsTest;
+    opInterface = mlir::dyn_cast<amd64::InstructionOpInterface>(generic);
+    assert(opInterface.getRegs().getReg1() == FE_AX && opInterface.getRegs().getReg2() == FE_DX);
 }
 
 int main(int argc, char *argv[]) {

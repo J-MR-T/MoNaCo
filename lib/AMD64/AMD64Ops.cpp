@@ -4,6 +4,10 @@
 
 #include <cstdint>
 
+#include <mlir/Support/LogicalResult.h>
+using mlir::failure;
+using mlir::failed;
+
 #define GET_OP_CLASSES
 #include "AMD64/AMD64Ops.cpp.inc"
 
