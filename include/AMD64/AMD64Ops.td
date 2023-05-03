@@ -39,6 +39,7 @@ def MyIntEnum : I64EnumAttr<"MyIntEnum", "example", [Case1]>{
   let stringToSymbolFnName = "ConvertToEnum";
   let symbolToStringFnName = "ConvertToString";
 }
+
 */
 
 // base type
@@ -59,33 +60,39 @@ foreach bitwidth = [8, 16, 32, 64] in {
   def gpr#bitwidth : AMD64_GPR_Type<"gpr"#bitwidth, bitwidth>;
 }
 
+// === traits ===
+
+class Operand1IsDestN<int N>
+  : ParamNativeOpTrait<"Operand1IsDestN", !cast<string>(N)>;
+
+class OperandNIsConstrainedToReg<int N, string reg>
+  : ParamNativeOpTrait<"OperandNIsConstrainedToReg", !cast<string>(N) # "," # reg>;
+
 // === ops (= instructions) ===
 
 // use the InstructionOpInterface to inject generic functionality into all instructions
 class Instruction<string mnemonic, list<Trait> traits = []> :
   AMD64_Op<mnemonic, !listconcat(traits,[InstructionOpInterface])> {
 
-  bit generateGetRegConstraints = 1; // TODO instead of this bit (which doesn't exist at runtime), an OpTrait `HasRegConstraints` could be used, this would work at runtime, and could be checked using the !listelem (or smth like that) bang op
+  let extraClassDeclaration = "static constexpr FeMnem getFeMnemonic() { return FE_" # mnemonic # "; }" /* declaration, because getFeMnemonic is inline */;
 
-  let extraClassDeclaration = "static constexpr FeMnem getFeMnemonic() { return FE_" # mnemonic # "; }" /* declaration, because getFeMnemonic is inline */ #
-  !cond(generateGetRegConstraints: "uint32_t getRegConstraints();", true: "" /* no declaration, will be done automatically by the attribute */);
-
-  string getRegConstraintsCode = [{ return 0; }];
-  let extraClassDefinition = !cond(generateGetRegConstraints: "uint32_t " # mnemonic # "::getRegConstraints(){ " # getRegConstraintsCode #" }", true : "");
+  dag operands = ?;
+  let arguments = !con(operands, (ins DefaultValuedAttr<I32Attr, "0">:$regs));
 }
 
-def MUL8r : Instruction<"MUL8r">{
-  let generateGetRegConstraints = 0;
-  let arguments = (ins gpr8:$src1, I32Attr:$regConstraints);
+/*
+def MUL8r : Instruction<"MUL8r", [Operand1IsDestN<1>, OperandNIsConstrainedToReg<1, "FE_AX">]>{
+  let operands = (ins gpr8:$src1, gpr8:$src2); // src1 is always Dest 1, and always AX
   let results = (outs gpr8:$dst);
 }
+*/
 
 multiclass Instr_rmi<string mnemonic, AMD64_GPR_Type result, AMD64_GPR_Type op1, AMD64_GPR_Type op2, list<Trait> traits = []> {
 
-  // TODO bceause these require different ops, this will be transformed from a foreach into 5 separate defs later on. Can use smth like `let results = (outs result:$dst) in {...}` for the 3 with r as dst op tho
+  // TODO because these require different ops, this will be transformed from a foreach into 5 separate defs later on. Can use smth like `let results = (outs result:$dst) in {...}` for the 3 with r as dst op tho
   foreach suffix = ["rr", "rm", "mr", "ri", "mi"] in {
     def suffix : Instruction<mnemonic # suffix, traits>{
-      let arguments = (ins op1:$src1, op2:$src2);
+      let operands = (ins op1:$src1, op2:$src2);
       let results = (outs result:$dst);
     }
   }
@@ -94,7 +101,7 @@ multiclass Instr_rmi<string mnemonic, AMD64_GPR_Type result, AMD64_GPR_Type op1,
      the foreach above basically produces:
 
   def rr : Instruction<mnemonic # "rr", traits>{
-    let arguments = (ins op1:$src1, op2:$src2);
+    let operands = (ins op1:$src1, op2:$src2);
     let results = (outs result:$dst);
   }
   def rm : Instruction<mnemonic # "rm", traits>{...}
@@ -125,7 +132,7 @@ multiclass Instr8_16_32_64_rmi<string mnemonic, list<Trait> traits = []> {
 // manually:
  
 def ADD8rr : Instruction<"ADD8rr"> {
-  let arguments = (ins gpr8:$src1, gpr8:$src2);
+  let operands = (ins gpr8:$src1, gpr8:$src2);
   let results = (outs gpr8:$dst);
 }
 
@@ -142,13 +149,28 @@ defm ADD : Instr8_16_32_64_rmi<"ADD">;
 defm ADD : Instr8_16_32_64_rmi<"ADD">;
 
 def MOV8ri : Instruction<"MOV8ri"> {
-  let arguments = (ins I8Attr:$imm);
+  let operands = (ins I8Attr:$imm);
   let results = (outs gpr8:$dst);
 }
 
+foreach bitwidth = ["8", "16", "32", "64"] in {
+  defvar gprType = !cast<AMD64_GPR_Type>("gpr"#bitwidth);
+
+  def MUL # bitwidth # "r" : Instruction<"MUL" # bitwidth # "r", [Operand1IsDestN<1>, OperandNIsConstrainedToReg<1, "FE_AX">]>{
+    let operands = (ins gprType:$src1, gprType:$src2);
+    let results = (outs gprType:$dst);
+  }
+
+  def MUL # bitwidth # "m": Instruction<"MUL" # bitwidth # "m", [Operand1IsDestN<1>, OperandNIsConstrainedToReg<1, "FE_AX">]>{
+    let operands = (ins gprType:$src1, gprType:$src2);
+    let results = (outs gprType:$dst);
+  }
+}
+
+
 /*
 def ADD8rr : Instruction<"add8rr"> {
-  let arguments = (ins FeMnem:$mnemonic, gpr8:$src1, gpr8:$src2);
+  let operands = (ins FeMnem:$mnemonic, gpr8:$src1, gpr8:$src2);
   let results = (outs gpr8:$dst);
 }
 */

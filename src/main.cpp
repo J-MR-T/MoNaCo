@@ -45,13 +45,19 @@ void testStuff(mlir::ModuleOp mod){
 
     assert(YAAAAAY == FE_ADD8mi);
 
-    auto mul8r = builder.create<amd64::MUL8r>(loc, imm1, builder.getIntegerAttr(builder.getIntegerType(32), FeReg::FE_AX));
+    auto mul8r = builder.create<amd64::MUL8r>(loc, imm1, imm2);
     generic = mul8r;
 
     opInterface = mlir::dyn_cast<amd64::InstructionOpInterface>(generic);
-    if(auto constraints = opInterface.getRegConstraints()){
-        //constraints
-    }
+
+    if(mul8r.hasTrait<mlir::OpTrait::Operand1IsDestN<1>::Impl>())
+        llvm::outs() << "mul8r has Src=Dst trait\n";
+
+    if(mul8r.hasTrait<mlir::OpTrait::OperandNIsConstrainedToReg<1, FE_AX>::Impl>())
+        llvm::outs() << "mul8r has Src constrained to AX trait\n";
+
+    auto regsTest = builder.create<amd64::MUL8r>(loc, imm1, imm2, builder.getI32IntegerAttr(5));
+    assert(regsTest.getRegs() == 5);
 }
 
 int main(int argc, char *argv[]) {

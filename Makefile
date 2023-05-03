@@ -1,5 +1,5 @@
 # override this using env var or directly in the Makefile
-LLVM_BUILD_DIR=~/programming/Libs/Cpp/llvm-project/build
+LLVM_BUILD_DIR=/usr/local/
 
 .phony: release debug makeCMakeBearable clean setup test relWithDebug
 

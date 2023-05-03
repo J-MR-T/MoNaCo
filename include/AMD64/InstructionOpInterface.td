@@ -13,7 +13,7 @@ def InstructionOpInterface : OpInterface<"InstructionOpInterface">{
   }];
 
   let methods = [
-    InterfaceMethod<"TODO", "uint32_t", "getRegConstraints">,
+    //StaticInterfaceMethod<"TODO", "ResultRegisters",  "getReg">,
     StaticInterfaceMethod<"TODO", "FeMnem", "getFeMnemonic">,
   ];
 
