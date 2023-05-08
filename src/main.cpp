@@ -26,8 +26,11 @@ void testStuff(mlir::ModuleOp mod){
     auto loc = builder.getUnknownLoc();
     builder.setInsertionPointToStart(mod.getBody());
 
-    auto imm1 = builder.create<amd64::MOV8ri>(loc, 1);
-    auto imm2 = builder.create<amd64::MOV8ri>(loc, 2);
+
+    auto imm1 = builder.create<amd64::MOV8ri>(loc);
+    imm1.getProperties().imm = 1;
+    auto imm2 = builder.create<amd64::MOV8ri>(loc);
+    imm2.getProperties().imm = 2;
 
     auto add8rr = builder.create<amd64::ADD8rr>(loc, imm1, imm2);
     auto add8mi = builder.create<amd64::ADD8mi>(loc, imm1, imm2);
@@ -52,15 +55,19 @@ void testStuff(mlir::ModuleOp mod){
 
     assert(mul8r.hasTrait<mlir::OpTrait::Operand1IsDestN<1>::Impl>());
 
-    assert((mul8r.hasTrait<mlir::OpTrait::OperandNIsConstrainedToReg<1, FE_AX>::Impl>()));
+    assert((mul8r.hasTrait<mlir::OpTrait::OperandNIsConstrainedToReg<1, FE_AX>::Impl>())); // ah and al, not dx/ax
+    // maybe a better way would just be a static method on the op interface, so that we can *get* the constrained register, not just check if it exists
 
     auto regsTest = builder.create<amd64::CMP8rr>(loc, imm1, imm2);
-    regsTest.getRegs().setRegs(FE_AX, FE_DX);
-    assert(regsTest.getRegs().getReg1() == FE_AX && regsTest.getRegs().getReg2() == FE_DX);
+
+    regsTest.instructionInfo().regs = {FE_AX, FE_DX};
+    assert(regsTest.instructionInfo().regs.getReg1() == FE_AX && regsTest.instructionInfo().regs.getReg2() == FE_DX);
 
     generic = regsTest;
     opInterface = mlir::dyn_cast<amd64::InstructionOpInterface>(generic);
-    assert(opInterface.getRegs().getReg1() == FE_AX && opInterface.getRegs().getReg2() == FE_DX);
+    assert(regsTest.instructionInfo().regs.getReg1() == FE_AX && regsTest.instructionInfo().regs.getReg2() == FE_DX);
+
+    // memory operand Op: interface encode to let the memory op define how it is encoded using FE_MEM
 }
 
 int main(int argc, char *argv[]) {

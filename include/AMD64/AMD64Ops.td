@@ -65,32 +65,39 @@ foreach bitwidth = [8, 16, 32, 64] in {
 class Operand1IsDestN<int N>
   : ParamNativeOpTrait<"Operand1IsDestN", !cast<string>(N)>;
 
+// TODO replace with property
 class OperandNIsConstrainedToReg<int N, string reg>
   : ParamNativeOpTrait<"OperandNIsConstrainedToReg", !cast<string>(N) # "," # reg>;
 
-// === ops (= instructions) ===
+// === memory op ===
+// TODO
+
+// === properties ===
 
 // this is heavily based on mlir/test/lib/Dialect/Test/TestOps.td/cpp/h
 // TODO property test, move to a proper (haha) place
-def ResultRegistersProp : Property<"ResultRegisters"> {
+def InstructionInfoProp : Property<"InstructionInfo"> {
   let convertToAttribute = "$_storage.asAttribute($_ctxt)";
-  let convertFromAttribute = "return ResultRegisters::setFromAttr($_storage, $_attr, $_diag);";
+  let convertFromAttribute = "return InstructionInfo::setFromAttr($_storage, $_attr, $_diag);";
   let hashProperty = "$_storage.hash();";
 }
+
+// === ops (= instructions) ===
+
 
 // use the InstructionOpInterface to inject generic functionality into all instructions
 class Instruction<string mnemonic, list<Trait> traits = []> :
   AMD64_Op<mnemonic, !listconcat(traits,[InstructionOpInterface])> {
 
   let extraClassDeclaration = "static constexpr FeMnem getFeMnemonic() { return FE_" # mnemonic # "; }" /* declaration, because getFeMnemonic is inline */ #
-    "ResultRegisters& getRegs();";
+    "InstructionInfo& instructionInfo();";
 
-  let extraClassDefinition = "ResultRegisters& amd64::"# mnemonic#"::getRegs() { return this->getProperties().regsImpl; }";
+  let extraClassDefinition = "InstructionInfo& $cppClass::instructionInfo() { return this->getProperties().instructionInfoImpl; }";
 
   dag operands = ?;
   // TODO I would prefer the concatenation in the order regs # operands, but that inhibits default values for regs, which is annoying
   // TODO can hopefully be eliminated with properties later on anyway, please?
-  let arguments = !con(operands, (ins ResultRegistersProp:$regsImpl));
+  let arguments = !con(operands, (ins InstructionInfoProp:$instructionInfoImpl));
 }
 
 def CMP8rr : Instruction<"CMP8rr">{
@@ -166,8 +173,9 @@ defm ADD : Instr8_16_32_64_rmi<"ADD">;
 
 defm ADD : Instr8_16_32_64_rmi<"ADD">;
 
+// TODO remove as soon as the generic one works
 def MOV8ri : Instruction<"MOV8ri"> {
-  let operands = (ins I8Attr:$imm);
+  let operands = (ins Property<"int8_t">:$imm);
   let results = (outs gpr8:$dst);
 }
 
@@ -182,6 +190,20 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
     def MUL # bitwidth # "m": Instruction<"MUL" # bitwidth # "m", [Operand1IsDestN<1>, OperandNIsConstrainedToReg<1, "FE_AX">]>{
       let operands = (ins gprType:$src1, gprType:$src2); // TODO the second one needs to be a memory operand, as soon as those exist
     }
+
+/*
+    def MOV # bitwidth # "ri" : Instruction<"MOV" # bitwidth # "ri", []>{
+      let operands = (ins Property<"int" # bitwidth # "_t">:$imm); // only ODSSupport.h only supports int64_t currently, so this uses custom definitions for convertTo/FromAttribute, defined in AMD64Ops.cpp
+
+      // no builders generated which can set a property, so we need to do it manually
+      let builders = [
+        OpBuilder<(ins "int" # bitwidth # "_t":$immArg), [{
+          build($_builder, $_state);
+          mlir::dyn_cast<}] # /* $cppClass doesn't work :( */ "amd64::MOV" # bitwidth # "ri" # [{>($_builder.getInsertionPoint()).getProperties().setImm(immArg);
+        }]>
+      ];
+    }
+  */
   }
 }
 
