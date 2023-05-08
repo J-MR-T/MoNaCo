@@ -1,6 +1,8 @@
 # override this using env var or directly in the Makefile
 LLVM_BUILD_DIR=~/programming/Libs/Cpp/llvm-project/build
 
+# TODO currently you can't just build once, fadec is built at too late a point
+
 # just to jot it down somewhere: current llvm commit used: 583d492c6
 
 .phony: release debug makeCMakeBearable clean setup test relWithDebug
