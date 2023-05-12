@@ -170,9 +170,6 @@ multiclass Instr_i<string mnemonic, list<Trait> traits = []> {
   def "i" : Instruction<mnemonic # "i", !listconcat(traits, [HasImm])>;
 }
 
-let operands = (ins memLoc:$op1), results = (outs) in
-defm SUB8m : Instr_i<"SUB8m">;
-
 // produces "rr", "rm", "mr", "mi", "ri" variants
 multiclass Instr_rmi<string mnemonic, AMD64_GPR_Type result, AMD64_GPR_Type op1, AMD64_GPR_Type op2, list<Trait> traits = []> {
   let results = (outs) in {
@@ -244,6 +241,7 @@ defm ADD : Instr8_16_32_64_rmi<"ADD">;
 */
 
 defm ADD : Instr8_16_32_64_rmi<"ADD", [Operand1IsDestN<1>]>;
+defm SUB : Instr8_16_32_64_rmi<"SUB", [Operand1IsDestN<1>]>;
 
 // miscellaneous 'special' instructions
 foreach bitwidth = ["8", "16", "32", "64"] in {
