@@ -194,8 +194,6 @@ int main(int argc, char *argv[]) {
         return EXIT_SUCCESS;
     }
 
-    llvm::errs() << "print a uint8_t: " << static_cast<uint8_t>(5) << "\n";
-
     mlir::MLIRContext ctx;
     ctx.loadAllAvailableDialects();
     ctx.loadDialect<amd64::AMD64Dialect>();
