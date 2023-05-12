@@ -3,6 +3,7 @@ add_mlir_doc(AMD64Dialect AMD64Dialect AMD64/ -gen-dialect-doc)
 add_mlir_doc(AMD64Ops AMD64Ops AMD64/ -gen-op-doc)
 
 add_mlir_interface(InstructionOpInterface)
+add_mlir_interface(EncodeOpInterface)
 
 # enums, attrs
 set(LLVM_TARGET_DEFINITIONS AMD64Ops.td)

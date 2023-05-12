@@ -13,7 +13,9 @@ def InstructionOpInterface : OpInterface<"InstructionOpInterface">{
   }];
 
   let methods = [
-    InterfaceMethod<"TODO", "InstructionInfo&", "instructionInfo">,
+    InterfaceMethod<"TODO", "InstructionInfo&", "instructionInfo", /*args=*/ (ins ), /*methodBody=*/ [{
+      return $_op.getProperties().instructionInfoImpl;
+    }]>,
     StaticInterfaceMethod<"TODO", "FeMnem", "getFeMnemonic">,
   ];
 

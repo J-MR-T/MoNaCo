@@ -44,7 +44,7 @@ mlir::LogicalResult convertFromAttribute(T &storage,
 }
 template<std::integral T>
 mlir::Attribute convertToAttribute(mlir::MLIRContext *ctx, T storage) {
-  return mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), storage);
+  return mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, sizeof(T)*8), storage);
 }
 
 #define GET_OP_CLASSES
@@ -53,3 +53,4 @@ mlir::Attribute convertToAttribute(mlir::MLIRContext *ctx, T storage) {
 #include "AMD64/AMD64OpsEnums.cpp.inc"
 
 #include "AMD64/InstructionOpInterface.cpp.inc"
+#include "AMD64/EncodeOpInterface.cpp.inc"

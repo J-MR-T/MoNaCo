@@ -44,10 +44,14 @@ struct ResultRegisters{
 		reg2 = transform(reg);
 	}
 
+    inline uint32_t combined() const{
+        return reg1 | (reg2 << 16);
+    }
+
     // these 3 are to use this as an mlir property:
     inline mlir::Attribute asAttribute(mlir::MLIRContext* ctx) const{
         mlir::Builder builder(ctx);
-        return builder.getI32IntegerAttr(reg1 | (reg2 << 16));
+        return builder.getI32IntegerAttr(combined());
     }
     inline static mlir::LogicalResult setFromAttr(ResultRegisters& prop, mlir::Attribute attr, mlir::InFlightDiagnostic* diag){
         mlir::IntegerAttr intAttr = attr.dyn_cast<mlir::IntegerAttr>();
@@ -78,17 +82,36 @@ private:
 /// overarching property class for all instructions
 struct InstructionInfo{
 	ResultRegisters regs;
+	// TODO maybe optimize this later, but for now this is fine
+	int64_t imm; // only has a useful value if the instruction has the HasImm trait
 
 	// these 3 are to use this as an mlir property:
 	inline mlir::Attribute asAttribute(mlir::MLIRContext* ctx) const{
-		mlir::Builder builder(ctx);
-		return regs.asAttribute(ctx);
+        mlir::Builder builder(ctx);
+
+        return builder.getI64ArrayAttr({regs.combined(), imm}); // this is somewhat inefficient, but there is no better way to do this as far as I knwo, and it shouldn't happend during normal compilation
 	}
 	inline static mlir::LogicalResult setFromAttr(InstructionInfo& prop, mlir::Attribute attr, mlir::InFlightDiagnostic* diag){
-		return ResultRegisters::setFromAttr(prop.regs, attr, diag);
+        auto arrayAttr = attr.cast<mlir::ArrayAttr>();
+        if(!arrayAttr){
+            if(diag)
+                *diag << "expected array attribute for InstructionInfo";
+            return mlir::failure();
+        }
+        auto intAttrs = arrayAttr.getValue();
+
+        auto immAttr = intAttrs[1].dyn_cast<mlir::IntegerAttr>();
+        if(!immAttr){
+            if(diag)
+                *diag << "expected integer attribute for InstructionInfo immediate";
+            return mlir::failure();
+        }
+        prop.imm = immAttr.getInt();
+
+		return ResultRegisters::setFromAttr(prop.regs, *intAttrs.begin(), diag);
 	}
 	inline llvm::hash_code hash() const {
-		return regs.hash();
+		return llvm::hash_combine(regs.hash(), imm);
 	}
 };
 
@@ -97,6 +120,7 @@ struct InstructionInfo{
 // the way to define these seems so hacky...
 namespace mlir::OpTrait{
 
+/// TODO does this need to be parametrized? Is 1 = 1 enough?
 /// lots of x86 instructions have the first operand as the destination -> this trait signals that
 template<unsigned N>
 class Operand1IsDestN{
@@ -116,7 +140,15 @@ public:
     };
 };
 
+template <typename ConcreteType>
+class HasImm : public TraitBase<ConcreteType, HasImm> {
+};
+
 } // namespace mlir::OpTrait
+
+// my own interfaces 
+#include "AMD64/InstructionOpInterface.h.inc"
+#include "AMD64/EncodeOpInterface.h.inc"
 
 #define GET_TYPEDEF_CLASSES
 #include "AMD64/AMD64OpsTypes.h.inc"
