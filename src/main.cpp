@@ -47,8 +47,11 @@ void prototypeEncode(mlir::Operation* op){
         resultReg = instrOp.instructionInfo().regs.getReg1();
 
     unsigned i = 0;
-    // fadec only needs the dest1 == op1 once, so in this case we skip that first operand
-    if(instrOp->hasTrait<mlir::OpTrait::Operand1IsDestN<1>::Impl>()){
+    // fadec only needs the dest1 == op1 once, so in this case we skip that first register operand
+    if(instrOp->hasTrait<mlir::OpTrait::Operand1IsDestN<1>::Impl>() && 
+        /* first operand is register operand: */
+            instrOp->getNumOperands() > 0 &&
+            instrOp->getOperand(0).getType().hasTrait<mlir::TypeTrait::IsRegisterType>()){
         i++;
     }
 
@@ -57,11 +60,11 @@ void prototypeEncode(mlir::Operation* op){
     DEBUGLOG("num operands: " << instrOp->getNumOperands() << " starting encode at " << i);
     for(unsigned feOpIndex = 0; i < instrOp->getNumOperands(); i++, feOpIndex++){
         auto operandValue = instrOp->getOperand(i);
-        if(auto encodeInterface = mlir::dyn_cast<amd64::EncodeOpInterface>(operandValue.getDefiningOp())){ // TODO getDefiningOp right here?
+        if(auto encodeInterface = mlir::dyn_cast<amd64::EncodeOpInterface>(operandValue.getDefiningOp())){
             encodeInterface.dump();
             operands[feOpIndex] = encodeInterface.encode();
         }else{
-            // TODO maaaaaybe it's possible to do this with a TypeInterface on the gpr types, which have a method to return the register they're in
+            // TODO maaaaaybe it's possible to do this with a TypeInterface on the gpr types, which have a method to return the register they're in, instead of registerOf, but that is a much simpler solution for now
 
             // TODO should be able to put this code somewhere else so that everyone can access this
             auto asOpResult = mlir::dyn_cast<mlir::OpResult>(operandValue);
