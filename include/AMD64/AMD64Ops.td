@@ -94,30 +94,84 @@ class MemOp<string mnemonic, list<Trait> traits = []>: AMD64_Op<mnemonic, !listc
 
 // TODO for local variables/memref.alloca/llvm.alloca: define a memop-like alloca operation, that gives back a memloc and also implements the encoding interface, it can then be used just as a normal variable
 
-// first memory op, this is the most powerful one, more will follow.
-def MemSIBD : MemOp<"MemSIBD">{
-  let arguments = (ins anygprType:$base, Property<"uint8_t">:$scale, anygprType:$index, Property<"int64_t">:$displacement);
+// trying to reduce code duplication with this somewhat generic mem op, which will be instantiated with different bits.
+// sadly looks quite hiddeous, but that's better than 5 different memory ops with basically the same code with a few things stripped out
+class MemSIBD_subset<string mnemonic, list<Trait> traits = []>: MemOp<mnemonic, traits>{
+  bit hasBase = ?; // TODO does it make sense without base? I guess as an rip relative address it does
+  bit hasScaleIndex = ?;
+  bit hasDisplacement = ?;
+
+  assert !or(hasBase, hasDisplacement), "a memop without a base and without a displacement does not make sense";
+  
+  let arguments =
+    !con(
+      // base
+      !cond(hasBase: (ins anygprType:$base), true: (ins)),
+      // scale + index
+      !cond(hasScaleIndex: (ins Property<"uint8_t">:$scale, anygprType:$index), true: (ins)),
+      // displacement
+      !cond(hasDisplacement: (ins Property<"int64_t">:$displacement), true: (ins))
+    );
   let results = (outs memLoc:$memloc);
 
+  // TODO I'm pretty sure the encoding for just displacement won't make much sense, test that later
   let encoding = [{
-    return FE_MEM(
-      registerOf(mlir::dyn_cast<mlir::OpResult>(getBase())),
+    return FE_MEM( }]
+      # !cond(hasBase: "registerOf(mlir::dyn_cast<mlir::OpResult>(getBase())),", true: "0,")
+      # !cond(hasScaleIndex: [{
       getProperties().scale,
       registerOf(mlir::dyn_cast<mlir::OpResult>(getIndex())),
-      getProperties().displacement
+      }], true: "0, 0, ")
+      # !cond(hasDisplacement: "getProperties().displacement", true: "0")
+      # [{
     );
   }];
 
   // custom builder to initialize the properties, this is currently the only way to do it
   let builders = [
-    OpBuilder<(ins "::mlir::Value":$base, "uint8_t":$scaleArg, "::mlir::Value":$index, "int64_t":$displacementArg), [{
+    OpBuilder<
+      // arguments
+      !con(
+        // base
+        !cond(hasBase: (ins "::mlir::Value":$base), true: (ins)),
+        // scale + index
+        !cond(hasScaleIndex: (ins "uint8_t":$scaleArg, "::mlir::Value":$index), true: (ins)),
+        // displacement
+        !cond(hasDisplacement: (ins "int64_t":$displacementArg), true: (ins))
+      ), [{
       auto& prop = $_state.getOrAddProperties<MemSIBD::Properties>();
-      prop.scale = scaleArg;
-      prop.displacement = displacementArg;
-      build($_builder, $_state, base, index);
+      (void) prop; }]
+      # !cond(hasScaleIndex: "prop.scale = scaleArg;", true: "")
+      # !cond(hasDisplacement: "prop.displacement = displacementArg;", true: "")
+      # [{
+      build($_builder, $_state}]
+      # !cond(hasBase: ", base", true: "")
+      # !cond(hasScaleIndex: ", index", true: "")
+      # [{
+      );
     }]>
   ];
 }
+
+// memory op with base, scale, index, and displacement, most general case
+let hasBase = 1, hasScaleIndex = 1, hasDisplacement = 1 in
+def MemSIBD : MemSIBD_subset<"MemSIBD">;
+
+// memory op with just base, scale, and index
+let hasBase = 1, hasScaleIndex = 1, hasDisplacement = 0 in
+def MemSIB : MemSIBD_subset<"MemSIB">;
+
+// memory op with just base and displacement
+let hasBase = 1, hasScaleIndex = 0, hasDisplacement = 1 in
+def MemBD : MemSIBD_subset<"MemBD">;
+
+// memory op with just base
+let hasBase = 1, hasScaleIndex = 0, hasDisplacement = 0 in
+def MemB : MemSIBD_subset<"MemB">;
+
+// memory op with just displacement
+let hasBase = 0, hasScaleIndex = 0, hasDisplacement = 1 in
+def MemD : MemSIBD_subset<"MemD">;
 
 // === properties ===
 
@@ -240,6 +294,7 @@ defm ADD : Instr8_16_32_64_rmi<"ADD">;
 
 */
 
+// ops defined through multiclasses
 defm ADD : Instr8_16_32_64_rmi<"ADD", [Operand1IsDestN<1>]>;
 defm SUB : Instr8_16_32_64_rmi<"SUB", [Operand1IsDestN<1>]>;
 

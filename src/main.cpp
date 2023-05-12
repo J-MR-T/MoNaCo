@@ -36,12 +36,9 @@ void prototypeEncode(mlir::Operation* op){
     assert(instrOp->getNumOperands() < 4 && "Too many operands for instruction");
 
     // TODO zeros are fine, right?
+    // first operand of the encoded instruction is the result register, if there is one
     std::optional<FeOp> resultReg{};
     FeOp operands[4] = {0};
-
-    // first operand of the encoded instruction is the result register
-
-    // TODO op trait for instructions without a result register
 
     if(!instrOp->hasTrait<mlir::OpTrait::ZeroResults>())
         resultReg = instrOp.instructionInfo().regs.getReg1();
