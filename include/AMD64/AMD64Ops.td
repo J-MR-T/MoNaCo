@@ -205,12 +205,6 @@ class Instruction<string mnemonic, list<Trait> traits = []> :
   let arguments = !con(operands, (ins InstructionInfoProp:$instructionInfoImpl));
 }
 
-// TODO remove later, replace with generic version
-def CMP8rr : Instruction<"CMP8rr">{
-  let operands = (ins gpr8:$src1, gpr8:$src2);
-  let results = (outs gpr8:$dst);
-}
-
 /*
 def MUL8r : Instruction<"MUL8r", [Operand1IsDestN<1>, OperandNIsConstrainedToReg<1, "FE_AX">]>{
   let operands = (ins gpr8:$src1, gpr8:$src2); // src1 is always Dest 1, and always AX
@@ -297,6 +291,7 @@ defm ADD : Instr8_16_32_64_rmi<"ADD">;
 // ops defined through multiclasses
 defm ADD : Instr8_16_32_64_rmi<"ADD", [Operand1IsDestN<1>]>;
 defm SUB : Instr8_16_32_64_rmi<"SUB", [Operand1IsDestN<1>]>;
+defm CMP : Instr8_16_32_64_rmi<"CMP">;
 
 // miscellaneous 'special' instructions
 foreach bitwidth = ["8", "16", "32", "64"] in {
