@@ -175,22 +175,19 @@ defm SUB8m : Instr_i<"SUB8m">;
 // produces "rr", "rm", "mr", "mi", "ri" variants
 multiclass Instr_rmi<string mnemonic, AMD64_GPR_Type result, AMD64_GPR_Type op1, AMD64_GPR_Type op2, list<Trait> traits = []> {
   let results = (outs) in {
-    def "mr" : Instruction<mnemonic # "mr", traits>{
-      let operands = (ins memLoc:$src1, op2:$src2);
-    }
+    let operands = (ins memLoc:$src1, op2:$src2) in
+    def "mr" : Instruction<mnemonic # "mr", traits>;
 
     let operands = (ins memLoc:$src1) in
     defm "m" : Instr_i<mnemonic # "m", traits>;
   }
 
   let results = (outs result: $dst) in {
-    def "rr" : Instruction<mnemonic # "rr", traits>{
-      let operands = (ins op1:$src1, op2:$src2);
-    }
+    let operands = (ins op1:$src1, op2:$src2) in 
+    def "rr" : Instruction<mnemonic # "rr", traits>;
 
-    def "rm" : Instruction<mnemonic # "rm", traits>{
-      let operands = (ins op1:$src1, memLoc:$src2);
-    }
+    let operands = (ins op1:$src1, memLoc:$src2) in
+    def "rm" : Instruction<mnemonic # "rm", traits>;
 
     let operands = (ins op1:$src1) in
     defm "r" : Instr_i<mnemonic # "r", traits>;
