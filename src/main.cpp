@@ -78,18 +78,12 @@ void prototypeEncode(mlir::Operation* op){
     }
 
     // TODO performance test this version, which just passes all operands, against a version which only passes the operands which are actually used, through some hiddeous case distinctions
-    // TODO also maybe make the operands smaller once all instructions are defined
-    // TODO distinguish between the cases where the resultReg exists and where it doesn't
-    // actual:
+    // TODO also maybe make the operands smaller once all instructions are defined, and we know that there are no more than x
     int ret;
     if(resultReg)
         ret = fe_enc64(&cur, mnemonic, *resultReg, operands[0], operands[1], operands[2], operands[3]);
     else
         ret = fe_enc64(&cur, mnemonic, operands[0], operands[1], operands[2], operands[3]);
-    // test, TODO delete these later:
-    //int ret = fe_enc64(&cur, amd64::MOV8ri::getFeMnemonic(), FE_AX, 42);
-    //int ret = fe_enc64(&cur, amd64::ADD64rr::getFeMnemonic(), FE_AX, FE_AX, FE_DX);
-    //int ret = fe_enc64(&cur, amd64::SUB8mi::getFeMnemonic(), FE_MEM(FE_CX, 4, FE_R8, 20), 5);
 
     if(ret < 0){
         llvm::errs() << "Test encoding went wrong :(\nOperands:\n";
