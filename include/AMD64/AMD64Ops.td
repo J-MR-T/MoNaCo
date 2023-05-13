@@ -65,7 +65,7 @@ def memLoc : AMD64_Type<"memLoc", "memloc", 64>;
 
 // to get the register of a value of AMD64_GPR_Type, use `registerOf()`.
 class AMD64_GPR_Type<string name, int bitwidth, string typeMnemonic = name, list<Trait> traits = []>
-    : AMD64_Type<name, typeMnemonic, bitwidth, !listconcat(traits, [IsRegisterType])> {
+    : AMD64_Type<name, typeMnemonic, bitwidth, traits # [IsRegisterType]> {
 }
 
 // GP types
@@ -80,7 +80,7 @@ def anygprType: TypeConstraint<Or<[gpr8.predicate, gpr16.predicate, gpr32.predic
 // TODO maybe everything should have the encoding interface? Immediates could also be modeled that way, but might cost performance, because ops are pretty big in comparison to immediates as operands/properties
 // TODO create a mem op/encoding interface
 
-class MemOp<string mnemonic, list<Trait> traits = []>: AMD64_Op<mnemonic, !listconcat(traits, [EncodeOpInterface])>{
+class MemOp<string mnemonic, list<Trait> traits = []>: AMD64_Op<mnemonic, traits # [EncodeOpInterface]>{
   code encoding = ?;
   let extraClassDeclaration = [{
     inline FeOp encode() {
@@ -182,10 +182,9 @@ def InstructionInfoProp : Property<"InstructionInfo"> {
 
 // === ops (= instructions) ===
 
-
 // use the InstructionOpInterface to inject generic functionality into all instructions
 class Instruction<string mnemonic, list<Trait> traits = []> :
-  AMD64_Op<mnemonic, !listconcat(traits,[InstructionOpInterface])> {
+  AMD64_Op<mnemonic, traits # [InstructionOpInterface]> {
   // basically equivalent to arguments, but arguments are conditionally furthered based on traits, and more info, so these here are the 'raw' operands.
   dag operands = ?;
 
@@ -202,21 +201,21 @@ class Instruction<string mnemonic, list<Trait> traits = []> :
   let arguments = !con(operands, (ins InstructionInfoProp:$instructionInfoImpl));
 }
 
-/*
-def MUL8r : Instruction<"MUL8r", [Operand1IsDestN<1>, OperandNIsConstrainedToReg<1, "FE_AX">]>{
-  let operands = (ins gpr8:$src1, gpr8:$src2); // src1 is always Dest 1, and always AX
-  let results = (outs gpr8:$dst);
+// Test Op without properties, for DRR
+def TestOp64 : AMD64_Op<"test64", []>{
+  let arguments = (ins gpr64:$src1, gpr64:$src2);
+  let results = (outs gpr64:$dst);
 }
-*/
 
 // immediate instruction multiclass
 multiclass Instr_i<string mnemonic, list<Trait> traits = []> {
   // TODO probably needs custom builder or declaration to initialize the immediate I don't think this is possible generically, as we would have to repeat all possible arguments. Let's hope there is in-tree support for this soon
-  def "i" : Instruction<mnemonic # "i", !listconcat(traits, [HasImm])>;
+  def "i" : Instruction<mnemonic # "i", traits # [HasImm]>;
 }
 
 // produces "rr", "rm", "mr", "mi", "ri" variants
 multiclass Instr_rmi<string mnemonic, AMD64_GPR_Type result, AMD64_GPR_Type op1, AMD64_GPR_Type op2, list<Trait> traits = []> {
+  // TODO we could give back the memloc as a result, but that does not make a whole lot of sense. The advantage would be that this could then implement the EncodeOpInterface and forward the encoding of the argument.
   let results = (outs) in {
     let operands = (ins memLoc:$src1, op2:$src2) in
     def "mr" : Instruction<mnemonic # "mr", traits>;

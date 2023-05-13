@@ -7,6 +7,8 @@
 #include <mlir/Dialect/ControlFlow/IR/ControlFlowOps.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
+#include <mlir/Rewrite/PatternApplicator.h>
+#include <mlir/Transforms/GreedyPatternRewriteDriver.h>
 
 #include "util.h"
 #include "AMD64/AMD64Dialect.h"
@@ -116,14 +118,14 @@ void testStuff(mlir::ModuleOp mod){
     builder.setInsertionPointToStart(mod.getBody());
 
 
-    auto imm1 = builder.create<amd64::MOV8ri>(loc);
-    imm1.instructionInfo().imm = 1;
-    imm1.instructionInfo().regs.setReg1(FE_CX);
-    auto imm2 = builder.create<amd64::MOV8ri>(loc);
-    imm2.instructionInfo().imm = 2;
-    imm2.instructionInfo().regs.setReg1(FE_R8);
+    auto imm8_1 = builder.create<amd64::MOV8ri>(loc);
+    imm8_1.instructionInfo().imm = 1;
+    imm8_1.instructionInfo().regs.setReg1(FE_CX);
+    auto imm8_2 = builder.create<amd64::MOV8ri>(loc);
+    imm8_2.instructionInfo().imm = 2;
+    imm8_2.instructionInfo().regs.setReg1(FE_R8);
 
-    auto add8rr = builder.create<amd64::ADD8rr>(loc, imm1, imm2);
+    auto add8rr = builder.create<amd64::ADD8rr>(loc, imm8_1, imm8_2);
     add8rr.instructionInfo().regs.setReg1(FE_CX);
 
     mlir::Operation* generic = add8rr;
@@ -133,7 +135,7 @@ void testStuff(mlir::ModuleOp mod){
 
     assert(YAAAAAY == FE_ADD8rr);
 
-    auto mul8r = builder.create<amd64::MUL8r>(loc, imm1, imm2);
+    auto mul8r = builder.create<amd64::MUL8r>(loc, imm8_1, imm8_2);
     generic = mul8r;
 
     opInterface = mlir::dyn_cast<amd64::InstructionOpInterface>(generic);
@@ -143,7 +145,7 @@ void testStuff(mlir::ModuleOp mod){
     assert((mul8r.hasTrait<mlir::OpTrait::OperandNIsConstrainedToReg<1, FE_AX>::Impl>())); // ah and al, not dx/ax
     // maybe a better way would just be a static method on the op interface, so that we can *get* the constrained register, not just check if it exists
 
-    auto regsTest = builder.create<amd64::CMP8rr>(loc, imm1, imm2);
+    auto regsTest = builder.create<amd64::CMP8rr>(loc, imm8_1, imm8_2);
 
 
     regsTest.instructionInfo().regs = {FE_AX, FE_DX};
@@ -162,13 +164,13 @@ void testStuff(mlir::ModuleOp mod){
     prototypeEncode(add8rr);
 
     // memory operand Op: interface encode to let the memory op define how it is encoded using FE_MEM
-    auto memSIBD = builder.create<amd64::MemSIBD>(loc, /* base */ add8rr, /* index */ imm2);
+    auto memSIBD = builder.create<amd64::MemSIBD>(loc, /* base */ add8rr, /* index */ imm8_2);
     memSIBD.getProperties().scale = 2;
     memSIBD.getProperties().displacement = 10;
     assert(memSIBD.getProperties().scale == 2);
     assert(memSIBD.getProperties().displacement == 10);
 
-    auto memSIBD2 = builder.create<amd64::MemSIBD>(loc, /* base */ add8rr, /* scale*/ 4, /* index */ imm2, /* displacement */ 20); // basically 'byte ptr [rcx + 4*r8 + 20]'
+    auto memSIBD2 = builder.create<amd64::MemSIBD>(loc, /* base */ add8rr, /* scale*/ 4, /* index */ imm8_2, /* displacement */ 20); // basically 'byte ptr [rcx + 4*r8 + 20]'
     assert(memSIBD2.getProperties().scale == 4);
     assert(memSIBD2.getProperties().displacement == 20);
 
@@ -178,6 +180,27 @@ void testStuff(mlir::ModuleOp mod){
 
     prototypeEncode(sub8mi);
 
+    llvm::DebugFlag = true;
+    llvm::setCurrentDebugType("greedy-rewriter");
+
+    auto imm64_1 = builder.create<amd64::MOV64ri>(loc, 64);
+    auto imm64_2 = builder.create<amd64::MOV64ri>(loc, 65);
+
+    // pattern matching tests
+    auto arithSub = builder.create<mlir::arith::SubIOp>(loc, imm64_1, imm64_2);
+
+    auto makeSubNotDead = builder.create<amd64::ADD64rr>(loc, arithSub, imm64_2);
+
+    mlir::RewritePatternSet patterns(ctx);
+    populateWithGenerated(patterns); // does `patterns.add<SubExamplePat>(ctx);`, ...
+
+    auto result = mlir::applyPatternsAndFoldGreedily(mod, std::move(patterns));
+    if(result.failed()){
+        llvm::errs() << "Pattern matching failed :(\n";
+    }else{
+        llvm::errs() << "Pattern matching succeeded :)\n";
+        mod.dump();
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -200,7 +223,11 @@ int main(int argc, char *argv[]) {
 
     auto owningModRef = readMLIRMod(inputFile, ctx);
 
-    testStuff(owningModRef.get());
+    (void) owningModRef;
+
+    mlir::OpBuilder builder(&ctx);
+    auto testMod = mlir::OwningOpRef<mlir::ModuleOp>(builder.create<mlir::ModuleOp>(builder.getUnknownLoc()));
+    testStuff(*testMod);
 
     return 0;
 }

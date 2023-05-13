@@ -11,6 +11,6 @@ include "AMD64/AMD64Ops.td"
 // TODO remove this, this is just an example, and is not even correct in that, because ADD8ri is not finished yet, and $attr is just wrong
 //def AddExamplePat : Pat<(Arith_AddIOp $input, (Arith_ConstantOp $attr)), (ADD8ri $input, $input, $attr)>;
 
-//def SubExamplePat : Pat<(Arith_SubIOp $op1, $op2), (SUB8rr $op1, $op2)>;
+def SubExamplePat : Pat<(Arith_SubIOp $op1, $op2), (TestOp64 $op1, $op2)>;
 
 #endif
