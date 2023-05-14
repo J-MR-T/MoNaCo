@@ -9,6 +9,7 @@
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 #include <mlir/Rewrite/PatternApplicator.h>
 #include <mlir/Transforms/GreedyPatternRewriteDriver.h>
+#include <mlir/Transforms/DialectConversion.h>
 
 #include "util.h"
 #include "AMD64/AMD64Dialect.h"
@@ -18,6 +19,74 @@
 #include "mlir/IR/PatternMatch.h"
 namespace {
 #include "AMD64/Lowerings.cpp.inc"
+
+// try implementing a few test patterns in C++, because tablegen currently dies when trying to define patterns using operations with properties
+
+// reduce boilerplate, this is a bit ugly, but reduces 4 patterns to 1, and through the constexpr if, each pattern will only have the relevant code
+// TODO these aren't used yet, don't know of a way to generically get the right instruction type
+#define MATCH_BITWIDTH(bwTemplateParam, bwToMatch, typeToMatch, lambda) \
+    if constexpr(bwTemplateParam == bwToMatch) {                        \
+        if(!typeToMatch.isInteger(bwToMatch))                           \
+            return mlir::failure();                                     \
+        lambda();
+
+#define MATCH_8_16_32_64(bwTemplateParam, typeToMatch, lambda) \
+    MATCH_BITWIDTH(bwTemplateParam,  8, typeToMatch, lambda)   \
+    MATCH_BITWIDTH(bwTemplateParam, 16, typeToMatch, lambda)   \
+    MATCH_BITWIDTH(bwTemplateParam, 32, typeToMatch, lambda)   \
+    MATCH_BITWIDTH(bwTemplateParam, 64, typeToMatch, lambda)
+
+template<unsigned bw>
+struct AddPat : public mlir::ConversionPattern{
+    AddPat(mlir::MLIRContext* ctx, mlir::TypeConverter& tc) : mlir::ConversionPattern(tc, mlir::arith::AddIOp::getOperationName(), 1, ctx){}
+
+    mlir::LogicalResult matchAndRewrite(mlir::Operation* op, mlir::PatternRewriter& rewriter){
+        auto addOp = mlir::dyn_cast<mlir::arith::AddIOp>(op);
+        if(!addOp) // TODO is this necessary? or will this not be called if the op is an add, as the constructor specifies?
+            return mlir::failure();
+
+        auto addType = addOp.getType();
+        // TODO this is not very nice code, make this into macros and stuff later on
+        if constexpr(bw == 8){
+            if(!addType.isInteger(8))
+                return mlir::failure();
+
+            auto constantOp = mlir::dyn_cast<mlir::arith::ConstantOp>(addOp->getOperand(0).getDefiningOp());
+            auto other = addOp->getOperand(1);
+            if(!constantOp){
+                constantOp = mlir::dyn_cast<mlir::arith::ConstantOp>(other.getDefiningOp());
+                other = addOp->getOperand(0);
+            }
+
+            if(!constantOp){
+                // rr case
+                rewriter.replaceOpWithNewOp<amd64::ADD8rr>(op, addOp->getOperand(0), addOp->getOperand(1));
+            }else{
+                // ri case
+                rewriter.replaceOpWithNewOp<amd64::ADD8ri>(op, other, constantOp);
+            }
+            return mlir::success();
+        } else if constexpr(bw == 16){
+            if(!addType.isInteger(16))
+                return mlir::failure();
+            // TODO
+        } else if constexpr(bw == 32){
+            if(!addType.isInteger(32))
+                return mlir::failure();
+            // TODO
+        } else if constexpr(bw == 64){
+            if(!addType.isInteger(64))
+                return mlir::failure();
+            // TODO
+        }else{
+            static_assert(false, "Invalid bitwidth, 128 bit not implemented yet, everything else is invalid");
+        }
+        return mlir::failure();
+    }
+};
+
+
+
 }
 
 void prototypeEncode(mlir::Operation* op){
@@ -189,10 +258,13 @@ void testStuff(mlir::ModuleOp mod){
     // pattern matching tests
     auto arithSub = builder.create<mlir::arith::SubIOp>(loc, imm64_1, imm64_2);
 
-    auto makeSubNotDead = builder.create<amd64::ADD64rr>(loc, arithSub, imm64_2);
+    auto arithAdd = builder.create<mlir::arith::AddIOp>(loc, imm8_1, imm64_2);
+
+    auto makeSubAndAddNotDead = builder.create<amd64::ADD64rr>(loc, arithSub, imm64_2);
 
     mlir::RewritePatternSet patterns(ctx);
-    populateWithGenerated(patterns); // does `patterns.add<SubExamplePat>(ctx);`, ...
+    //populateWithGenerated(patterns); // does `patterns.add<SubExamplePat>(ctx);`, ...
+    patterns.add<AddPat<8>>(ctx);
 
     auto result = mlir::applyPatternsAndFoldGreedily(mod, std::move(patterns));
     if(result.failed()){
