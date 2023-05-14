@@ -18,7 +18,7 @@ def AMD64_Dialect : Dialect {
 
   let cppNamespace = "::amd64";
 
-  let useDefaultTypePrinterParser = 1; // = 1 works with B dialect in blc, but not here, maybe simply because there aren't any types defined yet?
+  let useDefaultTypePrinterParser = 1;
 
   // TODO performance test this later
   let usePropertiesForAttributes = 0;

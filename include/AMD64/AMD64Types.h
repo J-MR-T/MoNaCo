@@ -147,15 +147,12 @@ class HasImm : public TraitBase<ConcreteType, HasImm> {
 } // namespace mlir::OpTrait
 
 namespace mlir::TypeTrait{
-template<typename ConcreteType>
-class IsRegisterType : public TraitBase<ConcreteType, IsRegisterType> {
-};
 } // namespace mlir::TypeTrait
 
 
 // my own interfaces 
-#include "AMD64/InstructionOpInterface.h.inc"
-#include "AMD64/EncodeOpInterface.h.inc"
+#include "AMD64/AMD64OpInterfaces.h.inc"
+#include "AMD64/AMD64TypeInterfaces.h.inc"
 
 #define GET_TYPEDEF_CLASSES
 #include "AMD64/AMD64OpsTypes.h.inc"

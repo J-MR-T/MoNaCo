@@ -119,7 +119,7 @@ void prototypeEncode(mlir::Operation* op){
     if(instrOp->hasTrait<mlir::OpTrait::Operand1IsDestN<1>::Impl>() && 
         /* first operand is register operand: */
             instrOp->getNumOperands() > 0 &&
-            instrOp->getOperand(0).getType().hasTrait<mlir::TypeTrait::IsRegisterType>()){
+            instrOp->getOperand(0).getType().isa<amd64::RegisterTypeInterface>()){
         i++;
     }
 
@@ -260,11 +260,11 @@ void testStuff(mlir::ModuleOp mod){
 
     auto arithAdd = builder.create<mlir::arith::AddIOp>(loc, imm8_1, imm64_2);
 
-    auto makeSubAndAddNotDead = builder.create<amd64::ADD64rr>(loc, arithSub, imm64_2);
+    auto makeSubAndAddNotDead = builder.create<amd64::ADD64rr>(loc, arithSub, arithAdd);
 
     mlir::RewritePatternSet patterns(ctx);
-    //populateWithGenerated(patterns); // does `patterns.add<SubExamplePat>(ctx);`, ...
-    patterns.add<AddPat<8>>(ctx);
+    populateWithGenerated(patterns); // does `patterns.add<SubExamplePat>(ctx);`, ...
+    //patterns.add<AddPat<8>>(ctx);
 
     auto result = mlir::applyPatternsAndFoldGreedily(mod, std::move(patterns));
     if(result.failed()){

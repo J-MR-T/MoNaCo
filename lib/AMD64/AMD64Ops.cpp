@@ -52,5 +52,5 @@ mlir::Attribute convertToAttribute(mlir::MLIRContext *ctx, T storage) {
 
 #include "AMD64/AMD64OpsEnums.cpp.inc"
 
-#include "AMD64/InstructionOpInterface.cpp.inc"
-#include "AMD64/EncodeOpInterface.cpp.inc"
+#include "AMD64/AMD64OpInterfaces.cpp.inc"
+#include "AMD64/AMD64TypeInterfaces.cpp.inc"

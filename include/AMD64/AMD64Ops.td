@@ -19,8 +19,8 @@ include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 // my interfaces
-include "AMD64/InstructionOpInterface.td"
-include "AMD64/EncodeOpInterface.td"
+include "AMD64/AMD64OpInterfaces.td"
+include "AMD64/AMD64TypeInterfaces.td"
 
 include "mlir/IR/EnumAttr.td"
 
@@ -38,8 +38,6 @@ class OperandNIsConstrainedToReg<int N, string reg>
 
 def HasImm : NativeOpTrait<"HasImm">;
 
-def IsRegisterType : NativeTypeTrait<"IsRegisterType">;
-
 // === types ===
 
 /*  TEST, TODO remove later
@@ -55,25 +53,32 @@ def MyIntEnum : I64EnumAttr<"MyIntEnum", "example", [Case1]>{
 */
 
 // base type
-class AMD64_Type<string name, string typeMnemonic, int bitwidth, list<Trait> traits = []>
-    : TypeDef<AMD64_Dialect, name, traits> {
-  let mnemonic = typeMnemonic;
-  let extraClassDeclaration = "static constexpr int getBitWidth() { return " # bitwidth # "; };"; // declaration should be right, because it's inline
+class AMD64_Type<string name, list<Trait> traits = [], string baseCppClass = "::mlir::Type">
+    : TypeDef<AMD64_Dialect, name, traits, baseCppClass> {
+  let mnemonic = name;
 }
 
-def memLoc : AMD64_Type<"memLoc", "memloc", 64>;
+def memLoc : AMD64_Type<"memLoc">;
 
-// to get the register of a value of AMD64_GPR_Type, use `registerOf()`.
-class AMD64_GPR_Type<string name, int bitwidth, string typeMnemonic = name, list<Trait> traits = []>
-    : AMD64_Type<name, typeMnemonic, bitwidth, traits # [IsRegisterType]> {
+class AMD64_RegisterType<string name, list<Trait> traits = [], string baseCppClass = "::mlir::Type">
+    : AMD64_Type<name, traits # [RegisterTypeInterface], baseCppClass> {
+  int bitwidth = ?;
+  
+  let extraClassDeclaration = "inline static unsigned getBitwidth() { return " # bitwidth # "; }";
+}
+
+// to get the register of a value of AMD64_GPRegisterType, use `registerOf()`.
+class AMD64_GPRegisterType<string name, list<Trait> traits = [], string baseCppClass = "::mlir::Type">
+    : AMD64_RegisterType<name, traits, baseCppClass> {
 }
 
 // GP types
 
 foreach bitwidth = [8, 16, 32, 64] in {
-  def gpr#bitwidth : AMD64_GPR_Type<"gpr"#bitwidth, bitwidth>;
+  def gpr#bitwidth : AMD64_GPRegisterType<"gpr"#bitwidth>;
 }
 
+// TODO this doesn't seem optimal
 def anygprType: TypeConstraint<Or<[gpr8.predicate, gpr16.predicate, gpr32.predicate, gpr64.predicate]>>;
 
 // === memory ops ===
@@ -214,7 +219,7 @@ multiclass Instr_i<string mnemonic, list<Trait> traits = []> {
 }
 
 // produces "rr", "rm", "mr", "mi", "ri" variants
-multiclass Instr_rmi<string mnemonic, AMD64_GPR_Type result, AMD64_GPR_Type op1, AMD64_GPR_Type op2, list<Trait> traits = []> {
+multiclass Instr_rmi<string mnemonic, AMD64_GPRegisterType result, AMD64_GPRegisterType op1, AMD64_GPRegisterType op2, list<Trait> traits = []> {
   // TODO we could give back the memloc as a result, but that does not make a whole lot of sense. The advantage would be that this could then implement the EncodeOpInterface and forward the encoding of the argument.
   let results = (outs) in {
     let operands = (ins memLoc:$src1, op2:$src2) in
@@ -253,7 +258,7 @@ multiclass Instr_rmi<string mnemonic, AMD64_GPR_Type result, AMD64_GPR_Type op1,
 multiclass Instr8_16_32_64_rmi<string mnemonic, list<Trait> traits = []> {
 
   foreach suffix = ["8", "16", "32", "64"] in {
-    defvar gprType = !cast<AMD64_GPR_Type>("gpr"#suffix);
+    defvar gprType = !cast<AMD64_GPRegisterType>("gpr"#suffix);
     defm suffix : Instr_rmi<mnemonic#suffix, gprType, gprType, gprType, traits>;
   }
 
@@ -291,7 +296,7 @@ defm CMP : Instr8_16_32_64_rmi<"CMP">;
 
 // miscellaneous 'special' instructions
 foreach bitwidth = ["8", "16", "32", "64"] in {
-  defvar gprType = !cast<AMD64_GPR_Type>("gpr"#bitwidth);
+  defvar gprType = !cast<AMD64_GPRegisterType>("gpr"#bitwidth);
 
 
   // zero result instructions
