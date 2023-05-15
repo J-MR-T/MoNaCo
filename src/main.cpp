@@ -29,61 +29,53 @@ namespace {
     using INSTmr = opname ## bitwidth ## mr; \
     using INSTmi = opname ## bitwidth ## mi;
 
-// TODO maybe it's better to let the lambda return a logical result and forward it to the outside, there might still be a failure in there
+// lambda returns logical result and forwards it
 #define MATCH_BW_RMI(opname, requestedBitwidth, bwTemplateParamToMatch, typeToMatch, lambda)                             \
     if constexpr (bwTemplateParamToMatch == requestedBitwidth) {                                                         \
         if (typeToMatch.getBitwidth() == requestedBitwidth) {                                                            \
             DECLARE_RMI(opname, requestedBitwidth);                                                                      \
             auto l = lambda;                                                                                             \
-            return l.template operator()<requestedBitwidth>();                                                                  \
+            return l.template operator()<requestedBitwidth>(op, adaptor, rewriter);                                      \
         }else {                                                                                                          \
             return rewriter.notifyMatchFailure(op /* implicit param */, "expected " #requestedBitwidth " bit " #opname); \
         }                                                                                                                \
     }
 
-#define MATCH_8_16_32_64_RMI(opname, bwTemplateParamToMatch, lambda)                                                                                                 \
-    auto typeToMatch= getTypeConverter()->convertType(op.getType()).template dyn_cast<amd64::RegisterTypeInterface>();                                               \
-    assert(typeToMatch && "expected register type"); /* TODO for now this is an assert, but it might have to be turned into an actual match failure at some point */ \
-    MATCH_BW_RMI(opname,       8,   bwTemplateParamToMatch,  typeToMatch,  lambda)                                                                                   \
-    else MATCH_BW_RMI(opname,  16,  bwTemplateParamToMatch,  typeToMatch,  lambda)                                                                                   \
-    else MATCH_BW_RMI(opname,  32,  bwTemplateParamToMatch,  typeToMatch,  lambda)                                                                                   \
-    else MATCH_BW_RMI(opname,  64,  bwTemplateParamToMatch,  typeToMatch,  lambda)                                                                                   \
-    else return rewriter.notifyMatchFailure(op, "Invalid bitwidth, 128 bit not implemented yet, everything else is invalid");
 
-// TODO use something akin to the structure of ConvertOpToLLVMPattern instead of ConversionPattern
+#define MATCH_8_16_32_64_RMI(patternName, opClassToMatch, opPrefixToReplaceWith, lambda)                                                              \
+    template<unsigned bw>                                                                                                                             \
+    struct patternName : public mlir::OpConversionPattern<opClassToMatch>{                                                                            \
+        using OpConversionPattern<opClassToMatch>::OpConversionPattern;                                                                               \
+        mlir::LogicalResult matchAndRewrite(opClassToMatch op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {    \
+            /* this generates 4 patterns, depending on the bitwidth */                                                                                \
+            auto typeToMatch= getTypeConverter()->convertType(op.getType()).template dyn_cast<amd64::RegisterTypeInterface>();                        \
+            /* TODO for now this is an assert, but it might have to be turned into an actual match failure at some point */                           \
+            assert(typeToMatch && "expected register type");                                                                                          \
+            MATCH_BW_RMI(opPrefixToReplaceWith,       8,   bw,  typeToMatch,  lambda)                                                                 \
+            else MATCH_BW_RMI(opPrefixToReplaceWith,  16,  bw,  typeToMatch,  lambda)                                                                 \
+            else MATCH_BW_RMI(opPrefixToReplaceWith,  32,  bw,  typeToMatch,  lambda)                                                                 \
+            else MATCH_BW_RMI(opPrefixToReplaceWith,  64,  bw,  typeToMatch,  lambda)                                                                 \
+            else return rewriter.notifyMatchFailure(op, "Invalid bitwidth, 128 bit not implemented yet, everything else is invalid");                 \
+        }                                                                                                                                             \
+    };
 
-// try implementing a few test patterns in C++, because tablegen currently dies when trying to define patterns using operations with properties
-template<unsigned bw>
-struct AddIPat : public mlir::OpConversionPattern<mlir::arith::AddIOp>{
-    using OpConversionPattern<mlir::arith::AddIOp>::OpConversionPattern;
-
-    // TODO for whatever reason, this method doesn't even get *called*, the matching instantly faisl
-    mlir::LogicalResult matchAndRewrite(mlir::arith::AddIOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
-        // this generates 4 patterns, depending on the bitwidth
-        MATCH_8_16_32_64_RMI(amd64::ADD, bw, [&]<unsigned actualBitwidth>(){
-            // TODO it would be nice to use folds for matching mov's and folding them into the add, but that's not possible right now, so we either have to match it here (see commit 8df6c7d), or ignore it for now
-            // TODO an alternative would be to generate custom builders for the RR versions, which check if their argument is a movxxri and then fold it into the RR, resulting in an RI version. That probably wouldn't work because the returned thing would of course expect an RR version, not an RI version
-            rewriter.replaceOpWithNewOp<INSTrr>(op, adaptor.getLhs(), adaptor.getRhs());
-            return mlir::success();
-        })
+#define REPLACE_BIN_OP_WITH_RR \
+    []<unsigned actualBitwidth>(auto op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter){\
+        /* TODO it would be nice to use folds for matching mov's and folding them into the add, but that's not possible right now, so we either have to match it here (see commit 8df6c7d), or ignore it for now */ \
+        /* TODO an alternative would be to generate custom builders for the RR versions, which check if their argument is a movxxri and then fold it into the RR, resulting in an RI version. That probably wouldn't work because the returned thing would of course expect an RR version, not an RI version */ \
+        rewriter.replaceOpWithNewOp<INSTrr>(op, adaptor.getLhs(), adaptor.getRhs());\
+        return mlir::success();\
     }
-};
 
-template<unsigned bw>
-struct ConstantIntPat : public mlir::OpConversionPattern<mlir::arith::ConstantIntOp>{
-    using OpConversionPattern<mlir::arith::ConstantIntOp>::OpConversionPattern;
+MATCH_8_16_32_64_RMI(AddIPat, mlir::arith::AddIOp, amd64::ADD, REPLACE_BIN_OP_WITH_RR)
+MATCH_8_16_32_64_RMI(SubIPat, mlir::arith::SubIOp, amd64::SUB, REPLACE_BIN_OP_WITH_RR)
 
-    mlir::LogicalResult matchAndRewrite(mlir::arith::ConstantIntOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
-        // this generates 4 patterns, depending on the bitwidth
-        MATCH_8_16_32_64_RMI(amd64::MOV, bw, [&]<unsigned actualBitwidth>(){
-            rewriter.replaceOpWithNewOp<INSTri>(op, op.value());
-            return mlir::success();
-        })
-    }
-};
+MATCH_8_16_32_64_RMI(ConstantIntPat, mlir::arith::ConstantIntOp, amd64::MOV, []<unsigned actualBitwidth>(auto op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter){
+    rewriter.replaceOpWithNewOp<INSTri>(op, op.value());
+    return mlir::success();
+})
 
-
-}
+} // end anonymous namespace
 
 void prototypeEncode(mlir::Operation* op){
     // there will be many case distinctions here, the alternative would be a general 'encode' interface, where every instruction defines its own encoding.
@@ -374,6 +366,7 @@ void testStuff(mlir::ModuleOp mod){
 #define ADD_PATTERN_8_16_32_64(pattern) ADD_PATTERN(pattern, 8) ADD_PATTERN(pattern, 16) ADD_PATTERN(pattern, 32) ADD_PATTERN(pattern, 64)
 
     ADD_PATTERN_8_16_32_64(AddIPat);
+    ADD_PATTERN_8_16_32_64(SubIPat);
     ADD_PATTERN_8_16_32_64(ConstantIntPat);
 
 #undef ADD_PATTERN
