@@ -54,7 +54,7 @@ struct MatchRMI : public mlir::OpConversionPattern<opClassToMatch>{
 
 // TODO it would be nice to use folds for matching mov's and folding them into the add, but that's not possible right now, so we either have to match it here (see commit 8df6c7d), or ignore it for now
 // TODO an alternative would be to generate custom builders for the RR versions, which check if their argument is a movxxri and then fold it into the RR, resulting in an RI version. That probably wouldn't work because the returned thing would of course expect an RR version, not an RI version
-auto binOpMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor, 
+auto binOpMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr
      >(auto op, OpAdaptor adaptor, mlir ::ConversionPatternRewriter &rewriter) {
     rewriter.replaceOpWithNewOp<INSTrr>(op, adaptor.getLhs(), adaptor.getRhs());
@@ -63,8 +63,10 @@ auto binOpMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
 
 PATTERN(AddIPat, mlir::arith::AddIOp, amd64::ADD, binOpMatchReplace);
 PATTERN(SubIPat, mlir::arith::SubIOp, amd64::SUB, binOpMatchReplace);
+// TODO somehow specify, that this has to have lower priority/benefit (why can i not specify a benefit anywhere in the conversion op :() than the version which matches a jump using a cmp (which doesn't exist yet)
+PATTERN(CmpIPat, mlir::arith::CmpIOp, amd64::CMP, binOpMatchReplace);
 
-auto movMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor, 
+auto movMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr
      >(mlir::arith::ConstantIntOp op, OpAdaptor adaptor, mlir ::ConversionPatternRewriter &rewriter) {
     rewriter.replaceOpWithNewOp<INSTri>(op, op.value());
@@ -131,17 +133,12 @@ void prototypeIsel(mlir::Operation* regionOp){
     mlir::TypeConverter typeConverter;
     typeConverter.addConversion([](mlir::IntegerType type) -> std::optional<mlir::Type>{
         switch(type.getIntOrFloatBitWidth()) {
-            case 8:
-                return amd64::gpr8Type::get(type.getContext());
-            case 16:
-                return amd64::gpr16Type::get(type.getContext());
-            case 32:
-                return amd64::gpr32Type::get(type.getContext());
-            case 64:
-                return amd64::gpr64Type::get(type.getContext());
+            case 8: return  amd64::gpr8Type ::get(type.getContext());
+            case 16: return amd64::gpr16Type::get(type.getContext());
+            case 32: return amd64::gpr32Type::get(type.getContext());
+            case 64: return amd64::gpr64Type::get(type.getContext());
 
-            default:
-                assert(false && "unhandled bitwidth");
+            default: assert(false && "unhandled bitwidth");
         }
     });
 
@@ -164,6 +161,7 @@ void prototypeIsel(mlir::Operation* regionOp){
 #define ADD_PATTERN(patternName) patterns.add<patternName ## 8, patternName ## 16, patternName ## 32, patternName ## 64>(typeConverter, ctx);
     ADD_PATTERN(AddIPat);
     ADD_PATTERN(SubIPat);
+    ADD_PATTERN(CmpIPat);
     ADD_PATTERN(ConstantIntPat);
 #undef ADD_PATTERN
     
