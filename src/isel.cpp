@@ -21,7 +21,7 @@ namespace {
 #include "AMD64/Lowerings.cpp.inc"
 
 /// somewhat generic pattern matching struct
-template<typename opClassToMatch, unsigned bitwidth, typename INSTrr, typename INSTri, auto lambda>
+template<typename opClassToMatch, unsigned bitwidth, typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr, auto lambda>
 struct MatchRMI : public mlir::OpConversionPattern<opClassToMatch>{
     using mlir::OpConversionPattern<opClassToMatch>::OpConversionPattern;
     using OpAdaptor = typename mlir::OpConversionPattern<opClassToMatch>::OpAdaptor;
@@ -34,35 +34,44 @@ struct MatchRMI : public mlir::OpConversionPattern<opClassToMatch>{
         if(typeToMatch.getBitwidth() != bitwidth)
             return rewriter.notifyMatchFailure(op, "bitwidth mismatch");
 
-        return lambda.template operator()<bitwidth, OpAdaptor, INSTrr, INSTri>(op, adaptor, rewriter);
+        return lambda.template operator()<bitwidth, OpAdaptor, INSTrr, INSTri, INSTrm, INSTmi, INSTmr>(op, adaptor, rewriter);
     }
 };
 
-#define PATTERN_NEW(patternName, opClassToMatch, opPrefixToReplaceWith, lambda)                                                   \
-    using patternName ##  8 = MatchRMI<opClassToMatch,  8, opPrefixToReplaceWith ##  8rr, opPrefixToReplaceWith ##  8ri, lambda>; \
-    using patternName ## 16 = MatchRMI<opClassToMatch, 16, opPrefixToReplaceWith ## 16rr, opPrefixToReplaceWith ## 16ri, lambda>; \
-    using patternName ## 32 = MatchRMI<opClassToMatch, 32, opPrefixToReplaceWith ## 32rr, opPrefixToReplaceWith ## 32ri, lambda>; \
-    using patternName ## 64 = MatchRMI<opClassToMatch, 64, opPrefixToReplaceWith ## 64rr, opPrefixToReplaceWith ## 64ri, lambda>;
+#define PATTERN(patternName, opClassToMatch, opPrefixToReplaceWith, lambda)                                                                                        \
+    using patternName ##  8 = MatchRMI<opClassToMatch,  8,                                                                                                         \
+        opPrefixToReplaceWith ##  8rr, opPrefixToReplaceWith ##  8ri, opPrefixToReplaceWith ##  8rm, opPrefixToReplaceWith ##  8mi, opPrefixToReplaceWith ##  8mr, \
+        lambda>;                                                                                                                                                   \
+    using patternName ##  16 = MatchRMI<opClassToMatch,16,                                                                                                         \
+        opPrefixToReplaceWith ## 16rr, opPrefixToReplaceWith ## 16ri, opPrefixToReplaceWith ## 16rm, opPrefixToReplaceWith ## 16mi, opPrefixToReplaceWith ## 16mr, \
+        lambda>;                                                                                                                                                   \
+    using patternName ## 32 = MatchRMI<opClassToMatch,32,                                                                                                          \
+        opPrefixToReplaceWith ## 32rr, opPrefixToReplaceWith ## 32ri, opPrefixToReplaceWith ## 32rm, opPrefixToReplaceWith ## 32mi, opPrefixToReplaceWith ## 32mr, \
+        lambda>;                                                                                                                                                   \
+    using patternName ## 64 = MatchRMI<opClassToMatch,64,                                                                                                          \
+        opPrefixToReplaceWith ## 64rr, opPrefixToReplaceWith ## 64ri, opPrefixToReplaceWith ## 64rm, opPrefixToReplaceWith ## 64mi, opPrefixToReplaceWith ## 64mr, \
+        lambda>;                                                                                                                                                   \
 
 // TODO it would be nice to use folds for matching mov's and folding them into the add, but that's not possible right now, so we either have to match it here (see commit 8df6c7d), or ignore it for now
 // TODO an alternative would be to generate custom builders for the RR versions, which check if their argument is a movxxri and then fold it into the RR, resulting in an RI version. That probably wouldn't work because the returned thing would of course expect an RR version, not an RI version
-auto binOpMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor, typename INSTrr, typename INSTri>(auto op, OpAdaptor adaptor, mlir ::ConversionPatternRewriter &rewriter) {
+auto binOpMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor, 
+     typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr
+     >(auto op, OpAdaptor adaptor, mlir ::ConversionPatternRewriter &rewriter) {
     rewriter.replaceOpWithNewOp<INSTrr>(op, adaptor.getLhs(), adaptor.getRhs());
     return mlir::success();
 };
 
-// TODO remove later, just for demonstration for now
-using ManualAddPat8 = MatchRMI<mlir::arith::AddIOp, 8, amd64::ADD8rr, amd64::ADD8ri, binOpMatchReplace>;
+PATTERN(AddIPat, mlir::arith::AddIOp, amd64::ADD, binOpMatchReplace);
+PATTERN(SubIPat, mlir::arith::SubIOp, amd64::SUB, binOpMatchReplace);
 
-PATTERN_NEW(AddIPat, mlir::arith::AddIOp, amd64::ADD, binOpMatchReplace);
-PATTERN_NEW(SubIPat, mlir::arith::SubIOp, amd64::SUB, binOpMatchReplace);
-
-auto movMatchreplace = []<unsigned actualBitwidth, typename OpAdaptor, typename INSTrr, typename INSTri>(mlir::arith::ConstantIntOp op, OpAdaptor adaptor, mlir ::ConversionPatternRewriter &rewriter) {
+auto movMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor, 
+     typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr
+     >(mlir::arith::ConstantIntOp op, OpAdaptor adaptor, mlir ::ConversionPatternRewriter &rewriter) {
     rewriter.replaceOpWithNewOp<INSTri>(op, op.value());
     return mlir::success();
 };
 
-PATTERN_NEW(ConstantIntPat, mlir::arith::ConstantIntOp, amd64::MOV, movMatchreplace);
+PATTERN(ConstantIntPat, mlir::arith::ConstantIntOp, amd64::MOV, movMatchReplace);
 
 } // end anonymous namespace
 
