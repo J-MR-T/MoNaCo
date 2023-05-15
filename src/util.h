@@ -22,9 +22,12 @@
 // macros etc.
 using namespace std::literals::string_literals;
 
+#define STRINGIZE(x) #x
+#define STRINGIZE_MACRO(x) STRINGIZE(x)
+
 #ifndef NDEBUG
 
-#define DEBUGLOG(x) do { llvm::errs() << x << "\n"; fflush(stderr); } while(0)
+#define DEBUGLOG(x) do { llvm::errs() << "Line " << STRINGIZE_MACRO(__LINE__) << ": " << x << "\n"; fflush(stderr); } while(0)
 #define IFDEBUG(x) x
 #define IFDEBUGELSE(x, y) x
 
@@ -35,9 +38,6 @@ using namespace std::literals::string_literals;
 #define IFDEBUGELSE(x, y) y
 
 #endif
-
-#define STRINGIZE(x) #x
-#define STRINGIZE_MACRO(x) STRINGIZE(x)
 
 // exit status 2 for 2-do :)
 #define EXIT_TODO_X(x) \

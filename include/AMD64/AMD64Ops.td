@@ -218,26 +218,31 @@ multiclass Instr_i<string mnemonic, list<Trait> traits = []> {
   def "i" : Instruction<mnemonic # "i", traits # [HasImm]>;
 }
 
-// produces "rr", "rm", "mr", "mi", "ri" variants
-multiclass Instr_rmi<string mnemonic, AMD64_GPRegisterType result, AMD64_GPRegisterType op1, AMD64_GPRegisterType op2, list<Trait> traits = []> {
-  // TODO we could give back the memloc as a result, but that does not make a whole lot of sense. The advantage would be that this could then implement the EncodeOpInterface and forward the encoding of the argument.
-  let results = (outs) in {
-    let operands = (ins memLoc:$src1, op2:$src2) in
-    def "mr" : Instruction<mnemonic # "mr", traits>;
+// produces "rr", "rm", "mr", "mi", "ri" variants, depending on the bits set here
+multiclass Instr_rmi<string mnemonic, AMD64_GPRegisterType result, AMD64_GPRegisterType op1, AMD64_GPRegisterType op2, list<Trait> traits = [], bit produceMem = 1, bit produceImm = 1> {
 
-    let operands = (ins memLoc:$src1) in
-    defm "m" : Instr_i<mnemonic # "m", traits>;
-  }
+  // TODO we could give back the memloc as a result, but that does not make a whole lot of sense. The advantage would be that this could then implement the EncodeOpInterface and forward the encoding of the argument.
+  if produceMem then
+    let results = (outs) in {
+      let operands = (ins memLoc:$src1, op2:$src2) in
+      def "mr" : Instruction<mnemonic # "mr", traits>;
+
+      if produceImm then
+        let operands = (ins memLoc:$src1) in
+        defm "m" : Instr_i<mnemonic # "m", traits>;
+    }
 
   let results = (outs result: $dst) in {
     let operands = (ins op1:$src1, op2:$src2) in 
     def "rr" : Instruction<mnemonic # "rr", traits>;
 
-    let operands = (ins op1:$src1, memLoc:$src2) in
-    def "rm" : Instruction<mnemonic # "rm", traits>;
+    if produceMem then
+      let operands = (ins op1:$src1, memLoc:$src2) in
+      def "rm" : Instruction<mnemonic # "rm", traits>;
 
-    let operands = (ins op1:$src1) in
-    defm "r" : Instr_i<mnemonic # "r", traits>;
+    if produceImm then
+      let operands = (ins op1:$src1) in
+      defm "r" : Instr_i<mnemonic # "r", traits>;
   }
 
   /*
@@ -255,11 +260,11 @@ multiclass Instr_rmi<string mnemonic, AMD64_GPRegisterType result, AMD64_GPRegis
   */
 }
 
-multiclass Instr8_16_32_64_rmi<string mnemonic, list<Trait> traits = []> {
+multiclass Instr8_16_32_64_rmi<string mnemonic, list<Trait> traits = [], bit produceMem = 1, bit produceImm = 1> {
 
   foreach suffix = ["8", "16", "32", "64"] in {
     defvar gprType = !cast<AMD64_GPRegisterType>("gpr"#suffix);
-    defm suffix : Instr_rmi<mnemonic#suffix, gprType, gprType, gprType, traits>;
+    defm suffix : Instr_rmi<mnemonic#suffix, gprType, gprType, gprType, traits, produceMem, produceImm>;
   }
 
   /* this foreach is the same as:
@@ -293,40 +298,68 @@ defm ADD : Instr8_16_32_64_rmi<"ADD">;
 defm ADD : Instr8_16_32_64_rmi<"ADD", [Operand1IsDestN<1>]>;
 defm SUB : Instr8_16_32_64_rmi<"SUB", [Operand1IsDestN<1>]>;
 defm CMP : Instr8_16_32_64_rmi<"CMP">;
+// MOVxxri/MOVxxmi are generated below, as they are special for their custom builders
+defm MOV : Instr8_16_32_64_rmi<"MOV", [Operand1IsDestN<1>], /* produceMem */ 1, /* produceImm */ 0>;
 
-// miscellaneous 'special' instructions
+// miscellaneous 'special' instructions dependant bitwidth
 foreach bitwidth = ["8", "16", "32", "64"] in {
   defvar gprType = !cast<AMD64_GPRegisterType>("gpr"#bitwidth);
 
 
   // zero result instructions
   let results = (outs) in {
-    def MUL # bitwidth # "m": Instruction<"MUL" # bitwidth # "m", [Operand1IsDestN<1>, OperandNIsConstrainedToReg<1, "FE_AX">]>{
-      let operands = (ins gprType:$src1, memLoc:$src2);
-    }
+    let operands = (ins gprType:$src1, memLoc:$src2) in 
+    def MUL # bitwidth # "m": Instruction<"MUL" # bitwidth # "m", [Operand1IsDestN<1>, OperandNIsConstrainedToReg<1, "FE_AX">]>;
   }
 
   // one result instructions
   let results = (outs gprType:$dst) in {
-    def MUL # bitwidth # "r" : Instruction<"MUL" # bitwidth # "r", [Operand1IsDestN<1>, OperandNIsConstrainedToReg<1, "FE_AX">]>{
-      let operands = (ins gprType:$src1, gprType:$src2);
-    }
+    let operands = (ins gprType:$src1, gprType:$src2) in 
+    def MUL # bitwidth # "r" : Instruction<"MUL" # bitwidth # "r", [Operand1IsDestN<1>, OperandNIsConstrainedToReg<1, "FE_AX">]>;
 
-    def MOV # bitwidth # "ri" : Instruction<"MOV" # bitwidth # "ri", [Pure, HasImm]> {
-      let operands = (ins);
+    // only MOVxxri/MOVxxmi variants, the others are generated normally above
 
-      // currently native properties don't get a generated builder to set their value upon op building, so we do that ourselves. Sadly this is very hard to do for any immediate op (because we need to replicate all args), so for now it only works on MOVs
-      let builders = [
-        OpBuilder<(ins "int" # bitwidth # "_t":$immArg), [{
-          $_state.getOrAddProperties<InstructionInfo>().imm = immArg;
-          build($_builder, $_state);
-        }]>
-      ];
-    }
+    let operands = (ins) in // TODO wait: should these also have an operand? It kind of doesn't make sense, but the other ri's have to have one. Maybe use a dummy one?
+    // currently native properties don't get a generated builder to set their value upon op building, so we do that ourselves. Sadly this is very hard to do for any immediate op (because we need to replicate all args), so for now it only works on MOVs
+    let builders = [
+      OpBuilder<(ins "int" # bitwidth # "_t":$immArg), [{
+        $_state.getOrAddProperties<InstructionInfo>().imm = immArg;
+        build($_builder, $_state);
+      }]>
+    ] in
+    defm MOV # bitwidth # "r" : Instr_i<"MOV" # bitwidth # "r", [Pure]>;
 
+    let operands = (ins memLoc) in
+    let builders = [
+      OpBuilder<(ins "::mlir::Value":$memLocArg, "int" # bitwidth # "_t":$immArg), [{
+        $_state.getOrAddProperties<InstructionInfo>().imm = immArg;
+        build($_builder, $_state, memLocArg);
+      }]>
+    ] in
+    defm MOV # bitwidth # "m" : Instr_i<"MOV" # bitwidth # "m", [Pure]>;
   }
 }
 
+// special instructions independant of bitwidth
+
+// JMP is the cf.br equivalent, is a terminator and has neither operands, nor a result. It uses MLIRs built-in successor list to define its successors
+// this is kept close to cf.br, but wtihout the operands, as the block args have to be destructed anyway.
+def JMP : Instruction<"JMP", [Terminator]>{
+  let operands = (ins);
+
+  let successors = (successor AnySuccessor:$dst);
+
+  // from the cf.br
+  let builders = [
+    OpBuilder<(ins "::mlir::Block *":$dst), [{
+      $_state.addSuccessors(dst);
+    }]
+  >];
+
+  let assemblyFormat = [{
+    $dst attr-dict
+  }];
+}
 
 /*
 def ADD8rr : Instruction<"add8rr"> {

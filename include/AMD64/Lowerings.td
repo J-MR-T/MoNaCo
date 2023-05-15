@@ -13,4 +13,6 @@ include "AMD64/AMD64Ops.td"
 
 def SubExamplePat : Pat<(Arith_SubIOp $op1, $op2), (TestOp64 $op1, $op2)>;
 
+def ExamplePat2 : Pat<(Arith_SubIOp $op1, (Arith_ConstantOp $op2)), (TestOp64 $op1, $op1)>;
+
 #endif

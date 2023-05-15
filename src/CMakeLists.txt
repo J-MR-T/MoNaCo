@@ -63,4 +63,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_link_options(monaco PUBLIC -fsanitize=address,undefined,leak -fno-sanitize-recover=all)
 endif()
 
+# I would like to not use this, but because I have to use the C preprocessor instead of tablegen for patterns, this is very important
+target_compile_options(monaco PRIVATE -Wno-unused-local-typedefs)
+
 mlir_check_all_link_libraries(monaco)
