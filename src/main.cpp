@@ -8,65 +8,11 @@
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 
-#include <mlir/Rewrite/PatternApplicator.h>
-#include <mlir/Transforms/GreedyPatternRewriteDriver.h>
-#include <mlir/Transforms/DialectConversion.h>
-#include <mlir/Pass/Pass.h>
-
 #include "util.h"
 #include "AMD64/AMD64Dialect.h"
 #include "AMD64/AMD64Ops.h"
 
-// for patternmatching
-#include "mlir/IR/PatternMatch.h"
-namespace {
-#include "AMD64/Lowerings.cpp.inc"
-
-template<typename opClassToMatch, unsigned bitwidth, typename INSTrr, typename INSTri, auto lambda>
-struct Match : public mlir::OpConversionPattern<opClassToMatch>{
-    using mlir::OpConversionPattern<opClassToMatch>::OpConversionPattern;
-    using OpAdaptor = typename mlir::OpConversionPattern<opClassToMatch>::OpAdaptor;
-
-    mlir::LogicalResult matchAndRewrite(opClassToMatch op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
-        auto typeToMatch= this->template getTypeConverter()->convertType(op.getType()).template dyn_cast<amd64::RegisterTypeInterface>();
-        // TODO might have to become actual match failure at some point
-        assert(typeToMatch && "expected register type");
-
-        if(typeToMatch.getBitwidth() != bitwidth)
-            return rewriter.notifyMatchFailure(op, "bitwidth mismatch");
-
-        return lambda.template operator()<bitwidth, OpAdaptor, INSTrr, INSTri>(op, adaptor, rewriter);
-    }
-};
-
-#define PATTERN_NEW(patternName, opClassToMatch, opPrefixToReplaceWith, lambda)                                                \
-    using patternName ##  8 = Match<opClassToMatch,  8, opPrefixToReplaceWith ##  8rr, opPrefixToReplaceWith ##  8ri, lambda>; \
-    using patternName ## 16 = Match<opClassToMatch, 16, opPrefixToReplaceWith ## 16rr, opPrefixToReplaceWith ## 16ri, lambda>; \
-    using patternName ## 32 = Match<opClassToMatch, 32, opPrefixToReplaceWith ## 32rr, opPrefixToReplaceWith ## 32ri, lambda>; \
-    using patternName ## 64 = Match<opClassToMatch, 64, opPrefixToReplaceWith ## 64rr, opPrefixToReplaceWith ## 64ri, lambda>;
-
-// TODO it would be nice to use folds for matching mov's and folding them into the add, but that's not possible right now, so we either have to match it here (see commit 8df6c7d), or ignore it for now
-// TODO an alternative would be to generate custom builders for the RR versions, which check if their argument is a movxxri and then fold it into the RR, resulting in an RI version. That probably wouldn't work because the returned thing would of course expect an RR version, not an RI version
-auto binOpMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor, typename INSTrr, typename INSTri>(auto op, OpAdaptor adaptor, mlir ::ConversionPatternRewriter &rewriter) {
-    rewriter.replaceOpWithNewOp<INSTrr>(op, adaptor.getLhs(), adaptor.getRhs());
-    return mlir::success();
-};
-
-// TODO remove later, just for demonstration for now
-using ManualAddPat8 = Match<mlir::arith::AddIOp, 8, amd64::ADD8rr, amd64::ADD8ri, binOpMatchReplace>;
-
-PATTERN_NEW(AddIPat, mlir::arith::AddIOp, amd64::ADD, binOpMatchReplace);
-PATTERN_NEW(SubIPat, mlir::arith::SubIOp, amd64::SUB, binOpMatchReplace);
-
-auto movMatchreplace = []<unsigned actualBitwidth, typename OpAdaptor, typename INSTrr, typename INSTri>(mlir::arith::ConstantIntOp op, OpAdaptor adaptor, mlir ::ConversionPatternRewriter &rewriter) {
-    rewriter.replaceOpWithNewOp<INSTri>(op, op.value());
-    return mlir::success();
-};
-
-PATTERN_NEW(ConstantIntPat, mlir::arith::ConstantIntOp, amd64::MOV, movMatchreplace);
-
-} // end anonymous namespace
-
+#include "isel.h"
 
 void prototypeEncode(mlir::Operation* op){
     // there will be many case distinctions here, the alternative would be a general 'encode' interface, where every instruction defines its own encoding.
@@ -153,7 +99,7 @@ void prototypeEncode(mlir::Operation* op){
 }
 
 // TODO delete all of this later
-void testStuff(mlir::ModuleOp mod){
+void testOpCreation(mlir::ModuleOp mod){
     mlir::MLIRContext* ctx = mod.getContext();
 
     auto gpr8 = amd64::gpr8Type::get(ctx);
@@ -260,122 +206,6 @@ void testStuff(mlir::ModuleOp mod){
     //   if no: add a map entry with a number of 0, a nullptr, and no unresolved jumps.
     //             If the number of jumps that have already been encountered is == the number of predecessors, remove the map entry (i.e. in this case don't add it in the first place)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    // pattern matching tests
-
-    builder.setInsertionPointToEnd(&mod.getRegion().front());
-    auto patternMatchingTestFn = builder.create<mlir::func::FuncOp>(loc, "patternMatchingTest", mlir::FunctionType::get(ctx, {}, {}));;
-    auto entryBB = patternMatchingTestFn.addEntryBlock();
-    builder.setInsertionPointToStart(entryBB);
-
-    llvm::SmallVector<mlir::Value, 32> undeadifyThese;
-
-    auto imm8_3 = builder.create<amd64::MOV8ri>(loc, 8);
-    auto imm8_4 = builder.create<amd64::MOV8ri>(loc, 9);
-    auto imm16_1 = builder.create<amd64::MOV16ri>(loc, 16);
-    auto imm16_2 = builder.create<amd64::MOV16ri>(loc, 17);
-    auto imm32_1 = builder.create<amd64::MOV32ri>(loc, 32);
-    auto imm32_2 = builder.create<amd64::MOV32ri>(loc, 33);
-    auto imm64_1 = builder.create<amd64::MOV64ri>(loc, 64);
-    auto imm64_2 = builder.create<amd64::MOV64ri>(loc, 65);
-
-    builder.create<mlir::arith::AddIOp>(loc, imm8_3, imm8_4);
-    builder.create<mlir::arith::AddIOp>(loc, imm16_1, imm16_2);
-    builder.create<mlir::arith::AddIOp>(loc, imm32_1, imm32_2);
-    builder.create<mlir::arith::AddIOp>(loc, imm64_1, imm64_2);
-
-    auto const8 = builder.create<mlir::arith::ConstantIntOp>(loc, 8, builder.getI8Type());
-    auto const16 = builder.create<mlir::arith::ConstantIntOp>(loc, 16, builder.getI16Type());
-    auto const32 = builder.create<mlir::arith::ConstantIntOp>(loc, 32, builder.getI32Type());
-    auto const64 = builder.create<mlir::arith::ConstantIntOp>(loc, 64, builder.getI64Type());
-
-    builder.create<mlir::arith::AddIOp>(loc, const8, imm8_3);
-    builder.create<mlir::arith::AddIOp>(loc, const16, imm16_1);
-    builder.create<mlir::arith::AddIOp>(loc, const32, imm32_1);
-    auto add = builder.create<mlir::arith::AddIOp>(loc, const64, imm64_1);
-
-    builder.create<mlir::arith::AddIOp>(loc, add, add);
-
-    builder.create<mlir::arith::AddIOp>(loc, imm8_3, const8);
-    builder.create<mlir::arith::AddIOp>(loc, imm16_1, const16);
-    builder.create<mlir::arith::AddIOp>(loc, imm32_1, const32);
-    builder.create<mlir::arith::AddIOp>(loc, imm64_1, const64);
-
-
-    builder.create<mlir::func::ReturnOp>(loc);
-
-    mlir::TypeConverter typeConverter;
-    typeConverter.addConversion([](mlir::IntegerType type) -> std::optional<mlir::Type>{
-        switch(type.getIntOrFloatBitWidth()) {
-            case 8:
-                return amd64::gpr8Type::get(type.getContext());
-            case 16:
-                return amd64::gpr16Type::get(type.getContext());
-            case 32:
-                return amd64::gpr32Type::get(type.getContext());
-            case 64:
-                return amd64::gpr64Type::get(type.getContext());
-
-            default:
-                assert(false && "unhandled bitwidth");
-        }
-    });
-
-    // all register types are already legal
-    // TODO this is probably not needed in the end, because we shouldn't encounter them at first. But for now with manually created ops it is needed.
-    typeConverter.addConversion([](amd64::RegisterTypeInterface type) -> std::optional<mlir::Type>{
-        return type;
-    });
-
-    mlir::ConversionTarget target(*ctx);
-    target.addLegalDialect<mlir::BuiltinDialect>();
-    target.addLegalDialect<amd64::AMD64Dialect>();
-    //target.addLegalDialect<mlir::func::FuncDialect>();
-    // func is legal, except for returns and calls, as soon as those have instructions
-    //target.addIllegalOp<mlir::func::ReturnOp>();
-
-    mlir::RewritePatternSet patterns(ctx);
-    //populateWithGenerated(patterns); // does `patterns.add<SubExamplePat>(ctx);`, ... for all tablegen generated patterns
-
-#define ADD_PATTERN(patternName) patterns.add<patternName ## 8, patternName ## 16, patternName ## 32, patternName ## 64>(typeConverter, ctx);
-    ADD_PATTERN(AddIPat);
-    ADD_PATTERN(SubIPat);
-    ADD_PATTERN(ConstantIntPat);
-#undef ADD_PATTERN
-    
-
-    llvm::DebugFlag = true;
-    //llvm::setCurrentDebugType("greedy-rewriter");
-    //llvm::setCurrentDebugType("dialect-conversion");
-
-    DEBUGLOG("Before pattern matching:");
-    patternMatchingTestFn.dump();
-    //auto result = mlir::applyPatternsAndFoldGreedily(patternMatchingTestFn, std::move(patterns)); // TODO OOOOOH. I think this only applise normal rewrite patterns, not conversion patterns...
-    auto result = mlir::applyPartialConversion(patternMatchingTestFn, target, std::move(patterns));
-    if(result.failed()){
-        llvm::errs() << "Pattern matching failed :(\n";
-    }else{
-        llvm::errs() << "Pattern matching succeeded :)\n";
-    }
-    DEBUGLOG("After pattern matching:");
-    patternMatchingTestFn.dump();
-
 }
 
 int main(int argc, char *argv[]) {
@@ -402,7 +232,10 @@ int main(int argc, char *argv[]) {
 
     mlir::OpBuilder builder(&ctx);
     auto testMod = mlir::OwningOpRef<mlir::ModuleOp>(builder.create<mlir::ModuleOp>(builder.getUnknownLoc()));
-    testStuff(*testMod);
+    testOpCreation(*testMod);
+
+    testMod = mlir::OwningOpRef<mlir::ModuleOp>(builder.create<mlir::ModuleOp>(builder.getUnknownLoc()));
+    prototypeIsel(*testMod);
 
     return 0;
 }
