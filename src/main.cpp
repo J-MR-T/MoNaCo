@@ -35,18 +35,20 @@ namespace {
         if (typeToMatch.getBitwidth() == requestedBitwidth) {                                                            \
             DECLARE_RMI(opname, requestedBitwidth);                                                                      \
             auto l = lambda;                                                                                             \
-            l.template operator()<requestedBitwidth>();                                                                  \
-            return mlir::success();                                                                                      \
+            return l.template operator()<requestedBitwidth>();                                                                  \
         }else {                                                                                                          \
             return rewriter.notifyMatchFailure(op /* implicit param */, "expected " #requestedBitwidth " bit " #opname); \
         }                                                                                                                \
     }
 
-#define MATCH_8_16_32_64_RMI(opname, bwTemplateParamToMatch, typeToMatch, lambda) \
-    MATCH_BW_RMI(opname, 8, bwTemplateParamToMatch, typeToMatch, lambda)      \
-    MATCH_BW_RMI(opname, 16, bwTemplateParamToMatch, typeToMatch, lambda)     \
-    MATCH_BW_RMI(opname, 32, bwTemplateParamToMatch, typeToMatch, lambda)     \
-    MATCH_BW_RMI(opname, 64, bwTemplateParamToMatch, typeToMatch, lambda)
+#define MATCH_8_16_32_64_RMI(opname, bwTemplateParamToMatch, lambda)                                                                                                 \
+    auto typeToMatch= getTypeConverter()->convertType(op.getType()).template dyn_cast<amd64::RegisterTypeInterface>();                                               \
+    assert(typeToMatch && "expected register type"); /* TODO for now this is an assert, but it might have to be turned into an actual match failure at some point */ \
+    MATCH_BW_RMI(opname,       8,   bwTemplateParamToMatch,  typeToMatch,  lambda)                                                                                   \
+    else MATCH_BW_RMI(opname,  16,  bwTemplateParamToMatch,  typeToMatch,  lambda)                                                                                   \
+    else MATCH_BW_RMI(opname,  32,  bwTemplateParamToMatch,  typeToMatch,  lambda)                                                                                   \
+    else MATCH_BW_RMI(opname,  64,  bwTemplateParamToMatch,  typeToMatch,  lambda)                                                                                   \
+    else return rewriter.notifyMatchFailure(op, "Invalid bitwidth, 128 bit not implemented yet, everything else is invalid");
 
 // TODO use something akin to the structure of ConvertOpToLLVMPattern instead of ConversionPattern
 
@@ -57,16 +59,13 @@ struct AddIPat : public mlir::OpConversionPattern<mlir::arith::AddIOp>{
 
     // TODO for whatever reason, this method doesn't even get *called*, the matching instantly faisl
     mlir::LogicalResult matchAndRewrite(mlir::arith::AddIOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
-        auto addType = getTypeConverter()->convertType(op.getType()).dyn_cast<amd64::RegisterTypeInterface>();
-        assert(addType && "expected register type"); // TODO for now this is an assert, but it might have to be turned into an actual match failure at some point
-
         // this generates 4 patterns, depending on the bitwidth
-        MATCH_8_16_32_64_RMI(amd64::ADD, bw, addType, [&]<unsigned actualBitwidth>(){
+        MATCH_8_16_32_64_RMI(amd64::ADD, bw, [&]<unsigned actualBitwidth>(){
             // TODO it would be nice to use folds for matching mov's and folding them into the add, but that's not possible right now, so we either have to match it here (see commit 8df6c7d), or ignore it for now
+            // TODO an alternative would be to generate custom builders for the RR versions, which check if their argument is a movxxri and then fold it into the RR, resulting in an RI version. That probably wouldn't work because the returned thing would of course expect an RR version, not an RI version
             rewriter.replaceOpWithNewOp<INSTrr>(op, adaptor.getLhs(), adaptor.getRhs());
+            return mlir::success();
         })
-
-        return rewriter.notifyMatchFailure(op, "Invalid bitwidth, 128 bit not implemented yet, everything else is invalid");
     }
 };
 
@@ -75,15 +74,11 @@ struct ConstantIntPat : public mlir::OpConversionPattern<mlir::arith::ConstantIn
     using OpConversionPattern<mlir::arith::ConstantIntOp>::OpConversionPattern;
 
     mlir::LogicalResult matchAndRewrite(mlir::arith::ConstantIntOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
-        auto type = getTypeConverter()->convertType(op.getType()).dyn_cast<amd64::RegisterTypeInterface>();
-        assert(type && "expected register type"); // TODO for now this is an assert, but it might have to be turned into an actual match failure at some point
-
         // this generates 4 patterns, depending on the bitwidth
-        MATCH_8_16_32_64_RMI(amd64::MOV, bw, type, [&]<unsigned actualBitwidth>(){
+        MATCH_8_16_32_64_RMI(amd64::MOV, bw, [&]<unsigned actualBitwidth>(){
             rewriter.replaceOpWithNewOp<INSTri>(op, op.value());
+            return mlir::success();
         })
-
-        return rewriter.notifyMatchFailure(op, "Invalid bitwidth, 128 bit not implemented yet, everything else is invalid");
     }
 };
 
