@@ -29,40 +29,29 @@ namespace {
     using INSTmr = opname ## bitwidth ## mr; \
     using INSTmi = opname ## bitwidth ## mi;
 
-#define MATCH_8_16_32_64_RMI(patternName, opClassToMatch, opPrefixToReplaceWith, lambda)                                                                                                                \
-    template<unsigned bw>                                                                                                                                                                               \
-    struct patternName : public mlir::OpConversionPattern<opClassToMatch>{                                                                                                                              \
-        using OpConversionPattern<opClassToMatch>::OpConversionPattern;                                                                                                                                 \
-                                                                                                                                                                                                        \
-        template<unsigned requestedBitwidth>                                                                                                                                                            \
-        mlir::LogicalResult matchForBitwidth(opClassToMatch op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter, mlir::Type typeToMatch, auto lambda){                                     \
-            if constexpr (bw == requestedBitwidth) {                                                                                                                                                    \
-                if (typeToMatch.template isa<amd64::RegisterTypeInterface>() && typeToMatch.template cast<amd64::RegisterTypeInterface>().getBitwidth() == requestedBitwidth) {                         \
-                    DECLARE_RMI(opPrefixToReplaceWith, requestedBitwidth) /* TODO doesn't work, obviously, needs a literal at preprocessing time */                                                     \
-                    return lambda.template operator()<requestedBitwidth>(op, adaptor, rewriter);                                                                                                        \
-                }else {                                                                                                                                                                                 \
-                    /* TODO performance test if this gets optimized out on -O3 */                                                                                                                       \
-                    return rewriter.notifyMatchFailure(op /* implicit param */, "expected " + std::to_string(requestedBitwidth) + " bit register");                                                     \
-                }                                                                                                                                                                                       \
-            }else{                                                                                                                                                                                      \
-                return mlir::failure();                                                                                                                                                                 \
-            }                                                                                                                                                                                           \
-        }                                                                                                                                                                                               \
-                                                                                                                                                                                                        \
-        mlir::LogicalResult matchAndRewrite(opClassToMatch op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {                                                           \
-            /* this generates 4 patterns, depending on the bitwidth */                                                                                                                                  \
-            auto typeToMatch= getTypeConverter()->convertType(op.getType()).template dyn_cast<amd64::RegisterTypeInterface>();                                                                          \
-            /* TODO for now this is an assert, but it might have to be turned into an actual match failure at some point */                                                                             \
-            assert(typeToMatch && "expected register type");                                                                                                                                            \
-            mlir::LogicalResult result = matchForBitwidth<8>(op, adaptor, rewriter, typeToMatch, lambda);                                                                                               \
-            result ||= matchForBitwidth<16>(op, adaptor, rewriter, typeToMatch, lambda);                                                                                                                \
-            result ||= matchForBitwidth<32>(op, adaptor, rewriter, typeToMatch, lambda);                                                                                                                \
-            result ||= matchForBitwidth<64>(op, adaptor, rewriter, typeToMatch, lambda);                                                                                                                \
-            if(result)                                                                                                                                                                                  \
-                return result;                                                                                                                                                                          \
-            return rewriter.notifyMatchFailure(op, "Invalid bitwidth, 128 bit not implemented yet, everything else is invalid");                                                                        \
-        }                                                                                                                                                                                               \
+#define PATTERN_RMI(patternName, opClassToMatch, opPrefixToReplaceWith, bitwidth, lambda)                                                                                                                  \
+    struct patternName : public mlir::OpConversionPattern<opClassToMatch>{                                                                                                                                 \
+        using OpConversionPattern<opClassToMatch>::OpConversionPattern;                                                                                                                                    \
+                                                                                                                                                                                                           \
+        mlir::LogicalResult matchAndRewrite(opClassToMatch op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {                                                              \
+            /* this generates 4 patterns, depending on the bitwidth */                                                                                                                                     \
+            auto typeToMatch= getTypeConverter()->convertType(op.getType()).template dyn_cast<amd64::RegisterTypeInterface>();                                                                             \
+            /* TODO for now this is an assert, but it might have to be turned into an actual match failure at some point */                                                                                \
+            assert(typeToMatch && "expected register type");                                                                                                                                               \
+            if(typeToMatch.getBitwidth() != bitwidth)                                                                                                                                                      \
+                return mlir::failure();                                                                                                                                                                    \
+                                                                                                                                                                                                           \
+            DECLARE_RMI(opPrefixToReplaceWith, bitwidth)                                                                                                                                                   \
+            return lambda.operator()<bitwidth>(op, adaptor, rewriter);                                                                                                                                     \
+        }                                                                                                                                                                                                  \
     };
+
+#define PATTERN_RMI_8_16_32_64(patternName, opClassToMatch, opPrefixToReplaceWith, lambda) \
+    PATTERN_RMI(patternName ## 8, opClassToMatch, opPrefixToReplaceWith, 8, lambda) \
+    PATTERN_RMI(patternName ## 16, opClassToMatch, opPrefixToReplaceWith, 16, lambda) \
+    PATTERN_RMI(patternName ## 32, opClassToMatch, opPrefixToReplaceWith, 32, lambda) \
+    PATTERN_RMI(patternName ## 64, opClassToMatch, opPrefixToReplaceWith, 64, lambda) \
+
 
 #define REPLACE_BIN_OP_WITH_RR \
     []<unsigned actualBitwidth>(auto op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter){\
@@ -72,32 +61,14 @@ namespace {
         return mlir::success();\
     }
 
-MATCH_8_16_32_64_RMI(AddIPat, mlir::arith::AddIOp, amd64::ADD, REPLACE_BIN_OP_WITH_RR)
-//MATCH_8_16_32_64_RMI(SubIPat, mlir::arith::SubIOp, amd64::SUB, REPLACE_BIN_OP_WITH_RR)
+PATTERN_RMI_8_16_32_64(AddIPat, mlir::arith::AddIOp, amd64::ADD, REPLACE_BIN_OP_WITH_RR)
+PATTERN_RMI_8_16_32_64(SubIPat, mlir::arith::SubIOp, amd64::SUB, REPLACE_BIN_OP_WITH_RR)
 
-//MATCH_8_16_32_64_RMI(ConstantIntPat, mlir::arith::ConstantIntOp, amd64::MOV, []<unsigned actualBitwidth>(auto op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter){
-//    rewriter.replaceOpWithNewOp<INSTri>(op, op.value());
-//    return mlir::success();
-//})
+PATTERN_RMI_8_16_32_64(ConstantIntPat, mlir::arith::ConstantIntOp, amd64::MOV, []<unsigned actualBitwidth>(auto op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter){
+    rewriter.replaceOpWithNewOp<INSTri>(op, op.value());
+    return mlir::success();
+})
 
-// TODO after its done: declare macro parameters: opPrefixToReplaceWith, bw
-template<typename opClassToMatch, auto f>
-struct LessMacrosTest: public mlir::OpConversionPattern<opClassToMatch>{
-    using mlir::OpConversionPattern<opClassToMatch>::OpConversionPattern;
-    using OpAdaptor = typename opClassToMatch::Adaptor; // dunno why this doesn't work automatically, it does in the less templated versions above
-
-    using INSTrr = amd64::ADD8rr;
-    
-    mlir::LogicalResult matchAndRewrite(mlir::arith::AddIOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
-        return f.template operator()<bw, amd64::ADD8rr, amd64::ADD8ri>(op, adaptor, rewriter);
-    }
-};
-
-// explicit instantiation
-template struct LessMacrosTest<mlir::arith::AddIOp, []<unsigned actualBitwidth, typename INSTrr, typename INSTri>(auto op, auto adaptor, mlir::ConversionPatternRewriter &rewriter) {
-      rewriter.replaceOpWithNewOp<INSTrr>(op, adaptor.getLhs(), adaptor.getRhs());
-      return mlir ::success();
-    }>;
 
 } // end anonymous namespace
 
@@ -387,15 +358,12 @@ void testStuff(mlir::ModuleOp mod){
     mlir::RewritePatternSet patterns(ctx);
     //populateWithGenerated(patterns); // does `patterns.add<SubExamplePat>(ctx);`, ... for all tablegen generated patterns
 
-#define ADD_PATTERN(pattern, bw) patterns.add<pattern<bw>>(typeConverter, ctx);
-#define ADD_PATTERN_8_16_32_64(pattern) ADD_PATTERN(pattern, 8) ADD_PATTERN(pattern, 16) ADD_PATTERN(pattern, 32) ADD_PATTERN(pattern, 64)
-
-    ADD_PATTERN_8_16_32_64(AddIPat);
-    ADD_PATTERN_8_16_32_64(SubIPat);
-    ADD_PATTERN_8_16_32_64(ConstantIntPat);
-
+#define ADD_PATTERN(patternName) patterns.add<patternName ## 8, patternName ## 16, patternName ## 32, patternName ## 64>(typeConverter, ctx);
+    ADD_PATTERN(AddIPat);
+    ADD_PATTERN(SubIPat);
+    ADD_PATTERN(ConstantIntPat);
 #undef ADD_PATTERN
-#undef ADD_PATTERN_8_16_32_64
+
 
     llvm::DebugFlag = true;
     //llvm::setCurrentDebugType("greedy-rewriter");
