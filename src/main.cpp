@@ -335,27 +335,27 @@ void testStuff(mlir::ModuleOp mod){
     auto imm64_1 = builder.create<amd64::MOV64ri>(loc, 64);
     auto imm64_2 = builder.create<amd64::MOV64ri>(loc, 65);
 
-    undeadifyThese.push_back(builder.create<mlir::arith::AddIOp>(loc, imm8_3, imm8_4));
-    undeadifyThese.push_back(builder.create<mlir::arith::AddIOp>(loc, imm16_1, imm16_2));
-    undeadifyThese.push_back(builder.create<mlir::arith::AddIOp>(loc, imm32_1, imm32_2));
-    undeadifyThese.push_back(builder.create<mlir::arith::AddIOp>(loc, imm64_1, imm64_2));
+    builder.create<mlir::arith::AddIOp>(loc, imm8_3, imm8_4);
+    builder.create<mlir::arith::AddIOp>(loc, imm16_1, imm16_2);
+    builder.create<mlir::arith::AddIOp>(loc, imm32_1, imm32_2);
+    builder.create<mlir::arith::AddIOp>(loc, imm64_1, imm64_2);
 
-    //auto const8 = builder.create<mlir::arith::ConstantIntOp>(loc, 8, builder.getI8Type());
-    //auto const16 = builder.create<mlir::arith::ConstantIntOp>(loc, 16, builder.getI16Type());
-    //auto const32 = builder.create<mlir::arith::ConstantIntOp>(loc, 32, builder.getI32Type());
-    //auto const64 = builder.create<mlir::arith::ConstantIntOp>(loc, 64, builder.getI64Type());
-    //
-    //undeadifyThese.push_back(builder.create<mlir::arith::AddIOp>(loc, const8, imm8_3));
-    //undeadifyThese.push_back(builder.create<mlir::arith::AddIOp>(loc, const16, imm16_1));
-    //undeadifyThese.push_back(builder.create<mlir::arith::AddIOp>(loc, const32, imm32_1));
-    //undeadifyThese.push_back(builder.create<mlir::arith::AddIOp>(loc, const64, imm64_1));
+    auto const8 = builder.create<mlir::arith::ConstantIntOp>(loc, 8, builder.getI8Type());
+    auto const16 = builder.create<mlir::arith::ConstantIntOp>(loc, 16, builder.getI16Type());
+    auto const32 = builder.create<mlir::arith::ConstantIntOp>(loc, 32, builder.getI32Type());
+    auto const64 = builder.create<mlir::arith::ConstantIntOp>(loc, 64, builder.getI64Type());
+
+    builder.create<mlir::arith::AddIOp>(loc, const8, imm8_3);
+    builder.create<mlir::arith::AddIOp>(loc, const16, imm16_1);
+    builder.create<mlir::arith::AddIOp>(loc, const32, imm32_1);
+    auto add = builder.create<mlir::arith::AddIOp>(loc, const64, imm64_1);
+
+    builder.create<mlir::arith::AddIOp>(loc, add, add);
     //
     //undeadifyThese.push_back(builder.create<mlir::arith::AddIOp>(loc, imm8_3, const8));
     //undeadifyThese.push_back(builder.create<mlir::arith::AddIOp>(loc, imm16_1, const16));
     //undeadifyThese.push_back(builder.create<mlir::arith::AddIOp>(loc, imm32_1, const32));
     //undeadifyThese.push_back(builder.create<mlir::arith::AddIOp>(loc, imm64_1, const64));
-
-    builder.create<mlir::func::CallOp>(loc, "undeadify", mlir::TypeRange{builder.getNoneType()}, undeadifyThese);
 
 
     builder.create<mlir::func::ReturnOp>(loc);
@@ -386,7 +386,7 @@ void testStuff(mlir::ModuleOp mod){
     mlir::ConversionTarget target(*ctx);
     target.addLegalDialect<mlir::BuiltinDialect>();
     target.addLegalDialect<amd64::AMD64Dialect>();
-    target.addLegalDialect<mlir::func::FuncDialect>();
+    //target.addLegalDialect<mlir::func::FuncDialect>();
     // func is legal, except for returns and calls, as soon as those have instructions
     //target.addIllegalOp<mlir::func::ReturnOp>();
 
