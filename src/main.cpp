@@ -62,26 +62,8 @@ struct AddIPat : public mlir::OpConversionPattern<mlir::arith::AddIOp>{
 
         // this generates 4 patterns, depending on the bitwidth
         MATCH_8_16_32_64_RMI(amd64::ADD, bw, addType, [&]<unsigned actualBitwidth>(){
-            auto constantOp = mlir::dyn_cast<mlir::arith::ConstantIntOp>(adaptor.getLhs().getDefiningOp());
-            auto other = adaptor.getRhs();
-            if(!constantOp){
-                constantOp = mlir::dyn_cast<mlir::arith::ConstantIntOp>(other.getDefiningOp());
-                other = adaptor.getLhs();
-            }
-
-            // TODO use folds instead of constant matching
-            // TODO sometimes this doesn't replace the respective ops for some reason
-            if(!constantOp){
-                // rr case
-                rewriter.replaceOpWithNewOp<INSTrr>(op, adaptor.getLhs(), adaptor.getRhs());
-            }else{
-                // ri case
-                auto newOp = rewriter.replaceOpWithNewOp<INSTri>(op, other);
-                newOp.instructionInfo().imm = constantOp.value();
-
-                if(constantOp.use_empty())
-                    constantOp.erase();
-            }
+            // TODO it would be nice to use folds for matching mov's and folding them into the add, but that's not possible right now, so we either have to match it here (see commit 8df6c7d), or ignore it for now
+            rewriter.replaceOpWithNewOp<INSTrr>(op, adaptor.getLhs(), adaptor.getRhs());
         })
 
         return rewriter.notifyMatchFailure(op, "Invalid bitwidth, 128 bit not implemented yet, everything else is invalid");
