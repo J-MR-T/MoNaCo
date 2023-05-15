@@ -10,6 +10,24 @@
 
 using FeMnem = uint64_t;
 
+namespace amd64{
+
+// TODO i need two seperate things here, right? operand register constraints and result register constraints
+// TODO what is the best way to have multiple of these, without taking up tons of space?
+// TODO put a static op iface method to get some kind of collection of these two
+struct OperandRegisterConstraint{
+    uint8_t whichOperand;
+    FeReg reg;
+};
+
+struct ResultRegisterConstraint{
+    uint8_t whichResult;
+    FeReg reg;
+};
+
+// TODO put the rest of the stuff into the namespace as well
+}
+
 // this is heavily based on mlir/test/lib/Dialect/Test/TestOps.td/cpp/h
 
 /// to support saving register info on multi result instructions (up to 2 results for now)
