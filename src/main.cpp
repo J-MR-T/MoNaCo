@@ -351,11 +351,11 @@ void testStuff(mlir::ModuleOp mod){
     auto add = builder.create<mlir::arith::AddIOp>(loc, const64, imm64_1);
 
     builder.create<mlir::arith::AddIOp>(loc, add, add);
-    //
-    //undeadifyThese.push_back(builder.create<mlir::arith::AddIOp>(loc, imm8_3, const8));
-    //undeadifyThese.push_back(builder.create<mlir::arith::AddIOp>(loc, imm16_1, const16));
-    //undeadifyThese.push_back(builder.create<mlir::arith::AddIOp>(loc, imm32_1, const32));
-    //undeadifyThese.push_back(builder.create<mlir::arith::AddIOp>(loc, imm64_1, const64));
+
+    builder.create<mlir::arith::AddIOp>(loc, imm8_3, const8);
+    builder.create<mlir::arith::AddIOp>(loc, imm16_1, const16);
+    builder.create<mlir::arith::AddIOp>(loc, imm32_1, const32);
+    builder.create<mlir::arith::AddIOp>(loc, imm64_1, const64);
 
 
     builder.create<mlir::func::ReturnOp>(loc);
