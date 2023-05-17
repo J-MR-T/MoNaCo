@@ -10,6 +10,8 @@
 // predefined interfaces
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "mlir/Interfaces/CallInterfaces.h"
 
 #include "mlir/IR/Builders.h"
 

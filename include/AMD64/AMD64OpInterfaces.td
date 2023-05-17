@@ -17,6 +17,8 @@ def InstructionOpInterface : OpInterface<"InstructionOpInterface">{
       return $_op.getProperties().instructionInfoImpl;
     }]>,
     StaticInterfaceMethod<"TODO", "FeMnem", "getFeMnemonic">,
+    // TODO for now 
+    //StaticInterfaceMethod<"TODO", "std::pair<amd64::OperandRegisterConstraint", "getOperandRegisterConstraints">,
   ];
 
   let cppNamespace = "::amd64";

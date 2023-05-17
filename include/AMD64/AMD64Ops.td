@@ -135,19 +135,21 @@ class MemSIBD_subset<string mnemonic, list<Trait> traits = []>: MemOp<mnemonic, 
       // arguments
       !con(
         // base
-        !cond(hasBase: (ins "::mlir::Value":$base), true: (ins)),
+        !cond(hasBase:         (ins "::mlir::Value":$base),                       true: (ins)),
         // scale + index
-        !cond(hasScaleIndex: (ins "uint8_t":$scaleArg, "::mlir::Value":$index), true: (ins)),
+        !cond(hasScaleIndex:   (ins "uint8_t":$scaleArg, "::mlir::Value":$index), true: (ins)),
         // displacement
-        !cond(hasDisplacement: (ins "int64_t":$displacementArg), true: (ins))
+        !cond(hasDisplacement: (ins "int64_t":$displacementArg),                  true: (ins))
       ), [{
       auto& prop = $_state.getOrAddProperties<MemSIBD::Properties>();
-      (void) prop; }]
-      # !cond(hasScaleIndex: "prop.scale = scaleArg;", true: "")
+      (void) prop;
+      }]
+      # !cond(hasScaleIndex:   "prop.scale = scaleArg;",               true: "")
       # !cond(hasDisplacement: "prop.displacement = displacementArg;", true: "")
       # [{
-      build($_builder, $_state}]
-      # !cond(hasBase: ", base", true: "")
+      build($_builder, $_state
+      }]
+      # !cond(hasBase:       ", base",  true: "")
       # !cond(hasScaleIndex: ", index", true: "")
       # [{
       );
@@ -219,7 +221,7 @@ multiclass Instr_i<string mnemonic, list<Trait> traits = []> {
 }
 
 // produces "rr", "rm", "mr", "mi", "ri" variants, depending on the bits set here
-multiclass Instr_rmi<string mnemonic, AMD64_GPRegisterType result, AMD64_GPRegisterType op1, AMD64_GPRegisterType op2, list<Trait> traits = [], bit produceMem = 1, bit produceImm = 1> {
+multiclass Instr_rmi<string mnemonic, AMD64_GPRegisterType result, AMD64_GPRegisterType op1, AMD64_GPRegisterType op2, list<Trait> traits = [], bit produceMem = 1, bit produceImm = 1, bit produceRR = 1> {
 
   // TODO we could give back the memloc as a result, but that does not make a whole lot of sense. The advantage would be that this could then implement the EncodeOpInterface and forward the encoding of the argument.
   if produceMem then
@@ -233,8 +235,9 @@ multiclass Instr_rmi<string mnemonic, AMD64_GPRegisterType result, AMD64_GPRegis
     }
 
   let results = (outs result: $dst) in {
-    let operands = (ins op1:$src1, op2:$src2) in 
-    def "rr" : Instruction<mnemonic # "rr", traits>;
+    if produceRR then
+      let operands = (ins op1:$src1, op2:$src2) in 
+      def "rr" : Instruction<mnemonic # "rr", traits>;
 
     if produceMem then
       let operands = (ins op1:$src1, memLoc:$src2) in
@@ -260,11 +263,11 @@ multiclass Instr_rmi<string mnemonic, AMD64_GPRegisterType result, AMD64_GPRegis
   */
 }
 
-multiclass Instr8_16_32_64_rmi<string mnemonic, list<Trait> traits = [], bit produceMem = 1, bit produceImm = 1> {
+multiclass Instr8_16_32_64_rmi<string mnemonic, list<Trait> traits = [], bit produceMem = 1, bit produceImm = 1, bit produceRR = 1> {
 
   foreach suffix = ["8", "16", "32", "64"] in {
     defvar gprType = !cast<AMD64_GPRegisterType>("gpr"#suffix);
-    defm suffix : Instr_rmi<mnemonic#suffix, gprType, gprType, gprType, traits, produceMem, produceImm>;
+    defm suffix : Instr_rmi<mnemonic#suffix, gprType, gprType, gprType, traits, produceMem, produceImm, produceRR>;
   }
 
   /* this foreach is the same as:
@@ -301,6 +304,10 @@ defm CMP : Instr8_16_32_64_rmi<"CMP">;
 // MOVxxri/MOVxxmi are generated below, as they are special for their custom builders
 defm MOV : Instr8_16_32_64_rmi<"MOV", [Operand1IsDestN<1>], /* produceMem */ 1, /* produceImm */ 0>;
 
+defm AND : Instr8_16_32_64_rmi<"AND", [Operand1IsDestN<1>]>;
+defm OR : Instr8_16_32_64_rmi<"OR", [Operand1IsDestN<1>]>;
+defm XOR : Instr8_16_32_64_rmi<"XOR", [Operand1IsDestN<1>]>;
+
 // miscellaneous 'special' instructions dependant bitwidth
 foreach bitwidth = ["8", "16", "32", "64"] in {
   defvar gprType = !cast<AMD64_GPRegisterType>("gpr"#bitwidth);
@@ -308,12 +315,14 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
 
   // zero result instructions
   let results = (outs) in {
+    // TODO replace register constraints
     let operands = (ins gprType:$src1, memLoc:$src2) in 
     def MUL # bitwidth # "m": Instruction<"MUL" # bitwidth # "m", [Operand1IsDestN<1>, OperandNIsConstrainedToReg<1, "FE_AX">]>;
   }
 
-  // one result instructions
+  // one register result instructions
   let results = (outs gprType:$dst) in {
+    // TODO replace register constraints
     let operands = (ins gprType:$src1, gprType:$src2) in 
     def MUL # bitwidth # "r" : Instruction<"MUL" # bitwidth # "r", [Operand1IsDestN<1>, OperandNIsConstrainedToReg<1, "FE_AX">]>;
 
@@ -336,7 +345,44 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
         build($_builder, $_state, memLocArg);
       }]>
     ] in
-    defm MOV # bitwidth # "m" : Instr_i<"MOV" # bitwidth # "m", [Pure]>;
+    defm MOV # bitwidth # "m" : Instr_i<"MOV" # bitwidth # "m">;
+
+    // shifts
+    // TODO theoretically there are mi/mr variants, but define those once we need them
+    let operands = (ins gprType:$src1, gprType:$src2) in {
+      // TODO these need register constraints for the second operand (only CL)
+      def SHL # bitwidth # "rr" : Instruction<"SHL" # bitwidth # "rr", [Operand1IsDestN<1>]>;
+      def SHR # bitwidth # "rr" : Instruction<"SHR" # bitwidth # "rr", [Operand1IsDestN<1>]>;
+      def SAR # bitwidth # "rr" : Instruction<"SAR" # bitwidth # "rr", [Operand1IsDestN<1>]>;
+    }
+    let operands = (ins gprType:$src1) in {
+      defm SHL # bitwidth # "r" : Instr_i<"SHL" # bitwidth # "r", [Operand1IsDestN<1>]>;
+      defm SHR # bitwidth # "r" : Instr_i<"SHR" # bitwidth # "r", [Operand1IsDestN<1>]>;
+      defm SAR # bitwidth # "r" : Instr_i<"SAR" # bitwidth # "r", [Operand1IsDestN<1>]>;
+    }
+
+    // movsx/movzx
+    if !not(!eq(bitwidth, "8")) then {
+      foreach innerBitwidth = ["8", "16", "32"] in {
+        defvar innerGprType = !cast<AMD64_GPRegisterType>("gpr"#innerBitwidth);
+
+        // movsx
+        let operands = (ins gprType:$src1, innerGprType:$src2) in
+        def MOVSX # "r" # bitwidth # "r" # innerBitwidth: Instruction<"MOVSX" # "r" # bitwidth # "r" # innerBitwidth, [Operand1IsDestN<1>]>;
+
+        let operands = (ins gprType:$src1, memLoc:$src2) in
+        def MOVSX # "r" # bitwidth # "m" # innerBitwidth: Instruction<"MOVSX" # "r" # bitwidth # "m" # innerBitwidth, [Operand1IsDestN<1>]>;
+
+        // movzx
+        if !not(!eq(innerBitwidth, "32")) then{
+          let operands = (ins gprType:$src1, innerGprType:$src2) in
+          def MOVZX # "r" # bitwidth # "r" # innerBitwidth: Instruction<"MOVZX" # "r" # bitwidth # "r" # innerBitwidth, [Operand1IsDestN<1>]>;
+
+          let operands = (ins gprType:$src1, memLoc:$src2) in
+          def MOVZX # "r" # bitwidth # "m" # innerBitwidth: Instruction<"MOVZX" # "r" # bitwidth # "m" # innerBitwidth, [Operand1IsDestN<1>]>;
+        }
+      }
+    }
   }
 }
 
@@ -361,33 +407,24 @@ def JMP : Instruction<"JMP", [Terminator]>{
   }];
 }
 
+// TODO conditional jumps
+
 /*
-def ADD8rr : Instruction<"add8rr"> {
-  let operands = (ins FeMnem:$mnemonic, gpr8:$src1, gpr8:$src2);
-  let results = (outs gpr8:$dst);
+// similar to func.call
+def CALL : Instruction<"CALL">{
+  let operands = (ins FunctionType:$callee, Variadic<AnyType>:$args);
+  let results = (outs gpr64:$ret); // only single return value for now
 }
-*/
 
-/*
-an extensive and still totally incomplete list of problems
-- how to generate all the necessary possible ops, without too much code duplication
-  - multiclasses, lets, and defms probably
-- how to use fadec symbols here? e.g. FE_ADD8rr (0x30600000000000), how to include this in these definitions, also automatically, without having to map it all out by hand
-  - possibly needs a conversion to some kind of tablegen enum, if something like that exists
-    - yes that exists and doesn't work, because it generates too much automatically :(
-  - 
-- 
-*/
+// returns
+let results = (outs) in {
+  // TODO register constraint
+  let operands = (ins gpr64:$ret) in 
+  def RET : Instruction<"RET", [Terminator]>;
 
-// example for 8 bit adds
-
-/*
-def ADD8rr : AMD64_Base_Op<"add8rr"> {
-  let mnemonic = "add";
-  let operands = (ins AMD64_i8:$src1, AMD64_i8:$src2);
-  let results = (outs AMD64_i8:$dst);
-
-  let fe_mnemonic = 0x30600000000000;
+  // TODO register constraint
+  let operands = (ins) in 
+  defm RET : Instr_i<"RET", [Terminator]>;
 }
 */
 

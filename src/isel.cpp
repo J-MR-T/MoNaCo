@@ -20,10 +20,13 @@
 namespace {
 #include "AMD64/Lowerings.cpp.inc"
 
+// use this to mark that a specific type of instruction is not available to use in the lambda of a pattern
+using NOT_AVAILABLE = int;
+
 /// somewhat generic pattern matching struct
-template<typename opClassToMatch, unsigned bitwidth, typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr, auto lambda>
+template<typename opClassToMatch, unsigned bitwidth, typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr, auto lambda, int benefit = 1>
 struct MatchRMI : public mlir::OpConversionPattern<opClassToMatch>{
-    using mlir::OpConversionPattern<opClassToMatch>::OpConversionPattern;
+    MatchRMI(mlir::TypeConverter& typeConverter, mlir::MLIRContext* context) : mlir::OpConversionPattern<opClassToMatch>(typeConverter, context, benefit){}
     using OpAdaptor = typename mlir::OpConversionPattern<opClassToMatch>::OpAdaptor;
 
     mlir::LogicalResult matchAndRewrite(opClassToMatch op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
@@ -38,19 +41,16 @@ struct MatchRMI : public mlir::OpConversionPattern<opClassToMatch>{
     }
 };
 
-#define PATTERN(patternName, opClassToMatch, opPrefixToReplaceWith, lambda)                                                                                        \
-    using patternName ##  8 = MatchRMI<opClassToMatch,  8,                                                                                                         \
-        opPrefixToReplaceWith ##  8rr, opPrefixToReplaceWith ##  8ri, opPrefixToReplaceWith ##  8rm, opPrefixToReplaceWith ##  8mi, opPrefixToReplaceWith ##  8mr, \
-        lambda>;                                                                                                                                                   \
-    using patternName ##  16 = MatchRMI<opClassToMatch,16,                                                                                                         \
-        opPrefixToReplaceWith ## 16rr, opPrefixToReplaceWith ## 16ri, opPrefixToReplaceWith ## 16rm, opPrefixToReplaceWith ## 16mi, opPrefixToReplaceWith ## 16mr, \
-        lambda>;                                                                                                                                                   \
-    using patternName ## 32 = MatchRMI<opClassToMatch,32,                                                                                                          \
-        opPrefixToReplaceWith ## 32rr, opPrefixToReplaceWith ## 32ri, opPrefixToReplaceWith ## 32rm, opPrefixToReplaceWith ## 32mi, opPrefixToReplaceWith ## 32mr, \
-        lambda>;                                                                                                                                                   \
-    using patternName ## 64 = MatchRMI<opClassToMatch,64,                                                                                                          \
-        opPrefixToReplaceWith ## 64rr, opPrefixToReplaceWith ## 64ri, opPrefixToReplaceWith ## 64rm, opPrefixToReplaceWith ## 64mi, opPrefixToReplaceWith ## 64mr, \
-        lambda>;                                                                                                                                                   \
+#define PATTERN_FOR_BITWIDTH(bitwidth, patternName, opClassToMatch, opPrefixToReplaceWith, lambda, ...)                                                                                                                   \
+    using patternName ##  bitwidth = MatchRMI<opClassToMatch,  bitwidth,                                                                                                                                                  \
+        opPrefixToReplaceWith ##  bitwidth ## rr, opPrefixToReplaceWith ##  bitwidth ## ri, opPrefixToReplaceWith ##  bitwidth ## rm, opPrefixToReplaceWith ##  bitwidth ## mi, opPrefixToReplaceWith ##  bitwidth ## mr, \
+        lambda,## __VA_ARGS__ >;
+
+#define PATTERN(patternName, opClassToMatch, opPrefixToReplaceWith, lambda, ...)              \
+    PATTERN_FOR_BITWIDTH(8,  patternName, opClassToMatch, opPrefixToReplaceWith, lambda,## __VA_ARGS__ ) \
+    PATTERN_FOR_BITWIDTH(16, patternName, opClassToMatch, opPrefixToReplaceWith, lambda,## __VA_ARGS__ ) \
+    PATTERN_FOR_BITWIDTH(32, patternName, opClassToMatch, opPrefixToReplaceWith, lambda,## __VA_ARGS__ ) \
+    PATTERN_FOR_BITWIDTH(64, patternName, opClassToMatch, opPrefixToReplaceWith, lambda,## __VA_ARGS__ )
 
 // TODO it would be nice to use folds for matching mov's and folding them into the add, but that's not possible right now, so we either have to match it here (see commit 8df6c7d), or ignore it for now
 // TODO an alternative would be to generate custom builders for the RR versions, which check if their argument is a movxxri and then fold it into the RR, resulting in an RI version. That probably wouldn't work because the returned thing would of course expect an RR version, not an RI version
@@ -61,10 +61,51 @@ auto binOpMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
     return mlir::success();
 };
 
-PATTERN(AddIPat, mlir::arith::AddIOp, amd64::ADD, binOpMatchReplace);
+// I finally found out when to use the OpAdaptor and when not to: The OpAdaptor seems to give access to the operands in their already converted form, whereas the op itself still has all operands in their original form.
+// In this case we need to access the operand in the original form, to check if it was a constant, we're not interested in what it got converted to
+auto binOpAndImmMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
+     typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr
+     >(auto op, OpAdaptor adaptor, mlir ::ConversionPatternRewriter &rewriter) {
+
+    auto constantOp = mlir::dyn_cast<mlir::arith::ConstantIntOp>(op.getLhs().getDefiningOp());
+    auto other = adaptor.getRhs();
+
+    if(!constantOp){
+        constantOp = mlir::dyn_cast<mlir::arith::ConstantIntOp>(op.getRhs().getDefiningOp());
+        other = adaptor.getLhs();
+    }
+
+    if(!constantOp){
+        // -> we need to use the RR version, there is no pure immediate operand
+        rewriter.replaceOpWithNewOp<INSTrr>(op, adaptor.getLhs(), adaptor.getRhs());
+    }else{
+        // -> there is a pure immediate operand, we can use the RI version to save the MOVxxri
+        auto newOp = rewriter.replaceOpWithNewOp<INSTri>(op, other);
+        newOp.instructionInfo().imm = constantOp.value();
+
+        if(constantOp.use_empty())
+            constantOp.erase();
+    }
+
+
+    return mlir::success();
+};
+
+PATTERN(AddIPat, mlir::arith::AddIOp, amd64::ADD, binOpAndImmMatchReplace, 2);
 PATTERN(SubIPat, mlir::arith::SubIOp, amd64::SUB, binOpMatchReplace);
-// TODO somehow specify, that this has to have lower priority/benefit (why can i not specify a benefit anywhere in the conversion op :() than the version which matches a jump using a cmp (which doesn't exist yet)
+// TODO specify using benefits, that this has to have lower priority than the version which matches a jump with a cmp as an argument (which doesn't exist yet).
 PATTERN(CmpIPat, mlir::arith::CmpIOp, amd64::CMP, binOpMatchReplace);
+PATTERN(AndIPat, mlir::arith::AndIOp, amd64::AND, binOpMatchReplace);
+PATTERN(OrIPat,  mlir::arith::OrIOp,  amd64::OR,  binOpMatchReplace);
+PATTERN(XOrIPat, mlir::arith::XOrIOp, amd64::XOR, binOpMatchReplace);
+
+#define MULI_PAT(bitwidth)                                                                       \
+    using MulIPat ## bitwidth = MatchRMI<mlir::arith::MulIOp, bitwidth,                          \
+        amd64::MUL ## bitwidth ## r, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, \
+        binOpMatchReplace>;
+
+MULI_PAT(8); MULI_PAT(16); MULI_PAT(32); MULI_PAT(64);
+
 
 auto movMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr
@@ -120,6 +161,8 @@ void prototypeIsel(mlir::Operation* regionOp){
     builder.create<mlir::arith::AddIOp>(loc, const32, imm32_1);
     auto add = builder.create<mlir::arith::AddIOp>(loc, const64, imm64_1);
 
+    assert(mlir::dyn_cast<mlir::arith::ConstantIntOp>(add.getLhs().getDefiningOp()));
+
     builder.create<mlir::arith::AddIOp>(loc, add, add);
 
     builder.create<mlir::arith::AddIOp>(loc, imm8_3, const8);
@@ -142,9 +185,12 @@ void prototypeIsel(mlir::Operation* regionOp){
         }
     });
 
-    // all register types are already legal
+    // all register and memloc types are already legal
     // TODO this is probably not needed in the end, because we shouldn't encounter them at first. But for now with manually created ops it is needed.
     typeConverter.addConversion([](amd64::RegisterTypeInterface type) -> std::optional<mlir::Type>{
+        return type;
+    });
+    typeConverter.addConversion([](amd64::memLocType type) -> std::optional<mlir::Type>{
         return type;
     });
 
@@ -159,10 +205,14 @@ void prototypeIsel(mlir::Operation* regionOp){
     //populateWithGenerated(patterns); // does `patterns.add<SubExamplePat>(ctx);`, ... for all tablegen generated patterns
 
 #define ADD_PATTERN(patternName) patterns.add<patternName ## 8, patternName ## 16, patternName ## 32, patternName ## 64>(typeConverter, ctx);
+    ADD_PATTERN(ConstantIntPat);
     ADD_PATTERN(AddIPat);
     ADD_PATTERN(SubIPat);
+    ADD_PATTERN(MulIPat);
     ADD_PATTERN(CmpIPat);
-    ADD_PATTERN(ConstantIntPat);
+    ADD_PATTERN(AndIPat);
+    ADD_PATTERN(OrIPat);
+    ADD_PATTERN(XOrIPat);
 #undef ADD_PATTERN
     
 
