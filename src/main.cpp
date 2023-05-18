@@ -23,7 +23,7 @@ void prototypeEncode(mlir::Operation* op){
 
     auto [opConstr1, opConstr2] = instrOp.getOperandRegisterConstraints();
     if(instrOp->hasTrait<mlir::OpTrait::Operand0IsDestN<0>::Impl>()){
-        assert(opConstr1.hasReg == false && "Operand 1 is constrained to a register, but is also to the destination register");
+        assert(opConstr1.hasReg == false && "Operand 0 is constrained to a register, but is also constrained to the destination register");
     }
     auto [resConstr1, resConstr2] = instrOp.getResultRegisterConstraints();
 
@@ -32,69 +32,73 @@ void prototypeEncode(mlir::Operation* op){
     uint8_t buf[16]; // TODO obviously this needs to be variable etc. later, but for now it's enough, one x86 instruction is never more than 15 bytes
     uint8_t* cur = buf;
 
-    
-    // TODO needs special handling for jumps of course, as well as for calls
+    int encodingRet;
+    if(false){
+        // TODO special cases
+        // - jumps
+        // - calls
+        // - DIV/IDIV because rdx needs to be zeroed/sign extended
+        // - returns
+    }else{
+        // actual number of operands should be: op->getNumOperands() + (hasImm?1:0)
+        assert(instrOp->getNumOperands() < 4 && "Too many operands for instruction");
 
-    // actual number of operands should be: op->getNumOperands() + (hasImm?1:0)
-    assert(instrOp->getNumOperands() < 4 && "Too many operands for instruction");
+        // TODO zeros are fine, right?
+        // first operand of the encoded instruction is the result register, if there is one
+        std::optional<FeOp> resultReg{};
+        FeOp operands[4] = {0};
 
-    // TODO zeros are fine, right?
-    // first operand of the encoded instruction is the result register, if there is one
-    std::optional<FeOp> resultReg{};
-    FeOp operands[4] = {0};
+        // TODO neither constrained result, nor constrained operand registers should be passed to the encoder
+        // wait, sure about constrained operand registers? I'm pretty sure for mul, but what about the shifts? I am also pretty sure that they need CL passed explicitly...
+        if(!instrOp->hasTrait<mlir::OpTrait::ZeroResults>())
+            resultReg = instrOp.instructionInfo().regs.getReg1();
 
-    if(!instrOp->hasTrait<mlir::OpTrait::ZeroResults>())
-        resultReg = instrOp.instructionInfo().regs.getReg1();
-
-    unsigned i = 0;
-    // fadec only needs the dest1 == op1 once, so in this case we skip that first register operand
-    if(instrOp->hasTrait<mlir::OpTrait::Operand0IsDestN<0>::Impl>() && 
-        /* first operand is register operand: */
-            instrOp->getNumOperands() > 0 &&
-            instrOp->getOperand(0).getType().isa<amd64::RegisterTypeInterface>()){
-        i++;
-    }
-
-    llvm::errs() << "Encoding: "; instrOp.dump();
-
-    for(unsigned feOpIndex = 0; i < instrOp->getNumOperands(); i++, feOpIndex++){
-        auto operandValue = instrOp->getOperand(i);
-        if(auto encodeInterface = mlir::dyn_cast<amd64::EncodeOpInterface>(operandValue.getDefiningOp())){
-            encodeInterface.dump();
-            operands[feOpIndex] = encodeInterface.encode();
-        }else{
-            auto asOpResult = mlir::dyn_cast<mlir::OpResult>(operandValue);
-
-            assert(asOpResult && "Operand is neither a memory op, nor an OpResult"); // TODO oh god what about block args. also: how do i do register allocation and asm emitting at the same time with block args? They don't know where to store their arg to immediately, do they?
-            // as long as there is no 'op-result' interface, this is probably the only way to do it
-            operands[feOpIndex] = amd64::registerOf(asOpResult);
+        unsigned i = 0;
+        // fadec only needs the dest1 == op1 once, so in this case we skip that first register operand
+        if(instrOp->hasTrait<mlir::OpTrait::Operand0IsDestN<0>::Impl>() && 
+            /* first operand is register operand: */
+                instrOp->getNumOperands() > 0 &&
+                instrOp->getOperand(0).getType().isa<amd64::RegisterTypeInterface>()){
+            i++;
         }
-    }
 
-    // immediate operand
-    if(instrOp->hasTrait<mlir::OpTrait::HasImm>()){
-        operands[i] = instrOp.instructionInfo().imm;
-    }
+        llvm::errs() << "Encoding: "; instrOp.dump();
 
-    // TODO performance test this version, which just passes all operands, against a version which only passes the operands which are actually used, through some hiddeous case distinctions
-    // TODO also maybe make the operands smaller once all instructions are defined, and we know that there are no more than x
-    int ret;
-    if(resultReg)
-        ret = fe_enc64(&cur, mnemonic, *resultReg, operands[0], operands[1], operands[2]);
-    else
-        ret = fe_enc64(&cur, mnemonic, operands[0], operands[1], operands[2], operands[3]);
+        for(unsigned feOpIndex = 0; i < instrOp->getNumOperands(); i++, feOpIndex++){
+            auto operandValue = instrOp->getOperand(i);
+            if(auto encodeInterface = mlir::dyn_cast<amd64::EncodeOpInterface>(operandValue.getDefiningOp())){
+                encodeInterface.dump();
+                operands[feOpIndex] = encodeInterface.encode();
+            }else{
+                auto asOpResult = mlir::dyn_cast<mlir::OpResult>(operandValue);
 
-    if(ret < 0){
-        llvm::errs() << "Test encoding went wrong :(\nOperands:\n";
-        for(unsigned i = 0; i < 4; i++){
-            llvm::errs() << operands[i] << "\n";
+                assert(asOpResult && "Operand is neither a memory op, nor an OpResult"); // TODO oh god what about block args. also: how do i do register allocation and asm emitting at the same time with block args? They don't know where to store their arg to immediately, do they?
+                // as long as there is no 'op-result' interface, this is probably the only way to do it
+                operands[feOpIndex] = amd64::registerOf(asOpResult);
+            }
         }
+
+        // immediate operand
+        if(instrOp->hasTrait<mlir::OpTrait::HasImm>()){
+            operands[i] = instrOp.instructionInfo().imm;
+        }
+
+        // TODO performance test this version, which just passes all operands, against a version which only passes the operands which are actually used, through some hiddeous case distinctions
+        // TODO also maybe make the operands smaller once all instructions are defined, and we know that there are no more than x
+        if(resultReg)
+            encodingRet = fe_enc64(&cur, mnemonic, *resultReg, operands[0], operands[1], operands[2]);
+        else
+            encodingRet = fe_enc64(&cur, mnemonic, operands[0], operands[1], operands[2], operands[3]);
+    }
+
+    if(encodingRet < 0){
+        llvm::errs() << "Test encoding went wrong :(\n";
     }
 
     // decode & print to test if it works
     FdInstr instr; 
-    ret = fd_decode(buf, sizeof(buf), 64, 0, &instr);
-    if(ret < 0){
+    encodingRet = fd_decode(buf, sizeof(buf), 64, 0, &instr);
+    if(encodingRet < 0){
         llvm::errs() << "Test encoding resulted in non-decodable instruction :(\n";
     }else{
         char fmtbuf[64];
@@ -255,8 +259,8 @@ int main(int argc, char *argv[]) {
     auto testMod = mlir::OwningOpRef<mlir::ModuleOp>(builder.create<mlir::ModuleOp>(builder.getUnknownLoc()));
     testOpCreation(*testMod);
 
-    //testMod = mlir::OwningOpRef<mlir::ModuleOp>(builder.create<mlir::ModuleOp>(builder.getUnknownLoc()));
-    //prototypeIsel(*testMod);
+    testMod = mlir::OwningOpRef<mlir::ModuleOp>(builder.create<mlir::ModuleOp>(builder.getUnknownLoc()));
+    prototypeIsel(*testMod);
 
     return 0;
 }

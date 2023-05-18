@@ -99,13 +99,43 @@ PATTERN(AndIPat, mlir::arith::AndIOp, amd64::AND, binOpMatchReplace);
 PATTERN(OrIPat,  mlir::arith::OrIOp,  amd64::OR,  binOpMatchReplace);
 PATTERN(XOrIPat, mlir::arith::XOrIOp, amd64::XOR, binOpMatchReplace);
 
-#define MULI_PAT(bitwidth)                                                                       \
-    using MulIPat ## bitwidth = MatchRMI<mlir::arith::MulIOp, bitwidth,                          \
-        amd64::MUL ## bitwidth ## r, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, \
-        binOpMatchReplace>;
+template <bool isRem>
+auto matchDivRem = []<unsigned actualBitwidth, typename OpAdaptor,
+     typename DIVr, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE
+     >(auto op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
+    auto div = rewriter.create<DIVr>(op->getLoc(), adaptor.getLhs(), adaptor.getRhs());
+    if constexpr(isRem)
+        rewriter.replaceOp(op, div.getRemainder());
+    else
+        rewriter.replaceOp(op, div.getQuotient());
+    return mlir::success();
+};
 
-MULI_PAT(8); MULI_PAT(16); MULI_PAT(32); MULI_PAT(64);
+#define MULI_DIVI_PAT(bitwidth)                                                                   \
+    using MulIPat ## bitwidth = MatchRMI<mlir::arith::MulIOp, bitwidth,                           \
+        amd64::MUL ## bitwidth ## r, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE,  \
+        binOpMatchReplace>;                                                                       \
+    using DivUIPat ## bitwidth = MatchRMI<mlir::arith::DivUIOp, bitwidth,                         \
+        amd64::DIV ## bitwidth ## r, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE,  \
+        matchDivRem<false>>;                                                                      \
+    using DivSIPat ## bitwidth = MatchRMI<mlir::arith::DivSIOp, bitwidth,                         \
+        amd64::IDIV ## bitwidth ## r, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, \
+        matchDivRem<false>>;                                                                      \
+    using RemUIPat ## bitwidth = MatchRMI<mlir::arith::RemUIOp, bitwidth,                         \
+        amd64::DIV ## bitwidth ## r, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE,  \
+        matchDivRem<true>>;                                                                       \
+    using RemSIPat ## bitwidth = MatchRMI<mlir::arith::RemSIOp, bitwidth,                         \
+        amd64::IDIV ## bitwidth ## r, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, \
+        matchDivRem<true>>;
 
+MULI_DIVI_PAT(8); MULI_DIVI_PAT(16); MULI_DIVI_PAT(32); MULI_DIVI_PAT(64);
+
+#define SHIFT_PAT(bitwidth) \
+    using ShlIPat ## bitwidth = MatchRMI<mlir::arith::ShLIOp, bitwidth, amd64::SHL ## bitwidth ## rr, amd64::SHL ## bitwidth ## ri, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, binOpMatchReplace>; \
+    using ShrUIPat ## bitwidth = MatchRMI<mlir::arith::ShRUIOp, bitwidth, amd64::SHR ## bitwidth ## rr, amd64::SHL ## bitwidth ## ri, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, binOpMatchReplace>; \
+    using ShrSIPat ## bitwidth = MatchRMI<mlir::arith::ShRSIOp, bitwidth, amd64::SAR ## bitwidth ## rr, amd64::SHL ## bitwidth ## ri, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, binOpMatchReplace>;
+
+SHIFT_PAT(8); SHIFT_PAT(16); SHIFT_PAT(32); SHIFT_PAT(64);
 
 auto movMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr
@@ -116,6 +146,50 @@ auto movMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
 
 PATTERN(ConstantIntPat, mlir::arith::ConstantIntOp, amd64::MOV, movMatchReplace);
 
+struct MatchCondBr : public mlir::OpConversionPattern<mlir::cf::CondBranchOp> {
+    MatchCondBr(mlir::TypeConverter& typeConverter, mlir::MLIRContext* context) : mlir::OpConversionPattern<mlir::cf::CondBranchOp>(typeConverter, context, 3){}
+
+    mlir::LogicalResult matchAndRewrite(mlir::cf::CondBranchOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
+        auto cmpi = mlir::dyn_cast<mlir::arith::CmpIOp>(op.getCondition().getDefiningOp());
+        if(!cmpi)
+            return mlir::failure(); // TODO this will not cover all cases yet. i1 arithmetic is a problem...
+
+        // cmp should already have been replaced by the cmp pattern, so we don't need to do that here
+
+        auto ops1 = adaptor.getTrueDestOperands();
+        auto ops2 = adaptor.getFalseDestOperands();
+
+        auto block1 = op.getTrueDest();
+        auto block2 = op.getFalseDest();
+
+        if(auto constI1 = mlir::dyn_cast<mlir::arith::ConstantIntOp>(op.getCondition().getDefiningOp())){
+            // unconditional branch, if it's a constant condition
+            if(constI1.value()){
+                rewriter.replaceOpWithNewOp<amd64::JMP>(op, ops1, block1);
+            }else{
+                rewriter.replaceOpWithNewOp<amd64::JMP>(op, ops2, block2);
+            }
+        }else{
+            // conditional branch
+            using mlir::arith::CmpIPredicate;
+
+            switch(cmpi.getPredicate()){
+                case CmpIPredicate::eq:  rewriter.replaceOpWithNewOp<amd64::JE>(op,  ops1, ops2, block1, block2); break;
+                case CmpIPredicate::ne:  rewriter.replaceOpWithNewOp<amd64::JNE>(op, ops1, ops2, block1, block2); break;
+                case CmpIPredicate::slt: rewriter.replaceOpWithNewOp<amd64::JL>(op,  ops1, ops2, block1, block2); break;
+                case CmpIPredicate::sle: rewriter.replaceOpWithNewOp<amd64::JLE>(op, ops1, ops2, block1, block2); break;
+                case CmpIPredicate::sgt: rewriter.replaceOpWithNewOp<amd64::JG>(op,  ops1, ops2, block1, block2); break;
+                case CmpIPredicate::sge: rewriter.replaceOpWithNewOp<amd64::JGE>(op, ops1, ops2, block1, block2); break;
+                case CmpIPredicate::ult: rewriter.replaceOpWithNewOp<amd64::JB>(op,  ops1, ops2, block1, block2); break;
+                case CmpIPredicate::ule: rewriter.replaceOpWithNewOp<amd64::JBE>(op, ops1, ops2, block1, block2); break;
+                case CmpIPredicate::ugt: rewriter.replaceOpWithNewOp<amd64::JA>(op,  ops1, ops2, block1, block2); break;
+                case CmpIPredicate::uge: rewriter.replaceOpWithNewOp<amd64::JAE>(op, ops1, ops2, block1, block2); break;
+            }
+        }
+        return mlir::success();
+    }
+};
+
 } // end anonymous namespace
 
 
@@ -123,6 +197,8 @@ PATTERN(ConstantIntPat, mlir::arith::ConstantIntOp, amd64::MOV, movMatchReplace)
 /// takes an operation and does isel on its regions
 void prototypeIsel(mlir::Operation* regionOp){
     // TODO actually use regionOp
+    using namespace amd64;
+    using namespace mlir::arith;
 
     auto ctx = regionOp->getContext();
     mlir::OpBuilder builder(ctx);
@@ -137,38 +213,45 @@ void prototypeIsel(mlir::Operation* regionOp){
     auto entryBB = patternMatchingTestFn.addEntryBlock();
     builder.setInsertionPointToStart(entryBB);
 
-    auto imm8_3 = builder.create<amd64::MOV8ri>(loc, 8);
-    auto imm8_4 = builder.create<amd64::MOV8ri>(loc, 9);
-    auto imm16_1 = builder.create<amd64::MOV16ri>(loc, 16);
-    auto imm16_2 = builder.create<amd64::MOV16ri>(loc, 17);
-    auto imm32_1 = builder.create<amd64::MOV32ri>(loc, 32);
-    auto imm32_2 = builder.create<amd64::MOV32ri>(loc, 33);
-    auto imm64_1 = builder.create<amd64::MOV64ri>(loc, 64);
-    auto imm64_2 = builder.create<amd64::MOV64ri>(loc, 65);
+    auto imm8_3 = builder.create<MOV8ri>(loc, 8);
+    auto imm8_4 = builder.create<MOV8ri>(loc, 9);
+    auto imm16_1 = builder.create<MOV16ri>(loc, 16);
+    auto imm16_2 = builder.create<MOV16ri>(loc, 17);
+    auto imm32_1 = builder.create<MOV32ri>(loc, 32);
+    auto imm32_2 = builder.create<MOV32ri>(loc, 33);
+    auto imm64_1 = builder.create<MOV64ri>(loc, 64);
+    auto imm64_2 = builder.create<MOV64ri>(loc, 65);
 
-    builder.create<mlir::arith::AddIOp>(loc, imm8_3, imm8_4);
-    builder.create<mlir::arith::AddIOp>(loc, imm16_1, imm16_2);
-    builder.create<mlir::arith::AddIOp>(loc, imm32_1, imm32_2);
-    builder.create<mlir::arith::AddIOp>(loc, imm64_1, imm64_2);
+    builder.create<AddIOp>(loc, imm8_3, imm8_4);
+    builder.create<AddIOp>(loc, imm16_1, imm16_2);
+    builder.create<AddIOp>(loc, imm32_1, imm32_2);
+    builder.create<AddIOp>(loc, imm64_1, imm64_2);
 
-    auto const8 = builder.create<mlir::arith::ConstantIntOp>(loc, 8, builder.getI8Type());
-    auto const16 = builder.create<mlir::arith::ConstantIntOp>(loc, 16, builder.getI16Type());
-    auto const32 = builder.create<mlir::arith::ConstantIntOp>(loc, 32, builder.getI32Type());
-    auto const64 = builder.create<mlir::arith::ConstantIntOp>(loc, 64, builder.getI64Type());
+    auto const8 = builder.create<ConstantIntOp>(loc, 8, builder.getI8Type());
+    auto const16 = builder.create<ConstantIntOp>(loc, 16, builder.getI16Type());
+    auto const32 = builder.create<ConstantIntOp>(loc, 32, builder.getI32Type());
+    auto const64 = builder.create<ConstantIntOp>(loc, 64, builder.getI64Type());
 
-    builder.create<mlir::arith::AddIOp>(loc, const8, imm8_3);
-    builder.create<mlir::arith::AddIOp>(loc, const16, imm16_1);
-    builder.create<mlir::arith::AddIOp>(loc, const32, imm32_1);
-    auto add = builder.create<mlir::arith::AddIOp>(loc, const64, imm64_1);
+    builder.create<AddIOp>(loc, const8, imm8_3);
+    builder.create<AddIOp>(loc, const16, imm16_1);
+    builder.create<AddIOp>(loc, const32, imm32_1);
+    auto add = builder.create<AddIOp>(loc, const64, imm64_1);
 
-    assert(mlir::dyn_cast<mlir::arith::ConstantIntOp>(add.getLhs().getDefiningOp()));
+    assert(mlir::dyn_cast<ConstantIntOp>(add.getLhs().getDefiningOp()));
 
-    builder.create<mlir::arith::AddIOp>(loc, add, add);
+    builder.create<AddIOp>(loc, add, add);
 
-    builder.create<mlir::arith::AddIOp>(loc, imm8_3,  const8);
-    builder.create<mlir::arith::AddIOp>(loc, imm16_1, const16);
-    builder.create<mlir::arith::AddIOp>(loc, imm32_1, const32);
-    builder.create<mlir::arith::AddIOp>(loc, imm64_1, const64);
+    builder.create<AddIOp>(loc, imm8_3,  const8);
+    builder.create<AddIOp>(loc, imm16_1, const16);
+    builder.create<AddIOp>(loc, imm32_1, const32);
+    builder.create<AddIOp>(loc, imm64_1, const64);
+
+    auto targetBlock = patternMatchingTestFn.addBlock();
+
+    auto cmp = builder.create<CmpIOp>(loc, CmpIPredicate::sge, add, const64);
+    builder.create<mlir::cf::CondBranchOp>(loc, cmp, targetBlock, entryBB);
+
+    builder.setInsertionPointToStart(targetBlock);
 
 
     builder.create<mlir::func::ReturnOp>(loc);
@@ -176,6 +259,7 @@ void prototypeIsel(mlir::Operation* regionOp){
     mlir::TypeConverter typeConverter;
     typeConverter.addConversion([](mlir::IntegerType type) -> std::optional<mlir::Type>{
         switch(type.getIntOrFloatBitWidth()) {
+            case 1: return  amd64::gpr8Type ::get(type.getContext()); // TODO lets see if this makes sense. It doesn't. But the bigger problem is, that this means only the cmp8 pattern ever gets matched, which doesn't make any sense, cmp should be matched depending on the types of the arguments, not of the result :/
             case 8: return  amd64::gpr8Type ::get(type.getContext());
             case 16: return amd64::gpr16Type::get(type.getContext());
             case 32: return amd64::gpr32Type::get(type.getContext());
@@ -213,6 +297,15 @@ void prototypeIsel(mlir::Operation* regionOp){
     ADD_PATTERN(AndIPat);
     ADD_PATTERN(OrIPat);
     ADD_PATTERN(XOrIPat);
+    ADD_PATTERN(MulIPat);
+    ADD_PATTERN(DivUIPat);
+    ADD_PATTERN(DivSIPat);
+    ADD_PATTERN(RemSIPat);
+    ADD_PATTERN(RemSIPat);
+    ADD_PATTERN(ShlIPat);
+    ADD_PATTERN(ShrSIPat);
+    ADD_PATTERN(ShrUIPat);
+    patterns.add<MatchCondBr>(typeConverter, ctx);
 #undef ADD_PATTERN
     
 

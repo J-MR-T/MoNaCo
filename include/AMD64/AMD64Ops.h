@@ -13,6 +13,9 @@
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 
+// note: this fixed "OpAsmOpInterface not found" errors... (because OpImplementation.h defines AsmParser, the implementation of which includes the OpAsmOpInterface)
+#include "mlir/IR/OpImplementation.h"
+
 #include "mlir/IR/Builders.h"
 
 #include "mlir/IR/BuiltinTypes.h"
@@ -46,7 +49,7 @@ namespace amd64{
         return regs.getReg1();
     }
     // TODO handle block args at some point
-}
+} // end namespace amd64
 
 // my own interfaces are included in AMD64Types.h
 
@@ -57,6 +60,16 @@ namespace amd64{
 
 #define GET_OP_CLASSES
 #include "AMD64/AMD64Ops.h.inc"
+
+namespace amd64{
+
+// aliases
+using JE = JZ;
+using JNE = JNZ;
+using JB = JC;
+using JAE = JNC;
+
+} // end namespace amd64
 
 #endif
 

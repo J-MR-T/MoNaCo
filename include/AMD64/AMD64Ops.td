@@ -298,7 +298,7 @@ defm ADD : Instr8_16_32_64_rmi<"ADD">;
 // ops defined through multiclasses
 defm ADD : Instr8_16_32_64_rmi<"ADD", [Operand0IsDestN<0>]>;
 defm SUB : Instr8_16_32_64_rmi<"SUB", [Operand0IsDestN<0>]>;
-defm CMP : Instr8_16_32_64_rmi<"CMP">;
+defm CMP : Instr8_16_32_64_rmi<"CMP">; // not pure, because the flags aren't modeled as a result
 // MOVxxri/MOVxxmi are generated below, as they are special for their custom builders
 defm MOV : Instr8_16_32_64_rmi<"MOV", [Operand0IsDestN<0>], /* produceMem */ 1, /* produceImm */ 0>;
 
@@ -313,18 +313,19 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
 
   // zero result instructions
   let results = (outs) in {
-    // for 8 bit it's ah:al, not dx:ax (i love you x86)
-    let resultConstraint1  = "{.whichResult = 0, .reg = FE_AX}", resultConstraint2  = !if(!eq(bitwidth, "8"), "{.whichResult = 1, .reg = FE_AH}", "{.whichResult = 1, .reg = FE_DX}") in 
-    let operands = (ins gprType:$src1, memLoc:$src2) in
-    def MUL # bitwidth # "m": Instruction<"MUL" # bitwidth # "m", [Operand0IsDestN<0>]>;
   }
 
   // one register result instructions
   let results = (outs gprType:$dst) in {
     // for 8 bit it's ah:al, not dx:ax (i love you x86)
-    let resultConstraint1  = "{.whichResult = 0, .reg = FE_AX}", resultConstraint2  = !if(!eq(bitwidth, "8"), "{.whichResult = 1, .reg = FE_AH}", "{.whichResult = 1, .reg = FE_DX}") in 
-    let operands = (ins gprType:$src1, gprType:$src2) in 
-    def MUL # bitwidth # "r" : Instruction<"MUL" # bitwidth # "r", [Operand0IsDestN<0>]>;
+    let resultConstraint1  = "{.whichResult = 0, .reg = FE_AX}", resultConstraint2  = !if(!eq(bitwidth, "8"), "{.whichResult = 1, .reg = FE_AH}", "{.whichResult = 1, .reg = FE_DX}") in {
+      let operands = (ins gprType:$src1, memLoc:$src2) in
+      def MUL # bitwidth # "m": Instruction<"MUL" # bitwidth # "m", [Operand0IsDestN<0>]>;
+
+      let operands = (ins gprType:$src1, gprType:$src2) in
+      def MUL # bitwidth # "r" : Instruction<"MUL" # bitwidth # "r", [Operand0IsDestN<0>]>;
+    }
+
 
     // only MOVxxri/MOVxxmi variants, the others are generated normally above
 
@@ -351,6 +352,7 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
     // TODO theoretically there are mi/mr variants, but define those once we need them
     let operandConstraint1 = "{.whichOperand = 1, .reg = FE_CX}" in
     let operands = (ins gprType:$src1, gprType:$src2) in {
+      // technically the second operand is always CL, i.e. gpr8. But what we would want to do, if it wasn't gpr8, is just truncate it. The easiest way to model that is simply to allow any gprType, during encoding, this will be left out anyway
       def SHL # bitwidth # "rr" : Instruction<"SHL" # bitwidth # "rr", [Operand0IsDestN<0>]>;
       def SHR # bitwidth # "rr" : Instruction<"SHR" # bitwidth # "rr", [Operand0IsDestN<0>]>;
       def SAR # bitwidth # "rr" : Instruction<"SAR" # bitwidth # "rr", [Operand0IsDestN<0>]>;
@@ -385,6 +387,23 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
       }
     }
   }
+
+  // TODO this isn't that nice, but to ensure DX/AH isn't relevant for the result, we need to special case DIV/IDIVs during encoding, and put an XOR rdx, rdx/XOR ah, ah before it for DIV, and CWD/CDQ/CQO for IDIV (what about an 8 bit idiv?).
+  // At least we don't need to worry about the clobbering, because this has DX/AH as a result anyway, so we know that it's clobbered anyway.
+  // DIV: 2 results
+  let results = (outs gprType:$quotient, gprType:$remainder) in {
+    let resultConstraint1 = "{.whichResult = 0, .reg = FE_AX}", resultConstraint2 = !if(!eq(bitwidth, "8"), "{.whichResult = 1, .reg = FE_AH}", "{.whichResult = 1, .reg = FE_DX}") in {
+      let operands = (ins gprType:$src1, gprType:$src2) in {
+        def DIV # bitwidth # "r" : Instruction<"DIV" # bitwidth # "r", [Operand0IsDestN<0>]>;
+        def IDIV # bitwidth # "r" : Instruction<"IDIV" # bitwidth # "r", [Operand0IsDestN<0>]>;
+      }
+
+      let operands = (ins gprType:$src1, memLoc:$src2) in {
+        def DIV # bitwidth # "m" : Instruction<"DIV" # bitwidth # "m", [Operand0IsDestN<0>]>;
+        def IDIV # bitwidth # "m" : Instruction<"IDIV" # bitwidth # "m", [Operand0IsDestN<0>]>;
+      }
+    }
+  }
 }
 
 // special instructions independant of bitwidth
@@ -411,38 +430,37 @@ def JMP : Instruction<"JMP", [Terminator]>{
 
 // conditional jumps as terminator, 2 successors, with TODO invert condition interface
 // heavily based on the cf.cond_br, just without the condition
-class Jcc<string invertedJumpClassName, string mnemonic> : Instruction<mnemonic, [AttrSizedOperandSegments, Terminator]>{
+class Jcc<string mnemonic, string invertedJumpMnemonic> : Instruction<mnemonic, [AttrSizedOperandSegments, Terminator]>{
   let operands = (ins Variadic<AnyType>:$trueDestOperands, Variadic<AnyType>:$falseDestOperands);
 
   let successors = (successor AnySuccessor:$trueDest, AnySuccessor:$falseDest);
   
-  let extraExtraClassDeclarations = ["amd64::" # invertedJumpClassName # " invert(mlir::OpBuilder&);"];
+  let extraExtraClassDeclarations = ["amd64::" # invertedJumpMnemonic # " invert(mlir::OpBuilder&);"];
 
   let extraExtraClassDefinitions = [[{
-    amd64::}] # invertedJumpClassName # [{ $cppClass::invert(mlir::OpBuilder& builder) {
+    amd64::}] # invertedJumpMnemonic # [{ $cppClass::invert(mlir::OpBuilder& builder) {
       // inverted destinations
-      return builder.create<amd64:: }] # invertedJumpClassName # [{>(getLoc(), getFalseDestOperands(), getTrueDestOperands(), getFalseDest(), getTrueDest());
+      return builder.create<amd64:: }] # invertedJumpMnemonic # [{>(getLoc(), getFalseDestOperands(), getTrueDestOperands(), getFalseDest(), getTrueDest());
     }
   }]];
 }
 
-multiclass JccAndInverted<string className, string invertedJumpClassName, string mnemonic = className, string invertedJumpMnemonic = invertedJumpClassName> {
-  def className             : Jcc<invertedJumpClassName, mnemonic>;
-  def invertedJumpClassName : Jcc<className, invertedJumpMnemonic>;
+multiclass JccAndInverted<string mnemonic, string invertedJumpMnemonic> {
+  def mnemonic             : Jcc<mnemonic, invertedJumpMnemonic>;
+  def invertedJumpMnemonic : Jcc<invertedJumpMnemonic, mnemonic>;
 }
 
-defm "" : JccAndInverted<"JZ", "JNZ">;
-defm "" : JccAndInverted<"JE", "JNE", "JZ", "JNZ">;
+defm "" : JccAndInverted<"JZ", "JNZ">; // == "JE", "JNE"
 defm "" : JccAndInverted<"JL", "JGE">;
 defm "" : JccAndInverted<"JLE", "JG">;
-defm "" : JccAndInverted<"JB", "JAE", "JC", "JNC">;
+defm "" : JccAndInverted<"JC", "JNC">; // == "JB", "JAE"
 defm "" : JccAndInverted<"JBE", "JA">;
 
 
 // similar to func.call
 def CALL : Instruction<"CALL">{
   let operands = (ins FunctionType:$callee, Variadic<AnyType>:$args);
-  let results = (outs gpr64:$ret); // only single return value for now
+  let results = (outs gpr64:$ret); // only single return value for now. TODO this might be a problem with instructions which expect smaller results. -> How do we handle a truncate (same problem as `arith.trunc`)?
 }
 
 // returns
