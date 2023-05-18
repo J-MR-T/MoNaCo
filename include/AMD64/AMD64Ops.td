@@ -204,12 +204,15 @@ class Instruction<string mnemonic, list<Trait> traits = []> :
   // if the instruction has an immediate, it has the HasImm trait
   defvar hasImm = !not(!empty(!filter(trait, traits, !eq(trait, HasImm))));
 
+  list<code> extraExtraClassDeclarations = [];
   let extraClassDeclaration = "static constexpr FeMnem getFeMnemonic() { return FE_" # mnemonic # "; }" /* declaration, because getFeMnemonic is inline */ #
     "static constexpr amd64::OperandRegisterConstraints getOperandRegisterConstraints () { return {" # operandConstraint1 # "," # operandConstraint2 # "}; } " #
     "static constexpr amd64::ResultRegisterConstraints getResultRegisterConstraints () {   return {" # resultConstraint1  # "," # resultConstraint2  # "}; } " #
-    "InstructionInfo& instructionInfo();";
+    "InstructionInfo& instructionInfo();" #
+    !interleave(extraExtraClassDeclarations, "\n");
 
-  let extraClassDefinition = "InstructionInfo& $cppClass::instructionInfo() { return this->getProperties().instructionInfoImpl; }";
+  list<code> extraExtraClassDefinitions = [];
+  let extraClassDefinition = "InstructionInfo& $cppClass::instructionInfo() { return this->getProperties().instructionInfoImpl; }" # !interleave(extraExtraClassDefinitions, "\n");
 
   // always append the instruction info property. Immediates are stored in the instruction info
   let arguments = !con(operands, (ins InstructionInfoProp:$instructionInfoImpl));
@@ -425,6 +428,28 @@ class Jcc : Instruction<"Jcc", [Terminator]>{
 
 foreach cc = ["jz", "jnz"] in {// TODO more/all codes, and somehow map to the inverted condition
 
+}
+
+def JZ : Instruction<"JZ", [Terminator]>{
+  let operands = (ins Variadic<AnyType>:$args);
+
+  let successors = (successor AnySuccessor:$trueDst, AnySuccessor:$falseDst);
+}
+
+// TODO just to test the invert interface
+def JNZ : Instruction<"JNZ", [Terminator]>{
+  let operands = (ins Variadic<AnyType>:$args);
+
+  let successors = (successor AnySuccessor:$trueDst, AnySuccessor:$falseDst);
+  
+  let extraExtraClassDeclarations = ["amd64::JZ invert(mlir::OpBuilder&);"];
+
+  let extraExtraClassDefinitions = [[{
+    amd64::JZ $cppClass::invert(mlir::OpBuilder& builder) {
+      // inverted destinations
+      return builder.create<amd64::JZ>(getLoc(), getOperands(), getFalseDst(), getTrueDst());
+    }
+  }]];
 }
 
 // similar to func.call

@@ -17,7 +17,6 @@ def InstructionOpInterface : OpInterface<"InstructionOpInterface">{
       return $_op.getProperties().instructionInfoImpl;
     }]>,
     StaticInterfaceMethod<"TODO", "FeMnem", "getFeMnemonic">,
-    // TODO for now 
     StaticInterfaceMethod<"TODO", "amd64::OperandRegisterConstraints", "getOperandRegisterConstraints">, // TODO document that Operand0IsDestN has priority over operand register constraints, i.e. if that is set, then any operand register constraint for operand 0 is ignored
     StaticInterfaceMethod<"TODO", "amd64::ResultRegisterConstraints",  "getResultRegisterConstraints">,
   ];
@@ -33,6 +32,18 @@ def EncodeOpInterface : OpInterface<"EncodeOpInterface">{
 
   let methods = [
     InterfaceMethod<"TODO", "FeOp", "encode">
+  ];
+
+  let cppNamespace = "::amd64";
+}
+
+def InvertJumpInterface : OpInterface<"InvertJumpInterface">{
+  let description = [{
+    This is an interface for AMD64 Jump Ops. They can specify how they are inverted using this interface.
+  }];
+
+  let methods = [
+    InterfaceMethod<"TODO", "FeOp", "invertJump">
   ];
 
   let cppNamespace = "::amd64";

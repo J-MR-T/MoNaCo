@@ -186,13 +186,23 @@ void testOpCreation(mlir::ModuleOp mod){
     auto jmpTestFn = builder.create<mlir::func::FuncOp>(loc, "jmpTest", mlir::FunctionType::get(ctx, {}, {}));;
 
     builder.setInsertionPointToStart(jmpTestFn.addEntryBlock());
-    auto targetBlock = jmpTestFn.addBlock();
+    auto targetBlock1 = jmpTestFn.addBlock();
+    auto targetBlock2 = jmpTestFn.addBlock();
     auto imm64 = builder.create<amd64::MOV64ri>(loc, 42);
     builder.create<amd64::ADD64rr>(loc, imm64, imm64);
-    builder.create<amd64::JMP>(loc, targetBlock);
-    builder.setInsertionPointToStart(targetBlock);
+    builder.create<amd64::JMP>(loc, targetBlock1);
+    builder.setInsertionPointToStart(targetBlock1);
     builder.create<amd64::ADD64rr>(loc, imm64, imm64);
-    builder.create<mlir::func::ReturnOp>(loc);
+
+    auto jnz = builder.create<amd64::JNZ>(loc, mlir::ValueRange{}, targetBlock1, targetBlock2);
+    jmpTestFn.dump();
+
+    auto jz = jnz.invert(builder);
+    jnz->replaceAllUsesWith(jz);
+    jnz->erase();
+
+    jmpTestFn.dump();
+
 
     // TODO maybe premature optimization, just do map[block*] -> address and a vector of unresolved jumps for now. a vector that maps blocks by number to address would be faster, could be accomplished using indices of the functions region's blocks
 
@@ -245,8 +255,8 @@ int main(int argc, char *argv[]) {
     auto testMod = mlir::OwningOpRef<mlir::ModuleOp>(builder.create<mlir::ModuleOp>(builder.getUnknownLoc()));
     testOpCreation(*testMod);
 
-    testMod = mlir::OwningOpRef<mlir::ModuleOp>(builder.create<mlir::ModuleOp>(builder.getUnknownLoc()));
-    prototypeIsel(*testMod);
+    //testMod = mlir::OwningOpRef<mlir::ModuleOp>(builder.create<mlir::ModuleOp>(builder.getUnknownLoc()));
+    //prototypeIsel(*testMod);
 
     return 0;
 }
