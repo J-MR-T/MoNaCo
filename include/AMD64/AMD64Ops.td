@@ -401,56 +401,55 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
 
 // special instructions independant of bitwidth
 
-// JMP is the cf.br equivalent, is a terminator and has neither operands, nor a result. It uses MLIRs built-in successor list to define its successors
-// this is kept close to cf.br, but wtihout the operands, as the block args have to be destructed anyway.
+// JMP is the cf.br equivalent, is a terminator has block args, but no result. It uses MLIRs built-in successor list to define its successors
+// this is kept close to cf.br
 def JMP : Instruction<"JMP", [Terminator]>{
-  let operands = (ins);
+  let operands = (ins Variadic<AnyType>:$destOperands);
 
-  let successors = (successor AnySuccessor:$dst);
+  let successors = (successor AnySuccessor:$dest);
 
-  // from the cf.br
+  // from the cf.br op
   let builders = [
-    OpBuilder<(ins "::mlir::Block *":$dst), [{
-      $_state.addSuccessors(dst);
+    OpBuilder<(ins "::mlir::Block *":$dest, CArg<"::mlir::ValueRange", "{}">:$destOperands), [{
+      $_state.addSuccessors(dest);
+      $_state.addOperands(destOperands);
     }]
   >];
 
   let assemblyFormat = [{
-    $dst attr-dict
+    $dest (`(` $destOperands^ `:` type($destOperands) `)`)? attr-dict
   }];
 }
 
 // conditional jumps as terminator, 2 successors, with TODO invert condition interface
-// TODO
-class Jcc : Instruction<"Jcc", [Terminator]>{
-  let operands = (ins);
-}
+// heavily based on the cf.cond_br, just without the condition
+class Jcc<string invertedJumpClassName, string mnemonic> : Instruction<mnemonic, [AttrSizedOperandSegments, Terminator]>{
+  let operands = (ins Variadic<AnyType>:$trueDestOperands, Variadic<AnyType>:$falseDestOperands);
 
-foreach cc = ["jz", "jnz"] in {// TODO more/all codes, and somehow map to the inverted condition
-
-}
-
-def JZ : Instruction<"JZ", [Terminator]>{
-  let operands = (ins Variadic<AnyType>:$args);
-
-  let successors = (successor AnySuccessor:$trueDst, AnySuccessor:$falseDst);
-}
-
-// TODO just to test the invert interface
-def JNZ : Instruction<"JNZ", [Terminator]>{
-  let operands = (ins Variadic<AnyType>:$args);
-
-  let successors = (successor AnySuccessor:$trueDst, AnySuccessor:$falseDst);
+  let successors = (successor AnySuccessor:$trueDest, AnySuccessor:$falseDest);
   
-  let extraExtraClassDeclarations = ["amd64::JZ invert(mlir::OpBuilder&);"];
+  let extraExtraClassDeclarations = ["amd64::" # invertedJumpClassName # " invert(mlir::OpBuilder&);"];
 
   let extraExtraClassDefinitions = [[{
-    amd64::JZ $cppClass::invert(mlir::OpBuilder& builder) {
+    amd64::}] # invertedJumpClassName # [{ $cppClass::invert(mlir::OpBuilder& builder) {
       // inverted destinations
-      return builder.create<amd64::JZ>(getLoc(), getOperands(), getFalseDst(), getTrueDst());
+      return builder.create<amd64:: }] # invertedJumpClassName # [{>(getLoc(), getFalseDestOperands(), getTrueDestOperands(), getFalseDest(), getTrueDest());
     }
   }]];
 }
+
+multiclass JccAndInverted<string className, string invertedJumpClassName, string mnemonic = className, string invertedJumpMnemonic = invertedJumpClassName> {
+  def className             : Jcc<invertedJumpClassName, mnemonic>;
+  def invertedJumpClassName : Jcc<className, invertedJumpMnemonic>;
+}
+
+defm "" : JccAndInverted<"JZ", "JNZ">;
+defm "" : JccAndInverted<"JE", "JNE", "JZ", "JNZ">;
+defm "" : JccAndInverted<"JL", "JGE">;
+defm "" : JccAndInverted<"JLE", "JG">;
+defm "" : JccAndInverted<"JB", "JAE", "JC", "JNC">;
+defm "" : JccAndInverted<"JBE", "JA">;
+
 
 // similar to func.call
 def CALL : Instruction<"CALL">{

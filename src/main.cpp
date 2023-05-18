@@ -194,7 +194,7 @@ void testOpCreation(mlir::ModuleOp mod){
     builder.setInsertionPointToStart(targetBlock1);
     builder.create<amd64::ADD64rr>(loc, imm64, imm64);
 
-    auto jnz = builder.create<amd64::JNZ>(loc, mlir::ValueRange{}, targetBlock1, targetBlock2);
+    auto jnz = builder.create<amd64::JNZ>(loc, mlir::ValueRange{}, mlir::ValueRange{}, targetBlock1, targetBlock2);
     jmpTestFn.dump();
 
     auto jz = jnz.invert(builder);
