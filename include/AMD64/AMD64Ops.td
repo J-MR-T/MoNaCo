@@ -99,7 +99,7 @@ class MemOp<string mnemonic, list<Trait> traits = []>: AMD64_Op<mnemonic, traits
 // trying to reduce code duplication with this somewhat generic mem op, which will be instantiated with different bits.
 // sadly looks quite hiddeous, but that's better than 5 different memory ops with basically the same code with a few things stripped out
 class MemSIBD_subset<string mnemonic, list<Trait> traits = []>: MemOp<mnemonic, traits>{
-  bit hasBase = ?; // TODO does it make sense without base? I guess as an rip relative address it does
+  bit hasBase = ?;
   bit hasScaleIndex = ?;
   bit hasDisplacement = ?;
 
@@ -108,23 +108,23 @@ class MemSIBD_subset<string mnemonic, list<Trait> traits = []>: MemOp<mnemonic, 
   let arguments =
     !con(
       // base
-      !cond(hasBase: (ins anygprType:$base), true: (ins)),
+      !if(hasBase, (ins anygprType:$base), (ins)),
       // scale + index
-      !cond(hasScaleIndex: (ins Property<"uint8_t">:$scale, anygprType:$index), true: (ins)),
+      !if(hasScaleIndex, (ins Property<"uint8_t">:$scale, anygprType:$index), (ins)),
       // displacement
-      !cond(hasDisplacement: (ins Property<"int64_t">:$displacement), true: (ins))
+      !if(hasDisplacement, (ins Property<"int64_t">:$displacement), (ins))
     );
   let results = (outs memLoc:$memloc);
 
   // TODO I'm pretty sure the encoding for just displacement won't make much sense, test that later
   let encoding = [{
     return FE_MEM( }]
-      # !cond(hasBase: "registerOf(mlir::dyn_cast<mlir::OpResult>(getBase())),", true: "0,")
-      # !cond(hasScaleIndex: [{
+      # !if(hasBase, "registerOf(mlir::dyn_cast<mlir::OpResult>(getBase())),", "0,")
+      # !if(hasScaleIndex, [{
       getProperties().scale,
       registerOf(mlir::dyn_cast<mlir::OpResult>(getIndex())),
-      }], true: "0, 0, ")
-      # !cond(hasDisplacement: "getProperties().displacement", true: "0")
+      }], "0, 0, ")
+      # !if(hasDisplacement, "getProperties().displacement", "0")
       # [{
     );
   }];
@@ -135,22 +135,22 @@ class MemSIBD_subset<string mnemonic, list<Trait> traits = []>: MemOp<mnemonic, 
       // arguments
       !con(
         // base
-        !cond(hasBase:         (ins "::mlir::Value":$base),                       true: (ins)),
+        !if(hasBase,         (ins "::mlir::Value":$base),                       (ins)),
         // scale + index
-        !cond(hasScaleIndex:   (ins "uint8_t":$scaleArg, "::mlir::Value":$index), true: (ins)),
+        !if(hasScaleIndex,   (ins "uint8_t":$scaleArg, "::mlir::Value":$index), (ins)),
         // displacement
-        !cond(hasDisplacement: (ins "int64_t":$displacementArg),                  true: (ins))
+        !if(hasDisplacement, (ins "int64_t":$displacementArg),                  (ins))
       ), [{
       auto& prop = $_state.getOrAddProperties<MemSIBD::Properties>();
       (void) prop;
       }]
-      # !cond(hasScaleIndex:   "prop.scale = scaleArg;",               true: "")
-      # !cond(hasDisplacement: "prop.displacement = displacementArg;", true: "")
+      # !if(hasScaleIndex,   "prop.scale = scaleArg;",               "")
+      # !if(hasDisplacement, "prop.displacement = displacementArg;", "")
       # [{
       build($_builder, $_state
       }]
-      # !cond(hasBase:       ", base",  true: "")
-      # !cond(hasScaleIndex: ", index", true: "")
+      # !if(hasBase,       ", base",  "")
+      # !if(hasScaleIndex, ", index", "")
       # [{
       );
     }]>
@@ -168,6 +168,10 @@ def MemSIB : MemSIBD_subset<"MemSIB">;
 // memory op with just base and displacement
 let hasBase = 1, hasScaleIndex = 0, hasDisplacement = 1 in
 def MemBD : MemSIBD_subset<"MemBD">;
+
+// memory op with just scale, index, and displacement (useful for example for LEAs)
+let hasBase = 0, hasScaleIndex = 1, hasDisplacement = 1 in
+def MemSID : MemSIBD_subset<"MemSID">;
 
 // memory op with just base
 let hasBase = 1, hasScaleIndex = 0, hasDisplacement = 0 in
