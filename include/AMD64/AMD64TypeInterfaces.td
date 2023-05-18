@@ -12,7 +12,7 @@ def RegisterTypeInterface : TypeInterface<"RegisterTypeInterface">{
   }];
 
   let methods = [
-    StaticInterfaceMethod<"TODO", "unsigned", "getBitwidth">
+    StaticInterfaceMethod<"TODO", "unsigned", "getBitwidth">,
   ];
 
   let cppNamespace = "::amd64";

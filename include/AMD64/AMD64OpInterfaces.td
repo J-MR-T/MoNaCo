@@ -18,7 +18,8 @@ def InstructionOpInterface : OpInterface<"InstructionOpInterface">{
     }]>,
     StaticInterfaceMethod<"TODO", "FeMnem", "getFeMnemonic">,
     // TODO for now 
-    //StaticInterfaceMethod<"TODO", "std::pair<amd64::OperandRegisterConstraint", "getOperandRegisterConstraints">,
+    StaticInterfaceMethod<"TODO", "amd64::OperandRegisterConstraints", "getOperandRegisterConstraints">, // TODO document that Operand1IsDestN has priority over operand register constraints, i.e. if that is set, then any operand register constraint for operand 0 is ignored
+    StaticInterfaceMethod<"TODO", "amd64::ResultRegisterConstraints",  "getResultRegisterConstraints">,
   ];
 
   let cppNamespace = "::amd64";

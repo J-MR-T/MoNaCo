@@ -32,10 +32,6 @@ include "mlir/IR/EnumAttr.td"
 class Operand1IsDestN<int N>
   : ParamNativeOpTrait<"Operand1IsDestN", !cast<string>(N)>;
 
-// TODO replace with static method on op, see AMD64Types.h for details
-class OperandNIsConstrainedToReg<int N, string reg>
-  : ParamNativeOpTrait<"OperandNIsConstrainedToReg", !cast<string>(N) # "," # reg>;
-
 def HasImm : NativeOpTrait<"HasImm">;
 
 // === types ===
@@ -82,9 +78,6 @@ foreach bitwidth = [8, 16, 32, 64] in {
 def anygprType: TypeConstraint<Or<[gpr8.predicate, gpr16.predicate, gpr32.predicate, gpr64.predicate]>>;
 
 // === memory ops ===
-// TODO maybe everything should have the encoding interface? Immediates could also be modeled that way, but might cost performance, because ops are pretty big in comparison to immediates as operands/properties
-// TODO create a mem op/encoding interface
-
 class MemOp<string mnemonic, list<Trait> traits = []>: AMD64_Op<mnemonic, traits # [EncodeOpInterface]>{
   code encoding = ?;
   let extraClassDeclaration = [{
@@ -95,6 +88,7 @@ class MemOp<string mnemonic, list<Trait> traits = []>: AMD64_Op<mnemonic, traits
 }
 
 // TODO for local variables/memref.alloca/llvm.alloca: define a memop-like alloca operation, that gives back a memloc and also implements the encoding interface, it can then be used just as a normal variable
+//      not sure about that anymore
 
 // trying to reduce code duplication with this somewhat generic mem op, which will be instantiated with different bits.
 // sadly looks quite hiddeous, but that's better than 5 different memory ops with basically the same code with a few things stripped out
@@ -196,6 +190,13 @@ def InstructionInfoProp : Property<"InstructionInfo"> {
 // use the InstructionOpInterface to inject generic functionality into all instructions
 class Instruction<string mnemonic, list<Trait> traits = []> :
   AMD64_Op<mnemonic, traits # [InstructionOpInterface]> {
+
+  string operandConstraint1 = "{.whichOperand = -1, .hasReg = false}";
+  string operandConstraint2 = "{.whichOperand = -1, .hasReg = false}";
+
+  string resultConstraint1 = "{.whichResult = -1, .hasReg = false}";
+  string resultConstraint2 = "{.whichResult = -1, .hasReg = false}";
+
   // basically equivalent to arguments, but arguments are conditionally furthered based on traits, and more info, so these here are the 'raw' operands.
   dag operands = ?;
 
@@ -204,6 +205,8 @@ class Instruction<string mnemonic, list<Trait> traits = []> :
   defvar hasImm = !not(!empty(!filter(trait, traits, !eq(trait, HasImm))));
 
   let extraClassDeclaration = "static constexpr FeMnem getFeMnemonic() { return FE_" # mnemonic # "; }" /* declaration, because getFeMnemonic is inline */ #
+    "static constexpr amd64::OperandRegisterConstraints getOperandRegisterConstraints () { return {" # operandConstraint1 # "," # operandConstraint2 # "}; } " #
+    "static constexpr amd64::ResultRegisterConstraints getResultRegisterConstraints () {   return {" # resultConstraint1  # "," # resultConstraint2  # "}; } " #
     "InstructionInfo& instructionInfo();";
 
   let extraClassDefinition = "InstructionInfo& $cppClass::instructionInfo() { return this->getProperties().instructionInfoImpl; }";
@@ -319,16 +322,18 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
 
   // zero result instructions
   let results = (outs) in {
-    // TODO replace register constraints
-    let operands = (ins gprType:$src1, memLoc:$src2) in 
-    def MUL # bitwidth # "m": Instruction<"MUL" # bitwidth # "m", [Operand1IsDestN<1>, OperandNIsConstrainedToReg<1, "FE_AX">]>;
+    // for 8 bit it's ah:al, not dx:ax (i love you x86)
+    let resultConstraint1  = "{.whichResult = 0, .reg = FE_AX}", resultConstraint2  = !if(!eq(bitwidth, "8"), "{.whichResult = 1, .reg = FE_AH}", "{.whichResult = 1, .reg = FE_DX}") in 
+    let operands = (ins gprType:$src1, memLoc:$src2) in
+    def MUL # bitwidth # "m": Instruction<"MUL" # bitwidth # "m", [Operand1IsDestN<1>]>;
   }
 
   // one register result instructions
   let results = (outs gprType:$dst) in {
-    // TODO replace register constraints
+    // for 8 bit it's ah:al, not dx:ax (i love you x86)
+    let resultConstraint1  = "{.whichResult = 0, .reg = FE_AX}", resultConstraint2  = !if(!eq(bitwidth, "8"), "{.whichResult = 1, .reg = FE_AH}", "{.whichResult = 1, .reg = FE_DX}") in 
     let operands = (ins gprType:$src1, gprType:$src2) in 
-    def MUL # bitwidth # "r" : Instruction<"MUL" # bitwidth # "r", [Operand1IsDestN<1>, OperandNIsConstrainedToReg<1, "FE_AX">]>;
+    def MUL # bitwidth # "r" : Instruction<"MUL" # bitwidth # "r", [Operand1IsDestN<1>]>;
 
     // only MOVxxri/MOVxxmi variants, the others are generated normally above
 
@@ -353,12 +358,13 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
 
     // shifts
     // TODO theoretically there are mi/mr variants, but define those once we need them
+    let operandConstraint1 = "{.whichOperand = 1, .reg = FE_CX}" in
     let operands = (ins gprType:$src1, gprType:$src2) in {
-      // TODO these need register constraints for the second operand (only CL)
       def SHL # bitwidth # "rr" : Instruction<"SHL" # bitwidth # "rr", [Operand1IsDestN<1>]>;
       def SHR # bitwidth # "rr" : Instruction<"SHR" # bitwidth # "rr", [Operand1IsDestN<1>]>;
       def SAR # bitwidth # "rr" : Instruction<"SAR" # bitwidth # "rr", [Operand1IsDestN<1>]>;
     }
+
     let operands = (ins gprType:$src1) in {
       defm SHL # bitwidth # "r" : Instr_i<"SHL" # bitwidth # "r", [Operand1IsDestN<1>]>;
       defm SHR # bitwidth # "r" : Instr_i<"SHR" # bitwidth # "r", [Operand1IsDestN<1>]>;
@@ -411,9 +417,16 @@ def JMP : Instruction<"JMP", [Terminator]>{
   }];
 }
 
-// TODO conditional jumps
+// conditional jumps as terminator, 2 successors, with TODO invert condition interface
+// TODO
+class Jcc : Instruction<"Jcc", [Terminator]>{
+  let operands = (ins);
+}
 
-/*
+foreach cc = ["jz", "jnz"] in {// TODO more/all codes, and somehow map to the inverted condition
+
+}
+
 // similar to func.call
 def CALL : Instruction<"CALL">{
   let operands = (ins FunctionType:$callee, Variadic<AnyType>:$args);
@@ -422,14 +435,12 @@ def CALL : Instruction<"CALL">{
 
 // returns
 let results = (outs) in {
-  // TODO register constraint
+  let operandConstraint1 = "{.whichOperand = 0, .reg = FE_AX}" in
   let operands = (ins gpr64:$ret) in 
   def RET : Instruction<"RET", [Terminator]>;
 
-  // TODO register constraint
   let operands = (ins) in 
   defm RET : Instr_i<"RET", [Terminator]>;
 }
-*/
 
 #endif

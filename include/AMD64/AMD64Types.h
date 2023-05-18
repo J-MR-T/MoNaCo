@@ -12,18 +12,29 @@ using FeMnem = uint64_t;
 
 namespace amd64{
 
-// TODO i need two seperate things here, right? operand register constraints and result register constraints
-// TODO what is the best way to have multiple of these, without taking up tons of space?
-// TODO put a static op iface method to get some kind of collection of these two
+
+// chmpxchg16b is the worst for this
 struct OperandRegisterConstraint{
-    uint8_t whichOperand;
-    FeReg reg;
+    int8_t whichOperand;
+    // if whichOperand is -1, this is hasReg
+    union{
+        FeReg reg;
+        bool hasReg;
+    };
 };
 
 struct ResultRegisterConstraint{
-    uint8_t whichResult;
-    FeReg reg;
+    int8_t whichResult;
+    // if whichOperand is -1, this is hasReg
+    union{
+        FeReg reg;
+        bool hasReg;
+    };
 };
+
+// just use a pair for now, only very niche instrs need more than two op constraints
+using OperandRegisterConstraints = std::pair<OperandRegisterConstraint, OperandRegisterConstraint>;
+using ResultRegisterConstraints  = std::pair<ResultRegisterConstraint,  ResultRegisterConstraint>;
 
 // TODO put the rest of the stuff into the namespace as well
 }
@@ -66,6 +77,11 @@ struct ResultRegisters{
         return reg1 | (reg2 << 16);
     }
 
+    inline void setFromCombined(uint32_t combined){
+        reg1 = combined & 0x0000FFFF;
+        reg2 = combined & 0xFFFF0000;
+    }
+
     // these 3 are to use this as an mlir property:
     inline mlir::Attribute asAttribute(mlir::MLIRContext* ctx) const{
         mlir::Builder builder(ctx);
@@ -78,8 +94,7 @@ struct ResultRegisters{
                 *diag << "expected integer attribute for ResultRegisters";
             return mlir::failure();
         }
-        prop.reg1 = intAttr.getInt() & 0xFFFF;
-        prop.reg2 = intAttr.getInt() & 0xFFFF0000;
+        prop.setFromCombined(intAttr.getInt());
         return mlir::success();
     }
     inline llvm::hash_code hash() const {
@@ -138,20 +153,10 @@ struct InstructionInfo{
 // the way to define these seems so hacky...
 namespace mlir::OpTrait{
 
-/// TODO does this need to be parametrized? Is 1 = 1 enough?
+// TODO does this need to be parametrized? Is 1 = 1 enough?
 /// lots of x86 instructions have the first operand as the destination -> this trait signals that
 template<unsigned N>
 class Operand1IsDestN{
-public:
-    template <typename ConcreteType>
-    class Impl:public mlir::OpTrait::TraitBase<ConcreteType, Impl> {
-    };
-};
-
-/// TODO maybe this is entirely stupid
-/// TODO just do static method on op, == 0 to test if constraints exist
-template<unsigned N, FeReg reg>
-class OperandNIsConstrainedToReg{
 public:
     template <typename ConcreteType>
     class Impl:public mlir::OpTrait::TraitBase<ConcreteType, Impl> {

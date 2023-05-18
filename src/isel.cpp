@@ -56,7 +56,7 @@ struct MatchRMI : public mlir::OpConversionPattern<opClassToMatch>{
 // TODO an alternative would be to generate custom builders for the RR versions, which check if their argument is a movxxri and then fold it into the RR, resulting in an RI version. That probably wouldn't work because the returned thing would of course expect an RR version, not an RI version
 auto binOpMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr
-     >(auto op, OpAdaptor adaptor, mlir ::ConversionPatternRewriter &rewriter) {
+     >(auto op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
     rewriter.replaceOpWithNewOp<INSTrr>(op, adaptor.getLhs(), adaptor.getRhs());
     return mlir::success();
 };
@@ -65,8 +65,7 @@ auto binOpMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
 // In this case we need to access the operand in the original form, to check if it was a constant, we're not interested in what it got converted to
 auto binOpAndImmMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr
-     >(auto op, OpAdaptor adaptor, mlir ::ConversionPatternRewriter &rewriter) {
-
+     >(auto op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
     auto constantOp = mlir::dyn_cast<mlir::arith::ConstantIntOp>(op.getLhs().getDefiningOp());
     auto other = adaptor.getRhs();
 
@@ -75,22 +74,23 @@ auto binOpAndImmMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
         other = adaptor.getLhs();
     }
 
-    if(!constantOp){
+    if(!constantOp ||
+        // immediate is max 32 bit, otherwise we have to generate a mov for it
+        constantOp.value() > std::numeric_limits<int32_t>::max() || constantOp.value() < std::numeric_limits<int32_t>::min()
+    ){
         // -> we need to use the RR version, there is no pure immediate operand
         rewriter.replaceOpWithNewOp<INSTrr>(op, adaptor.getLhs(), adaptor.getRhs());
     }else{
-        // -> there is a pure immediate operand, we can use the RI version to save the MOVxxri
+        // -> there is a pure immediate operand, which fits into the instruction -> we can use the RI version to save the MOVxxri
         auto newOp = rewriter.replaceOpWithNewOp<INSTri>(op, other);
         newOp.instructionInfo().imm = constantOp.value();
-
-        if(constantOp.use_empty())
-            constantOp.erase();
     }
-
 
     return mlir::success();
 };
 
+// TODO think about whether to define different patterns with this or not etc.
+// TODO this binOpAndImmMatchReplace could be split up into multiple patterns, but that might be slower
 PATTERN(AddIPat, mlir::arith::AddIOp, amd64::ADD, binOpAndImmMatchReplace, 2);
 PATTERN(SubIPat, mlir::arith::SubIOp, amd64::SUB, binOpMatchReplace);
 // TODO specify using benefits, that this has to have lower priority than the version which matches a jump with a cmp as an argument (which doesn't exist yet).
@@ -109,7 +109,7 @@ MULI_PAT(8); MULI_PAT(16); MULI_PAT(32); MULI_PAT(64);
 
 auto movMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr
-     >(mlir::arith::ConstantIntOp op, OpAdaptor adaptor, mlir ::ConversionPatternRewriter &rewriter) {
+     >(mlir::arith::ConstantIntOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
     rewriter.replaceOpWithNewOp<INSTri>(op, op.value());
     return mlir::success();
 };
@@ -165,7 +165,7 @@ void prototypeIsel(mlir::Operation* regionOp){
 
     builder.create<mlir::arith::AddIOp>(loc, add, add);
 
-    builder.create<mlir::arith::AddIOp>(loc, imm8_3, const8);
+    builder.create<mlir::arith::AddIOp>(loc, imm8_3,  const8);
     builder.create<mlir::arith::AddIOp>(loc, imm16_1, const16);
     builder.create<mlir::arith::AddIOp>(loc, imm32_1, const32);
     builder.create<mlir::arith::AddIOp>(loc, imm64_1, const64);

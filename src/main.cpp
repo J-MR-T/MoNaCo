@@ -21,10 +21,17 @@ void prototypeEncode(mlir::Operation* op){
     auto instrOp = mlir::dyn_cast<amd64::InstructionOpInterface>(op);
     assert(instrOp && "Operation does not implement InstructionOpInterface");
 
+    auto [opConstr1, opConstr2] = instrOp.getOperandRegisterConstraints();
+    if(instrOp->hasTrait<mlir::OpTrait::Operand1IsDestN<1>::Impl>()){
+        assert(opConstr1.hasReg == false && "Operand 1 is constrained to a register, but is also to the destination register");
+    }
+    auto [resConstr1, resConstr2] = instrOp.getResultRegisterConstraints();
+
     FeMnem mnemonic = instrOp.getFeMnemonic();
 
     uint8_t buf[16]; // TODO obviously this needs to be variable etc. later, but for now it's enough, one x86 instruction is never more than 15 bytes
     uint8_t* cur = buf;
+
     
     // TODO needs special handling for jumps of course, as well as for calls
 
@@ -56,12 +63,10 @@ void prototypeEncode(mlir::Operation* op){
             encodeInterface.dump();
             operands[feOpIndex] = encodeInterface.encode();
         }else{
-            // TODO maaaaaybe it's possible to do this with a TypeInterface on the gpr types, which have a method to return the register they're in, instead of registerOf, but that is a much simpler solution for now
-
-            // TODO should be able to put this code somewhere else so that everyone can access this
             auto asOpResult = mlir::dyn_cast<mlir::OpResult>(operandValue);
 
             assert(asOpResult && "Operand is neither a memory op, nor an OpResult"); // TODO oh god what about block args. also: how do i do register allocation and asm emitting at the same time with block args? They don't know where to store their arg to immediately, do they?
+            // as long as there is no 'op-result' interface, this is probably the only way to do it
             operands[feOpIndex] = amd64::registerOf(asOpResult);
         }
     }
@@ -75,7 +80,7 @@ void prototypeEncode(mlir::Operation* op){
     // TODO also maybe make the operands smaller once all instructions are defined, and we know that there are no more than x
     int ret;
     if(resultReg)
-        ret = fe_enc64(&cur, mnemonic, *resultReg, operands[0], operands[1], operands[2], operands[3]);
+        ret = fe_enc64(&cur, mnemonic, *resultReg, operands[0], operands[1], operands[2]);
     else
         ret = fe_enc64(&cur, mnemonic, operands[0], operands[1], operands[2], operands[3]);
 
@@ -128,13 +133,19 @@ void testOpCreation(mlir::ModuleOp mod){
 
     auto mul8r = builder.create<amd64::MUL8r>(loc, imm8_1, imm8_2);
     generic = mul8r;
-
     opInterface = mlir::dyn_cast<amd64::InstructionOpInterface>(generic);
-
     assert(mul8r.hasTrait<mlir::OpTrait::Operand1IsDestN<1>::Impl>());
 
-    assert((mul8r.hasTrait<mlir::OpTrait::OperandNIsConstrainedToReg<1, FE_AX>::Impl>())); // ah and al, not dx/ax
-    // maybe a better way would just be a static method on the op interface, so that we can *get* the constrained register, not just check if it exists
+    auto [resC1, resC2] = mul8r.getResultRegisterConstraints();
+    assert(resC1.whichResult == 0 && resC1.reg == FE_AX && resC2.whichResult == 1 && resC2.reg == FE_AH);
+
+    auto mul16r = builder.create<amd64::MUL16r>(loc, imm8_1, imm8_2);
+    generic = mul16r;
+    opInterface = mlir::dyn_cast<amd64::InstructionOpInterface>(generic);
+    assert(mul16r.hasTrait<mlir::OpTrait::Operand1IsDestN<1>::Impl>());
+
+    auto [resC3, resC4] = mul16r.getResultRegisterConstraints();
+    assert(resC3.whichResult == 0 && resC3.reg == FE_AX && resC4.whichResult == 1 && resC4.reg == FE_DX);
 
     auto regsTest = builder.create<amd64::CMP8rr>(loc, imm8_1, imm8_2);
 
