@@ -232,45 +232,33 @@ multiclass Instr_i<string mnemonic, list<Trait> traits = []> {
 
 // produces "rr", "rm", "mr", "mi", "ri" variants, depending on the bits set here
 multiclass Instr_rmi<string mnemonic, AMD64_GPRegisterType result, AMD64_GPRegisterType op1, AMD64_GPRegisterType op2, list<Trait> traits = [], bit produceMem = 1, bit produceImm = 1, bit produceRR = 1> {
-
-  // TODO we could give back the memloc as a result, but that does not make a whole lot of sense. The advantage would be that this could then implement the EncodeOpInterface and forward the encoding of the argument.
+  defvar rr_Traits = traits;
+  defvar ri_Traits = !listremove(traits, [Commutative]);
+  defvar rm_mr_mi_Traits = !listremove(traits, [Pure, Commutative]);
+  // don't give back memLocs as a result, only leads to quadratic chaining of encodings etc. If necessary, rewrite instructions so that they point to the same memory operand
   if produceMem then
     let results = (outs) in {
       let operands = (ins memLoc:$src1, op2:$src2) in
-      def "mr" : Instruction<mnemonic # "mr", traits>;
+      def "mr" : Instruction<mnemonic # "mr", rm_mr_mi_Traits>;
 
       if produceImm then
         let operands = (ins memLoc:$src1) in
-        defm "m" : Instr_i<mnemonic # "m", traits>;
+        defm "m" : Instr_i<mnemonic # "m", rm_mr_mi_Traits>;
     }
 
   let results = (outs result: $dst) in {
     if produceRR then
       let operands = (ins op1:$src1, op2:$src2) in 
-      def "rr" : Instruction<mnemonic # "rr", traits>;
+      def "rr" : Instruction<mnemonic # "rr", rr_Traits>;
 
     if produceMem then
       let operands = (ins op1:$src1, memLoc:$src2) in
-      def "rm" : Instruction<mnemonic # "rm", traits>;
+      def "rm" : Instruction<mnemonic # "rm", rm_mr_mi_Traits>;
 
     if produceImm then
       let operands = (ins op1:$src1) in
-      defm "r" : Instr_i<mnemonic # "r", traits>;
+      defm "r" : Instr_i<mnemonic # "r", ri_Traits>;
   }
-
-  /*
-     this thing above is basically equivalent to this:
-
-  def rr : Instruction<mnemonic # "rr", traits>{
-    let operands = (ins op1:$src1, op2:$src2);
-    let results = (outs result:$dst);
-  }
-  def rm : Instruction<mnemonic # "rm", traits>{...}
-  def mr ...
-  def ri ...
-  def mi ...
-
-  */
 }
 
 multiclass Instr8_16_32_64_rmi<string mnemonic, list<Trait> traits = [], bit produceMem = 1, bit produceImm = 1, bit produceRR = 1> {
