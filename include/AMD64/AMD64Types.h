@@ -156,7 +156,7 @@ namespace mlir::OpTrait{
 // TODO does this need to be parametrized? Is 1 = 1 enough?
 /// lots of x86 instructions have the first operand as the destination -> this trait signals that
 template<unsigned N>
-class Operand1IsDestN{
+class Operand0IsDestN{
 public:
     template <typename ConcreteType>
     class Impl:public mlir::OpTrait::TraitBase<ConcreteType, Impl> {

@@ -22,7 +22,7 @@ void prototypeEncode(mlir::Operation* op){
     assert(instrOp && "Operation does not implement InstructionOpInterface");
 
     auto [opConstr1, opConstr2] = instrOp.getOperandRegisterConstraints();
-    if(instrOp->hasTrait<mlir::OpTrait::Operand1IsDestN<1>::Impl>()){
+    if(instrOp->hasTrait<mlir::OpTrait::Operand0IsDestN<0>::Impl>()){
         assert(opConstr1.hasReg == false && "Operand 1 is constrained to a register, but is also to the destination register");
     }
     auto [resConstr1, resConstr2] = instrOp.getResultRegisterConstraints();
@@ -48,7 +48,7 @@ void prototypeEncode(mlir::Operation* op){
 
     unsigned i = 0;
     // fadec only needs the dest1 == op1 once, so in this case we skip that first register operand
-    if(instrOp->hasTrait<mlir::OpTrait::Operand1IsDestN<1>::Impl>() && 
+    if(instrOp->hasTrait<mlir::OpTrait::Operand0IsDestN<0>::Impl>() && 
         /* first operand is register operand: */
             instrOp->getNumOperands() > 0 &&
             instrOp->getOperand(0).getType().isa<amd64::RegisterTypeInterface>()){
@@ -134,7 +134,7 @@ void testOpCreation(mlir::ModuleOp mod){
     auto mul8r = builder.create<amd64::MUL8r>(loc, imm8_1, imm8_2);
     generic = mul8r;
     opInterface = mlir::dyn_cast<amd64::InstructionOpInterface>(generic);
-    assert(mul8r.hasTrait<mlir::OpTrait::Operand1IsDestN<1>::Impl>());
+    assert(mul8r.hasTrait<mlir::OpTrait::Operand0IsDestN<0>::Impl>());
 
     auto [resC1, resC2] = mul8r.getResultRegisterConstraints();
     assert(resC1.whichResult == 0 && resC1.reg == FE_AX && resC2.whichResult == 1 && resC2.reg == FE_AH);
@@ -142,7 +142,7 @@ void testOpCreation(mlir::ModuleOp mod){
     auto mul16r = builder.create<amd64::MUL16r>(loc, imm8_1, imm8_2);
     generic = mul16r;
     opInterface = mlir::dyn_cast<amd64::InstructionOpInterface>(generic);
-    assert(mul16r.hasTrait<mlir::OpTrait::Operand1IsDestN<1>::Impl>());
+    assert(mul16r.hasTrait<mlir::OpTrait::Operand0IsDestN<0>::Impl>());
 
     auto [resC3, resC4] = mul16r.getResultRegisterConstraints();
     assert(resC3.whichResult == 0 && resC3.reg == FE_AX && resC4.whichResult == 1 && resC4.reg == FE_DX);

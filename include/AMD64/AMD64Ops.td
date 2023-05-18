@@ -29,8 +29,8 @@ include "mlir/IR/EnumAttr.td"
 // === traits ===
 
 // This is ignored, if operand 1 is not a register
-class Operand1IsDestN<int N>
-  : ParamNativeOpTrait<"Operand1IsDestN", !cast<string>(N)>;
+class Operand0IsDestN<int N>
+  : ParamNativeOpTrait<"Operand0IsDestN", !cast<string>(N)>;
 
 def HasImm : NativeOpTrait<"HasImm">;
 
@@ -305,15 +305,15 @@ defm ADD : Instr8_16_32_64_rmi<"ADD">;
 */
 
 // ops defined through multiclasses
-defm ADD : Instr8_16_32_64_rmi<"ADD", [Operand1IsDestN<1>]>;
-defm SUB : Instr8_16_32_64_rmi<"SUB", [Operand1IsDestN<1>]>;
+defm ADD : Instr8_16_32_64_rmi<"ADD", [Operand0IsDestN<0>]>;
+defm SUB : Instr8_16_32_64_rmi<"SUB", [Operand0IsDestN<0>]>;
 defm CMP : Instr8_16_32_64_rmi<"CMP">;
 // MOVxxri/MOVxxmi are generated below, as they are special for their custom builders
-defm MOV : Instr8_16_32_64_rmi<"MOV", [Operand1IsDestN<1>], /* produceMem */ 1, /* produceImm */ 0>;
+defm MOV : Instr8_16_32_64_rmi<"MOV", [Operand0IsDestN<0>], /* produceMem */ 1, /* produceImm */ 0>;
 
-defm AND : Instr8_16_32_64_rmi<"AND", [Operand1IsDestN<1>]>;
-defm OR : Instr8_16_32_64_rmi<"OR", [Operand1IsDestN<1>]>;
-defm XOR : Instr8_16_32_64_rmi<"XOR", [Operand1IsDestN<1>]>;
+defm AND : Instr8_16_32_64_rmi<"AND", [Operand0IsDestN<0>]>;
+defm OR : Instr8_16_32_64_rmi<"OR", [Operand0IsDestN<0>]>;
+defm XOR : Instr8_16_32_64_rmi<"XOR", [Operand0IsDestN<0>]>;
 
 // miscellaneous 'special' instructions dependant bitwidth
 foreach bitwidth = ["8", "16", "32", "64"] in {
@@ -325,7 +325,7 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
     // for 8 bit it's ah:al, not dx:ax (i love you x86)
     let resultConstraint1  = "{.whichResult = 0, .reg = FE_AX}", resultConstraint2  = !if(!eq(bitwidth, "8"), "{.whichResult = 1, .reg = FE_AH}", "{.whichResult = 1, .reg = FE_DX}") in 
     let operands = (ins gprType:$src1, memLoc:$src2) in
-    def MUL # bitwidth # "m": Instruction<"MUL" # bitwidth # "m", [Operand1IsDestN<1>]>;
+    def MUL # bitwidth # "m": Instruction<"MUL" # bitwidth # "m", [Operand0IsDestN<0>]>;
   }
 
   // one register result instructions
@@ -333,7 +333,7 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
     // for 8 bit it's ah:al, not dx:ax (i love you x86)
     let resultConstraint1  = "{.whichResult = 0, .reg = FE_AX}", resultConstraint2  = !if(!eq(bitwidth, "8"), "{.whichResult = 1, .reg = FE_AH}", "{.whichResult = 1, .reg = FE_DX}") in 
     let operands = (ins gprType:$src1, gprType:$src2) in 
-    def MUL # bitwidth # "r" : Instruction<"MUL" # bitwidth # "r", [Operand1IsDestN<1>]>;
+    def MUL # bitwidth # "r" : Instruction<"MUL" # bitwidth # "r", [Operand0IsDestN<0>]>;
 
     // only MOVxxri/MOVxxmi variants, the others are generated normally above
 
@@ -360,15 +360,15 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
     // TODO theoretically there are mi/mr variants, but define those once we need them
     let operandConstraint1 = "{.whichOperand = 1, .reg = FE_CX}" in
     let operands = (ins gprType:$src1, gprType:$src2) in {
-      def SHL # bitwidth # "rr" : Instruction<"SHL" # bitwidth # "rr", [Operand1IsDestN<1>]>;
-      def SHR # bitwidth # "rr" : Instruction<"SHR" # bitwidth # "rr", [Operand1IsDestN<1>]>;
-      def SAR # bitwidth # "rr" : Instruction<"SAR" # bitwidth # "rr", [Operand1IsDestN<1>]>;
+      def SHL # bitwidth # "rr" : Instruction<"SHL" # bitwidth # "rr", [Operand0IsDestN<0>]>;
+      def SHR # bitwidth # "rr" : Instruction<"SHR" # bitwidth # "rr", [Operand0IsDestN<0>]>;
+      def SAR # bitwidth # "rr" : Instruction<"SAR" # bitwidth # "rr", [Operand0IsDestN<0>]>;
     }
 
     let operands = (ins gprType:$src1) in {
-      defm SHL # bitwidth # "r" : Instr_i<"SHL" # bitwidth # "r", [Operand1IsDestN<1>]>;
-      defm SHR # bitwidth # "r" : Instr_i<"SHR" # bitwidth # "r", [Operand1IsDestN<1>]>;
-      defm SAR # bitwidth # "r" : Instr_i<"SAR" # bitwidth # "r", [Operand1IsDestN<1>]>;
+      defm SHL # bitwidth # "r" : Instr_i<"SHL" # bitwidth # "r", [Operand0IsDestN<0>]>;
+      defm SHR # bitwidth # "r" : Instr_i<"SHR" # bitwidth # "r", [Operand0IsDestN<0>]>;
+      defm SAR # bitwidth # "r" : Instr_i<"SAR" # bitwidth # "r", [Operand0IsDestN<0>]>;
     }
 
     // movsx/movzx
@@ -378,18 +378,18 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
 
         // movsx
         let operands = (ins gprType:$src1, innerGprType:$src2) in
-        def MOVSX # "r" # bitwidth # "r" # innerBitwidth: Instruction<"MOVSX" # "r" # bitwidth # "r" # innerBitwidth, [Operand1IsDestN<1>]>;
+        def MOVSX # "r" # bitwidth # "r" # innerBitwidth: Instruction<"MOVSX" # "r" # bitwidth # "r" # innerBitwidth, [Operand0IsDestN<0>]>;
 
         let operands = (ins gprType:$src1, memLoc:$src2) in
-        def MOVSX # "r" # bitwidth # "m" # innerBitwidth: Instruction<"MOVSX" # "r" # bitwidth # "m" # innerBitwidth, [Operand1IsDestN<1>]>;
+        def MOVSX # "r" # bitwidth # "m" # innerBitwidth: Instruction<"MOVSX" # "r" # bitwidth # "m" # innerBitwidth, [Operand0IsDestN<0>]>;
 
         // movzx
         if !not(!eq(innerBitwidth, "32")) then{
           let operands = (ins gprType:$src1, innerGprType:$src2) in
-          def MOVZX # "r" # bitwidth # "r" # innerBitwidth: Instruction<"MOVZX" # "r" # bitwidth # "r" # innerBitwidth, [Operand1IsDestN<1>]>;
+          def MOVZX # "r" # bitwidth # "r" # innerBitwidth: Instruction<"MOVZX" # "r" # bitwidth # "r" # innerBitwidth, [Operand0IsDestN<0>]>;
 
           let operands = (ins gprType:$src1, memLoc:$src2) in
-          def MOVZX # "r" # bitwidth # "m" # innerBitwidth: Instruction<"MOVZX" # "r" # bitwidth # "m" # innerBitwidth, [Operand1IsDestN<1>]>;
+          def MOVZX # "r" # bitwidth # "m" # innerBitwidth: Instruction<"MOVZX" # "r" # bitwidth # "m" # innerBitwidth, [Operand0IsDestN<0>]>;
         }
       }
     }
