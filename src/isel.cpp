@@ -249,7 +249,7 @@ struct ExtUII1Pat : mlir::OpConversionPattern<mlir::arith::ExtUIOp> {
 /// the inBitwidth matches the bitwidth of the input operand to the extui, which needs to be different per pattern, because the corresponding instruction differs.
 template<unsigned inBitwidth>
 /// the outBitwidth matches the bitwidth of the result of the extui, which also affects which instruction is used.
-auto extuiBitwidthMatcher = []<unsigned outBitwidth, typename thisType, typename OpAdaptor>(thisType thiis, mlir::arith::ExtUIOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter){
+auto extUiSiBitwidthMatcher = []<unsigned outBitwidth, typename thisType, typename OpAdaptor>(thisType thiis, auto op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter){
     // out bitwidth
     auto failure = defaultBitwidthMatchLambda<decltype(op)>.template operator()<outBitwidth, thisType, OpAdaptor>(thiis, op, adaptor, rewriter);
     if(failure.failed())
@@ -259,16 +259,17 @@ auto extuiBitwidthMatcher = []<unsigned outBitwidth, typename thisType, typename
     return defaultBitwidthMatchLambda<decltype(op)>.template operator()<inBitwidth, thisType, OpAdaptor>(thiis, op, adaptor, rewriter);
 };
 
-auto extuiMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
+auto extUiSiMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename MOVZX, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE
->(mlir::arith::ExtUIOp zextOp, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
-    rewriter.replaceOpWithNewOp<MOVZX>(zextOp, adaptor.getIn());
+>(auto szextOp, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
+    rewriter.replaceOpWithNewOp<MOVZX>(szextOp, adaptor.getIn());
     return mlir::success();
 };
 
-/// only for 16-64 bits outBitwidth, for 8 we have a special pattern. There are more exceptions: Because not all versions of MOVZX exist, MOVZXr8r8 wouldn't make sense, MOVZXr64r32 is just a MOV, etc.
+/// only for 16-64 bits outBitwidth, for 8 we have a special pattern. There are more exceptions: Because not all versions of MOVZX exist, MOVZXr8r8 wouldn't make sense (also invalid in MLIR), MOVZXr64r32 is just a MOV, etc.
 #define EXTUI_PAT(outBitwidth, inBitwidth) \
-    using ExtUIPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::ExtUIOp, outBitwidth, extuiMatchReplace, amd64::MOVZX ## r ## outBitwidth ## r ## inBitwidth, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, extuiBitwidthMatcher<inBitwidth>>;
+    using ExtUIPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::ExtUIOp, outBitwidth, extUiSiMatchReplace, amd64::MOVZX ## r ## outBitwidth ## r ## inBitwidth, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, extUiSiBitwidthMatcher<inBitwidth>>; \
+    using ExtSIPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::ExtSIOp, outBitwidth, extUiSiMatchReplace, amd64::MOVSX ## r ## outBitwidth ## r ## inBitwidth, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, extUiSiBitwidthMatcher<inBitwidth>>;
 
 // generalizable cases:
 EXTUI_PAT(16, 8);
@@ -278,9 +279,9 @@ EXTUI_PAT(64, 8); EXTUI_PAT(64, 16);
 // cases that are still valid in mlir, but not covered here:
 // - 32 -> 64 (just a MOV)
 // - any weird integer types, but we ignore those anyway
-using ExtUIPat64_32 = MatchRMI<mlir::arith::ExtUIOp, 64, extuiMatchReplace, amd64::MOV32rr, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, extuiBitwidthMatcher<32>>;
-
-// TODO sign extend
+using ExtUIPat64_32 = MatchRMI<mlir::arith::ExtUIOp, 64, extUiSiMatchReplace, amd64::MOV32rr, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, extUiSiBitwidthMatcher<32>>;
+// for sign extend, the pattern above would work, but for simplicity, just do it manually here:
+using ExtSIPat64_32 = MatchRMI<mlir::arith::ExtSIOp, 64, extUiSiMatchReplace, amd64::MOVSXr64r32, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, extUiSiBitwidthMatcher<32>>;
 
 // TODO trunc
 
@@ -347,23 +348,19 @@ struct CondBrPat : public mlir::OpConversionPattern<mlir::cf::CondBranchOp> {
 };
 
 auto callMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
-     typename CALL, typename MOVrr, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE
+     typename CALL, typename MOVrr, typename gprType, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE
      >(mlir::func::CallOp callOp, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
     if(callOp.getNumResults() > 1)
         return rewriter.notifyMatchFailure(callOp, "multiple return values not supported");
 
     // TODO needs type conversion for operands. Wait, maybe the adaptor takes care of this
-    auto call = rewriter.create<CALL>(callOp.getLoc(), callOp.getCalleeAttr(), adaptor.getOperands());
-
-    // somewhat of a truncate:
-    // TODO this is pretty ugly. might also understandable trigger an assertion failure later on, because a mov8rr has a 64 bit operand...
-    rewriter.replaceOpWithNewOp<MOVrr>(callOp, call.getRet());
+    rewriter.replaceOpWithNewOp<CALL>(callOp, gprType::get(callOp->getContext()), callOp.getCalleeAttr(), adaptor.getOperands());
     return mlir::success();
 };
 
 // calls
 #define CALL_PAT(bitwidth) \
-    using CallPat ## bitwidth = MatchRMI<mlir::func::CallOp, bitwidth, callMatchReplace, amd64::CALL, amd64::MOV ## bitwidth ## rr>
+    using CallPat ## bitwidth = MatchRMI<mlir::func::CallOp, bitwidth, callMatchReplace, amd64::CALL, amd64::MOV ## bitwidth ## rr, amd64::gpr ## bitwidth ## Type>
 
 CALL_PAT(8); CALL_PAT(16); CALL_PAT(32); CALL_PAT(64);
 
@@ -410,6 +407,7 @@ void prototypeIsel(mlir::Operation* regionOp){
     mlir::RewritePatternSet patterns(ctx);
     //populateWithGenerated(patterns); // does `patterns.add<SubExamplePat>(ctx);`, ... for all tablegen generated patterns
 
+    // TODO probably put this pattern adding near the actual patterns, so its harder to forget, and there are multiple pattern sets to choose from, depending on the optimization level
 #define ADD_PATTERN(patternName) patterns.add<patternName ## 8, patternName ## 16, patternName ## 32, patternName ## 64>(typeConverter, ctx);
     ADD_PATTERN(ConstantIntPat);
     ADD_PATTERN(AddIPat);
@@ -429,6 +427,7 @@ void prototypeIsel(mlir::Operation* regionOp){
     ADD_PATTERN(ShrUIPat);
     patterns.add<ExtUII1Pat>(typeConverter, ctx);
     patterns.add<ExtUIPat16_8, ExtUIPat32_8, ExtUIPat64_8, ExtUIPat32_16, ExtUIPat64_16, ExtUIPat64_32>(typeConverter, ctx);
+    patterns.add<ExtSIPat16_8, ExtSIPat32_8, ExtSIPat64_8, ExtSIPat32_16, ExtSIPat64_16, ExtSIPat64_32>(typeConverter, ctx);
 
     patterns.add<BrPat>(typeConverter, ctx);
     patterns.add<CondBrPat>(typeConverter, ctx);

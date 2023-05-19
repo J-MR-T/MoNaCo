@@ -350,7 +350,8 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
     defm MOV # bitwidth # "m" : Instr_i<"MOV" # bitwidth # "m">;
 
     // normal MOVrr, MOVrm, but without the destination operand as the first operand, just one operand each.
-    let operands = (ins gprType:$src1) in
+    // also MOVrr accepts any gprType, to allow truncating
+    let operands = (ins anygprType:$src1) in
     def MOV # bitwidth # "rr" : Instruction<"MOV" # bitwidth # "rr", [Pure]>;
 
     let operands = (ins memLoc:$src1) in
@@ -483,7 +484,7 @@ def SETBE8r : SETcc<"SETBE8r">; def SETA8r  : SETcc<"SETA8r">;
 def CALL : Instruction<"CALL">{
   // TODO maybe use a block instead of a function type later on
   let operands = (ins FlatSymbolRefAttr:$callee, Variadic<AnyType>:$operands);
-  let results = (outs gpr64:$ret); // only single return value for now. TODO this might be a problem with instructions which expect smaller results. -> How do we handle a truncate (same problem as `arith.trunc`)?
+  let results = (outs anygprType:$ret); // only single return value for now. TODO this might be a problem with instructions which expect smaller results. -> How do we handle a truncate (same problem as `arith.trunc`)?
 }
 
 // returns
