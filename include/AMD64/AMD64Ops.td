@@ -299,9 +299,6 @@ defm ADD : Instr8_16_32_64_rmi<"ADD">;
 defm ADD : Instr8_16_32_64_rmi<"ADD", [Operand0IsDestN<0>]>;
 defm SUB : Instr8_16_32_64_rmi<"SUB", [Operand0IsDestN<0>]>;
 defm CMP : Instr8_16_32_64_rmi<"CMP">; // not pure, because the flags aren't modeled as a result
-// MOVxxri/MOVxxmi are generated below, as they are special for their custom builders
-defm MOV : Instr8_16_32_64_rmi<"MOV", [Operand0IsDestN<0>], /* produceMem */ 1, /* produceImm */ 0>;
-
 defm AND : Instr8_16_32_64_rmi<"AND", [Operand0IsDestN<0>]>;
 defm OR : Instr8_16_32_64_rmi<"OR", [Operand0IsDestN<0>]>;
 defm XOR : Instr8_16_32_64_rmi<"XOR", [Operand0IsDestN<0>]>;
@@ -313,6 +310,9 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
 
   // zero result instructions
   let results = (outs) in {
+    // normal MOVmr, but without the destination operand as the first operand, just one operand each.
+    let operands = (ins gprType:$src1) in 
+    def "MOV" # bitwidth # "mr" : Instruction<"MOV" # bitwidth # "mr">;
   }
 
   // one register result instructions
@@ -331,6 +331,7 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
 
     let operands = (ins) in // TODO wait: should these also have an operand? It kind of doesn't make sense, but the other ri's have to have one. Maybe use a dummy one?
     // currently native properties don't get a generated builder to set their value upon op building, so we do that ourselves. Sadly this is very hard to do for any immediate op (because we need to replicate all args), so for now it only works on MOVs
+    // MOVxxri/MOVxxmi are generated below, as they are special for their custom builders
     let builders = [
       OpBuilder<(ins "int" # bitwidth # "_t":$immArg), [{
         $_state.getOrAddProperties<InstructionInfo>().imm = immArg;
@@ -347,6 +348,13 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
       }]>
     ] in
     defm MOV # bitwidth # "m" : Instr_i<"MOV" # bitwidth # "m">;
+
+    // normal MOVrr, MOVrm, but without the destination operand as the first operand, just one operand each.
+    let operands = (ins gprType:$src1) in
+    def MOV # bitwidth # "rr" : Instruction<"MOV" # bitwidth # "rr", [Pure]>;
+
+    let operands = (ins memLoc:$src1) in
+    def MOV # bitwidth # "rm" : Instruction<"MOV" # bitwidth # "rm">;
 
     // shifts
     // TODO theoretically there are mi/mr variants, but define those once we need them
@@ -370,19 +378,19 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
         defvar innerGprType = !cast<AMD64_GPRegisterType>("gpr"#innerBitwidth);
 
         // movsx
-        let operands = (ins gprType:$src1, innerGprType:$src2) in
-        def MOVSX # "r" # bitwidth # "r" # innerBitwidth: Instruction<"MOVSX" # "r" # bitwidth # "r" # innerBitwidth, [Operand0IsDestN<0>]>;
+        let operands = (ins innerGprType:$src1) in
+        def MOVSX # "r" # bitwidth # "r" # innerBitwidth: Instruction<"MOVSX" # "r" # bitwidth # "r" # innerBitwidth>;
 
-        let operands = (ins gprType:$src1, memLoc:$src2) in
-        def MOVSX # "r" # bitwidth # "m" # innerBitwidth: Instruction<"MOVSX" # "r" # bitwidth # "m" # innerBitwidth, [Operand0IsDestN<0>]>;
+        let operands = (ins memLoc:$src1) in
+        def MOVSX # "r" # bitwidth # "m" # innerBitwidth: Instruction<"MOVSX" # "r" # bitwidth # "m" # innerBitwidth>;
 
         // movzx
         if !not(!eq(innerBitwidth, "32")) then{
-          let operands = (ins gprType:$src1, innerGprType:$src2) in
-          def MOVZX # "r" # bitwidth # "r" # innerBitwidth: Instruction<"MOVZX" # "r" # bitwidth # "r" # innerBitwidth, [Operand0IsDestN<0>]>;
+          let operands = (ins innerGprType:$src1) in
+          def MOVZX # "r" # bitwidth # "r" # innerBitwidth: Instruction<"MOVZX" # "r" # bitwidth # "r" # innerBitwidth>;
 
-          let operands = (ins gprType:$src1, memLoc:$src2) in
-          def MOVZX # "r" # bitwidth # "m" # innerBitwidth: Instruction<"MOVZX" # "r" # bitwidth # "m" # innerBitwidth, [Operand0IsDestN<0>]>;
+          let operands = (ins memLoc:$src1) in
+          def MOVZX # "r" # bitwidth # "m" # innerBitwidth: Instruction<"MOVZX" # "r" # bitwidth # "m" # innerBitwidth>;
         }
       }
     }
@@ -455,6 +463,20 @@ defm "" : JccAndInverted<"JL", "JGE">;
 defm "" : JccAndInverted<"JLE", "JG">;
 defm "" : JccAndInverted<"JC", "JNC">; // == "JB", "JAE"
 defm "" : JccAndInverted<"JBE", "JA">;
+
+// TODO CMOVcc
+
+// SETcc
+class SETcc<string menmonic> : Instruction<menmonic, []> {
+  let operands = (ins);
+  let results = (outs gpr8:$result);
+}
+
+def SETZ8r  : SETcc<"SETZ8r">;  def SETNZ8r : SETcc<"SETNZ8r">; // == SETE8r, SETNE8r
+def SETL8r  : SETcc<"SETL8r">;  def SETGE8r : SETcc<"SETGE8r">;
+def SETLE8r : SETcc<"SETLE8r">; def SETG8r  : SETcc<"SETG8r">;
+def SETC8r  : SETcc<"SETC8r">;  def SETNC8r : SETcc<"SETNC8r">; // == SETB8r, SETAE8r
+def SETBE8r : SETcc<"SETBE8r">; def SETA8r  : SETcc<"SETA8r">;
 
 
 // similar to func.call

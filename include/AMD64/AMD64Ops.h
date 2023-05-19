@@ -64,10 +64,15 @@ namespace amd64{
 namespace amd64{
 
 // aliases
-using JE = JZ;
+using JE  = JZ;
 using JNE = JNZ;
-using JB = JC;
+using JB  = JC;
 using JAE = JNC;
+
+using SETE8r  = SETZ8r;
+using SETNE8r = SETNZ8r;
+using SETB8r  = SETC8r;
+using SETAE8r = SETNC8r;
 
 } // end namespace amd64
 

@@ -27,12 +27,13 @@ using NOT_AVAILABLE = int;
 template<
     typename opClassToMatch, unsigned bitwidth,
     auto lambda,
-    typename INSTrr = NOT_AVAILABLE, typename INSTri = NOT_AVAILABLE, typename INSTrm = NOT_AVAILABLE, typename INSTmi = NOT_AVAILABLE, typename INSTmr = NOT_AVAILABLE,
     // default template parameters start
+    typename INSTrr = NOT_AVAILABLE, typename INSTri = NOT_AVAILABLE, typename INSTrm = NOT_AVAILABLE, typename INSTmi = NOT_AVAILABLE, typename INSTmr = NOT_AVAILABLE,
     int benefit = 1,
-    auto bitwidthMatchLambda = []<unsigned innerBitwidth, typename thisType, typename OpAdaptor>(thisType thiis, opClassToMatch op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter){ 
+// TODO this crashes clangd for some reason
+    auto bitwidthMatchLambda = []<unsigned /* innerBitwidth */, typename thisType, typename OpAdaptor>(thisType thiis, opClassToMatch op, OpAdaptor, mlir::ConversionPatternRewriter& rewriter){
         auto typeToMatch= thiis->getTypeConverter()->convertType(op.getType()).template dyn_cast<amd64::RegisterTypeInterface>();
-        // TODO might have to become actual match failure at some point
+        // TODO might have to become actual match failure at some point, when we have more than just register types
         assert(typeToMatch && "expected register type");
         // TODO this assertion currently fails wrongly on a conditional branch
         //assert((op->getNumOperands() == 0 || typeToMatch == thiis->getTypeConverter()->convertType(op->getOperand(0).getType()).template dyn_cast<amd64::RegisterTypeInterface>()) && "this simple bitwidth matcher assumes that the type of the op and the type of the operands are the same");
@@ -125,7 +126,29 @@ auto cmpIBitwidthMatcher =
         return mlir::failure(!success);
     };
 // TODO specify using benefits, that this has to have lower priority than the version which matches a jump with a cmp as an argument (which doesn't exist yet).
-PATTERN(CmpIPat, mlir::arith::CmpIOp, amd64::CMP, binOpMatchReplace, 1, cmpIBitwidthMatcher);
+auto cmpIMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
+     typename CMPrr, typename CMPri, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE
+     >(mlir::arith::CmpIOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
+
+    auto loc = op->getLoc();
+    rewriter.create<CMPrr>(loc, adaptor.getLhs(), adaptor.getRhs());
+
+    using mlir::arith::CmpIPredicate;
+    switch(op.getPredicate()){
+        case CmpIPredicate::eq:  rewriter.replaceOpWithNewOp<amd64::SETE8r>(op);  break;
+        case CmpIPredicate::ne:  rewriter.replaceOpWithNewOp<amd64::SETNE8r>(op); break;
+        case CmpIPredicate::slt: rewriter.replaceOpWithNewOp<amd64::SETL8r>(op);  break;
+        case CmpIPredicate::sle: rewriter.replaceOpWithNewOp<amd64::SETLE8r>(op); break;
+        case CmpIPredicate::sgt: rewriter.replaceOpWithNewOp<amd64::SETG8r>(op);  break;
+        case CmpIPredicate::sge: rewriter.replaceOpWithNewOp<amd64::SETGE8r>(op); break;
+        case CmpIPredicate::ult: rewriter.replaceOpWithNewOp<amd64::SETB8r>(op);  break;
+        case CmpIPredicate::ule: rewriter.replaceOpWithNewOp<amd64::SETBE8r>(op); break;
+        case CmpIPredicate::ugt: rewriter.replaceOpWithNewOp<amd64::SETA8r>(op);  break;
+        case CmpIPredicate::uge: rewriter.replaceOpWithNewOp<amd64::SETAE8r>(op); break;
+    }
+    return mlir::success();
+};
+PATTERN(CmpIPat, mlir::arith::CmpIOp, amd64::CMP, cmpIMatchReplace, 1, cmpIBitwidthMatcher);
 
 template <bool isRem>
 auto matchDivRem = []<unsigned actualBitwidth, typename OpAdaptor,
@@ -200,11 +223,11 @@ struct MatchCondBr : public mlir::OpConversionPattern<mlir::cf::CondBranchOp> {
 
         if(auto constI1 = mlir::dyn_cast<mlir::arith::ConstantIntOp>(op.getCondition().getDefiningOp())){
             // unconditional branch, if it's a constant condition
-            if(constI1.value()){
+            if(constI1.value())
                 rewriter.replaceOpWithNewOp<amd64::JMP>(op, ops1, block1);
-            }else{
+            else
                 rewriter.replaceOpWithNewOp<amd64::JMP>(op, ops2, block2);
-            }
+
         }else{
             // conditional branch
             using mlir::arith::CmpIPredicate;
@@ -222,9 +245,89 @@ struct MatchCondBr : public mlir::OpConversionPattern<mlir::cf::CondBranchOp> {
                 case CmpIPredicate::uge: rewriter.replaceOpWithNewOp<amd64::JAE>(op, ops1, ops2, block1, block2); break;
             }
         }
+
         return mlir::success();
     }
 };
+
+// sign/zero extensions
+
+/// ZExt from i1 pattern
+/// TODO maybe do this pattern for sign extend? But sign extending an i1 seems pretty useless
+struct ExtUII1Pat : mlir::OpConversionPattern<mlir::arith::ExtUIOp> {
+    ExtUII1Pat(mlir::TypeConverter& typeConverter, mlir::MLIRContext* context) : mlir::OpConversionPattern<mlir::arith::ExtUIOp>(typeConverter, context, 1){}
+
+    mlir::LogicalResult matchAndRewrite(mlir::arith::ExtUIOp zextOp, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
+        // we're only matching i1s here
+        if(!zextOp.getIn().getType().isInteger(1))
+            return rewriter.notifyMatchFailure(zextOp, "this pattern only extends i1s");
+
+        // to be precise, we're only matching cmps for the moment, although this might change later
+        auto cmpi = mlir::dyn_cast<mlir::arith::CmpIOp>(zextOp.getIn().getDefiningOp());
+        if(!cmpi)
+            return rewriter.notifyMatchFailure(zextOp, "only cmps are supported for i1 extension for now");
+
+        assert(zextOp.getOut().getType().isIntOrFloat() && "extui with non-int result type");
+
+        // TODO this doesn't make any sense without a CMOVcc/SETcc for/after the cmp
+        switch(zextOp.getOut().getType().getIntOrFloatBitWidth()){
+            case 8:  rewriter.replaceOp(zextOp, adaptor.getIn() /* the cmpi should be replaced by a SETcc in another pattern, as this sets an 8 bit register anyway, we don't need to do anything here */); break;
+            case 16: rewriter.replaceOpWithNewOp<amd64::MOVZXr16r8>(zextOp, adaptor.getIn()); break;
+            case 32: rewriter.replaceOpWithNewOp<amd64::MOVZXr32r8>(zextOp, adaptor.getIn()); break;
+            case 64: rewriter.replaceOpWithNewOp<amd64::MOVZXr64r8>(zextOp, adaptor.getIn()); break;
+
+            default:
+                return rewriter.notifyMatchFailure(zextOp, "unsupported bitwidth for i1 extension");
+        }
+        return mlir::success();
+    }
+};
+
+
+/// the inBitwidth matches the bitwidth of the input operand to the extui, which needs to be different per pattern, because the corresponding instruction differs.
+template<unsigned inBitwidth>
+/// the outBitwidth matches the bitwidth of the result of the extui, which also affects which instruction is used.
+auto extuiBitwidthMatcher = []<unsigned outBitwidth, typename thisType, typename OpAdaptor>(thisType thiis, mlir::arith::CmpIOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter){
+    // out bitwidth
+    auto typeToMatch= thiis->getTypeConverter()->convertType(op.getType()).template dyn_cast<amd64::RegisterTypeInterface>();
+    // TODO might have to become actual match failure at some point, when we have more than just register types
+    assert(typeToMatch && "expected register type");
+    if(typeToMatch.getBitwidth() != outBitwidth)
+        return rewriter.notifyMatchFailure(op, "extui out bitwidth mismatch");
+
+    // in bitwidth
+    auto typeToMatchIn = thiis->getTypeConverter()->convertType(adaptor.getIn().getType()).template dyn_cast<amd64::RegisterTypeInterface>();
+    // TODO might have to become actual match failure at some point, when we have more than just register types
+    assert(typeToMatchIn && "expected register type");
+    if(typeToMatchIn.getBitwidth() != inBitwidth)
+        return rewriter.notifyMatchFailure(op, "extui in bitwidth mismatch");
+
+    return mlir::success();
+};
+
+auto extuiMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
+     typename MOVZX
+     >(mlir::arith::ExtUIOp zextOp, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
+    rewriter.replaceOpWithNewOp<MOVZX>(zextOp, adaptor.getIn());
+    return mlir::success();
+};
+
+/// only for 16-64 bits outBitwidth, for 8 we have a special pattern. There are more exceptions: Because not all versions of MOVZX exist, MOVZXr8r8 wouldn't make sense, MOVZXr64r32 is just a MOV, etc.
+#define EXTUI_PAT(outBitwidth, inBitwidth) \
+    using ExtUIPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::ExtUIOp, outBitwidth, extuiMatchReplace, amd64::MOVZX ## r ## outBitwidth ## r ## inBitwidth, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, extuiBitwidthMatcher<inBitwidth>>;
+
+// generalizable cases:
+EXTUI_PAT(16, 8);
+EXTUI_PAT(32, 8); EXTUI_PAT(32, 16);
+EXTUI_PAT(64, 8); EXTUI_PAT(64, 16);
+
+// cases that are still valid in mlir, but not covered here:
+// - 32 -> 64 (just a MOV)
+// - any weird integer types, but we ignore those anyway
+using ExtUIPat64_32 = MatchRMI<mlir::arith::ExtUIOp, 64, extuiMatchReplace, amd64::MOV32rr, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, extuiBitwidthMatcher<32>>;
+// TODO add the patterns to the set in the prototypeIsel below
+
+// TODO sign extend
 
 } // end anonymous namespace
 
@@ -295,10 +398,10 @@ void prototypeIsel(mlir::Operation* regionOp){
     mlir::TypeConverter typeConverter;
     typeConverter.addConversion([](mlir::IntegerType type) -> std::optional<mlir::Type>{
         switch(type.getIntOrFloatBitWidth()) {
+            // cmp is not matched using the result type (always i1), but with the operand type, so this doesn't apply there.
+            case 1:  // TODO  Internally, MLIR seems to need to convert i1's though, so we will handle them as i8 for now, also because SETcc returns i8.
             case 8:  return amd64::gpr8Type ::get(type.getContext());
             case 16: return amd64::gpr16Type::get(type.getContext());
-            // cmp is not matched using the result type (always i1), but with the operand type, so this doesn't apply there.
-            case 1:  // TODO  Internally, MLIR seems to need to convert i1's though, so we will handle them as i32 for now.
             case 32: return amd64::gpr32Type::get(type.getContext());
             case 64: return amd64::gpr64Type::get(type.getContext());
 
