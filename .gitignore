@@ -4,6 +4,7 @@ monaco
 main
 out
 
+.cache/**
 .*-cache/**
 # clangd is crashing so much now, that I need to use CLion *next to nvim* to get decent completion
 .idea/**
