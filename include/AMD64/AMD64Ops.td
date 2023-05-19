@@ -296,12 +296,12 @@ defm ADD : Instr8_16_32_64_rmi<"ADD">;
 */
 
 // ops defined through multiclasses
-defm ADD : Instr8_16_32_64_rmi<"ADD", [Operand0IsDestN<0>]>;
-defm SUB : Instr8_16_32_64_rmi<"SUB", [Operand0IsDestN<0>]>;
+defm ADD : Instr8_16_32_64_rmi<"ADD", [Pure, Operand0IsDestN<0>]>;
+defm SUB : Instr8_16_32_64_rmi<"SUB", [Pure, Operand0IsDestN<0>]>;
 defm CMP : Instr8_16_32_64_rmi<"CMP">; // not pure, because the flags aren't modeled as a result
-defm AND : Instr8_16_32_64_rmi<"AND", [Operand0IsDestN<0>]>;
-defm OR : Instr8_16_32_64_rmi<"OR", [Operand0IsDestN<0>]>;
-defm XOR : Instr8_16_32_64_rmi<"XOR", [Operand0IsDestN<0>]>;
+defm AND : Instr8_16_32_64_rmi<"AND", [Pure, Operand0IsDestN<0>]>;
+defm OR  : Instr8_16_32_64_rmi<"OR",  [Pure, Operand0IsDestN<0>]>;
+defm XOR : Instr8_16_32_64_rmi<"XOR", [Pure, Operand0IsDestN<0>]>;
 
 // miscellaneous 'special' instructions dependant bitwidth
 foreach bitwidth = ["8", "16", "32", "64"] in {
@@ -481,7 +481,8 @@ def SETBE8r : SETcc<"SETBE8r">; def SETA8r  : SETcc<"SETA8r">;
 
 // similar to func.call
 def CALL : Instruction<"CALL">{
-  let operands = (ins FunctionType:$callee, Variadic<AnyType>:$args);
+  // TODO maybe use a block instead of a function type later on
+  let operands = (ins FlatSymbolRefAttr:$callee, Variadic<AnyType>:$operands);
   let results = (outs gpr64:$ret); // only single return value for now. TODO this might be a problem with instructions which expect smaller results. -> How do we handle a truncate (same problem as `arith.trunc`)?
 }
 
