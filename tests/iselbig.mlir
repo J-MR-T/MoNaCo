@@ -32,7 +32,7 @@ module {
     %25 = "arith.cmpi"(%19, %15) <{predicate = 5 : i64}> : (i64, i64) -> i1
     %26 = "arith.extui"(%25) : (i1) -> i64
     %27 = "arith.constant"() <{value = 7 : i64}> : () -> i64
-    %28 = "arith.andi"(%15, %27) : (i64, i64) -> i64
+    %28 = "arith.andi"(%19, %27) : (i64, i64) -> i64
     %29 = "arith.shli"(%26, %28) : (i64, i64) -> i64
     "cf.cond_br"(%25)[^bb2, ^bb1] {operand_segment_sizes = array<i32: 1, 0, 0>} : (i1) -> ()
   ^bb1:  // 2 preds: ^bb0, ^bb1
