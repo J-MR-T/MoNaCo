@@ -59,7 +59,7 @@ void printHelp(const char *argv0) {
 
         if (arg.pos != 0)
             llvm::errs() << " (or positional, at position " << arg.pos << ")";
-        else if (arg.flag)
+        else if (arg.flag())
             llvm::errs() << " (flag)";
 
         llvm::errs() << "\n    "
@@ -89,7 +89,7 @@ InsertBeforeQueryMap<Arg, std::string>& parse(int argc, char *argv[]) {
     for (int i = 1; i < argc; ++i) {
         for (const auto &arg : args) {
             auto lastArg = string{argv[i - 1]};
-            if (!arg.flag && (("-" + arg.shortOpt) == lastArg||
+            if (!arg.flag() && (("-" + arg.shortOpt) == lastArg||
                         ("--" + arg.longOpt) == lastArg)) {
                 // the current arg is the value to another argument, so we dont count it
                 goto cont;
@@ -108,7 +108,7 @@ cont:
 
     // long/short/flags
     for (const auto &arg : args) {
-        if (!arg.flag) {
+        if (!arg.flag()) {
             std::regex matchShort{" -" + arg.shortOpt + "\\s*([^\\s]+)"};
             std::regex matchLong{" --" + arg.longOpt + "(\\s*|=)([^\\s=]+)"};
             std::smatch match;
@@ -141,7 +141,7 @@ cont:
     parsedArgs.finalize(true);
 
     for(const auto& arg : args)
-        if (arg.required && !parsedArgs.contains(arg)) {
+        if (arg.required() && !parsedArgs.contains(arg)) {
             llvm::errs() << "Missing required argument: -" << arg.shortOpt << "/--" << arg.longOpt << "\n";
             missingRequired = true;
         }

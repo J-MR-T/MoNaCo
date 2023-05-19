@@ -236,7 +236,9 @@ void testOpCreation(mlir::ModuleOp mod){
 int main(int argc, char *argv[]) {
     ArgParse::parse(argc, argv);
 
-    if(ArgParse::args.help()){
+    auto& args = ArgParse::args;
+
+    if(args.help()){
         ArgParse::printHelp(argv[0]);
         return EXIT_SUCCESS;
     }
@@ -253,14 +255,14 @@ int main(int argc, char *argv[]) {
 
     auto owningModRef = readMLIRMod(inputFile, ctx);
 
-    (void) owningModRef;
+    if(args.isel()){
+        prototypeIsel(*owningModRef);
+        return EXIT_SUCCESS;
+    }
 
     mlir::OpBuilder builder(&ctx);
     auto testMod = mlir::OwningOpRef<mlir::ModuleOp>(builder.create<mlir::ModuleOp>(builder.getUnknownLoc()));
     testOpCreation(*testMod);
 
-    testMod = mlir::OwningOpRef<mlir::ModuleOp>(builder.create<mlir::ModuleOp>(builder.getUnknownLoc()));
-    prototypeIsel(*testMod);
-
-    return 0;
+    return EXIT_SUCCESS;
 }

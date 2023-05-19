@@ -160,14 +160,16 @@ template struct InsertBeforeQueryMap<int, llvm::SmallString<32>>;
 // === argparse === 
 
 namespace ArgParse{
+    enum kind : uint32_t{
+        REQUIRED = 0x1,
+        FLAG = 0x2,
+    };
     struct Arg{
         std::string shortOpt{""};
         std::string longOpt{""};
         uint32_t pos{0}; //if 0, no positional arg
         std::string description{""};
-        bool required{false};
-        bool flag{false};
-
+        uint32_t kind{0};
 
         // define operators necessary for ordered map
         bool operator<(const Arg& other) const{
@@ -184,24 +186,33 @@ namespace ArgParse{
                 return longOpt == other.longOpt;
         }
 
-        // returns whether the arg has a value/has been set
+        /// returns whether the arg has a value/has been set
         bool operator()() const;
 
-        // returns the args value
+        /// returns the args value
         std::string_view operator*() const;
+
+        bool required() const{
+            return kind & REQUIRED;
+        }
+
+        bool flag() const{
+            return kind & FLAG;
+        }
     };
 
     extern InsertBeforeQueryMap<Arg, std::string> parsedArgs;
     
     // struct for all possible arguments
     const struct {
-        const Arg help{  "h", "help"  , 0, "Show this help message and exit", false, true};
-        const Arg input{ "i", "input" , 1, "Input file"                     , false, false};
-        const Arg output{"o", "output", 2, "Output file"                    , false, false};
+        const Arg help{  "h", "help"  , 0, "Show this help message and exit", FLAG};
+        const Arg input{ "i", "input" , 1, "Input file"                     , REQUIRED};
+        const Arg output{"o", "output", 2, "Output file"};
+        const Arg isel{  "s", "isel"  , 0, "Just do Instruction Selection"  , FLAG};
 
-        const Arg sentinel{"", "", 0, "", false, false};
+        const Arg sentinel{"", "", 0, ""};
 
-        const Arg* const all[4] = {&help, &input, &output, &sentinel};
+        const Arg* const all[5] = {&help, &input, &output, &isel, &sentinel};
         
         // iterator over all
         const Arg* begin() const{
@@ -209,7 +220,7 @@ namespace ArgParse{
         }
 
         const Arg* end() const{
-            return all[3];
+            return all[(sizeof(all)/sizeof(all[0])) - 1];
         }
     } args;
 
@@ -218,7 +229,7 @@ namespace ArgParse{
     }
 
     inline std::string_view Arg::operator*() const{
-        assert((required || parsedArgs.contains(*this)) && "Trying to access optional argument that has not been set");
+        assert((required() || parsedArgs.contains(*this)) && "Trying to access optional argument that has not been set");
         return parsedArgs[*this];
     }
 
