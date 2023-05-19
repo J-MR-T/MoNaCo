@@ -27,28 +27,35 @@
 #include "AMD64/AMD64Types.h"
 
 namespace amd64{
-    /// Get the register of an OpResult of any instruction.
-    /// The result number is used to figure out which register the result belongs to.
-    inline FeReg registerOf(mlir::OpResult result){
-        assert(mlir::isa<amd64::InstructionOpInterface>(result.getDefiningOp()) && "expected an instruction op");
 
-        auto& regs = mlir::dyn_cast<amd64::InstructionOpInterface>(result.getDefiningOp()).instructionInfo().regs;
-        if(result.getResultNumber() == 0){
-            return regs.getReg1();
-        }else{
-            assert(result.getResultNumber() == 1 && "Operands seems to have more than 2 results");
-            return regs.getReg2();
-        }
-    }
-    /// Get the register of an Operation of an instruction with exactly one result.
-    inline FeReg registerOf(mlir::Operation* op){
-        assert(mlir::isa<amd64::InstructionOpInterface>(op) && "expected an instruction op");
+// TODO decide: should this always return the register constraint, or should we leave it up to the regallocator to set those constraints as the actual registers later on?
+// TODO also: Is there some way to set return register constraints on ops on creation? That might save a bit of time. Although do that at the end, no premature optimization :).
 
-        auto& regs = mlir::dyn_cast<amd64::InstructionOpInterface>(op).instructionInfo().regs;
-        assert(op->getNumResults() == 1 && "Operands seems to have more than 1 result");
+/// Get the register of an OpResult of any instruction.
+/// The result number is used to figure out which register the result belongs to.
+inline FeReg registerOf(mlir::OpResult result){
+    auto instr = mlir::dyn_cast<amd64::InstructionOpInterface>(result.getDefiningOp());
+    assert(instr && "expected an instruction op");
+
+    auto& regs = instr.instructionInfo().regs;
+    if(result.getResultNumber() == 0){
         return regs.getReg1();
+    }else{
+        assert(result.getResultNumber() == 1 && "Operands seems to have more than 2 results");
+        return regs.getReg2();
     }
-    // TODO handle block args at some point
+}
+/// Get the register of an Operation of an instruction with exactly one result.
+inline FeReg registerOf(mlir::Operation* op){
+    auto instr = mlir::dyn_cast<amd64::InstructionOpInterface>(op);
+    assert(instr && "expected an instruction op");
+
+    auto& regs = instr.instructionInfo().regs;
+    assert(op->getNumResults() == 1 && "Operands seems to have more than 1 result");
+    return regs.getReg1();
+}
+// TODO handle block args at some point
+
 } // end namespace amd64
 
 // my own interfaces are included in AMD64Types.h
