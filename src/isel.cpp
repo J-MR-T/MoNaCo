@@ -24,35 +24,49 @@ namespace {
 using NOT_AVAILABLE = int;
 
 /// somewhat generic pattern matching struct
-template<typename opClassToMatch, unsigned bitwidth, typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr, auto lambda, int benefit = 1>
+template<
+    typename opClassToMatch, unsigned bitwidth,
+    auto lambda,
+    typename INSTrr = NOT_AVAILABLE, typename INSTri = NOT_AVAILABLE, typename INSTrm = NOT_AVAILABLE, typename INSTmi = NOT_AVAILABLE, typename INSTmr = NOT_AVAILABLE,
+    // default template parameters start
+    int benefit = 1,
+    auto bitwidthMatchLambda = []<unsigned innerBitwidth, typename thisType, typename OpAdaptor>(thisType thiis, opClassToMatch op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter){ 
+        auto typeToMatch= thiis->getTypeConverter()->convertType(op.getType()).template dyn_cast<amd64::RegisterTypeInterface>();
+        // TODO might have to become actual match failure at some point
+        assert(typeToMatch && "expected register type");
+        // TODO this assertion currently fails wrongly on a conditional branch
+        //assert((op->getNumOperands() == 0 || typeToMatch == thiis->getTypeConverter()->convertType(op->getOperand(0).getType()).template dyn_cast<amd64::RegisterTypeInterface>()) && "this simple bitwidth matcher assumes that the type of the op and the type of the operands are the same");
+
+        if(typeToMatch.getBitwidth() != bitwidth)
+            return rewriter.notifyMatchFailure(op, "bitwidth mismatch");
+
+        return mlir::success();
+    }
+>
 struct MatchRMI : public mlir::OpConversionPattern<opClassToMatch>{
     MatchRMI(mlir::TypeConverter& typeConverter, mlir::MLIRContext* context) : mlir::OpConversionPattern<opClassToMatch>(typeConverter, context, benefit){}
     using OpAdaptor = typename mlir::OpConversionPattern<opClassToMatch>::OpAdaptor;
 
     mlir::LogicalResult matchAndRewrite(opClassToMatch op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
-        auto typeToMatch= this->template getTypeConverter()->convertType(op.getType()).template dyn_cast<amd64::RegisterTypeInterface>();
-        // TODO might have to become actual match failure at some point
-        assert(typeToMatch && "expected register type");
-
-        if(typeToMatch.getBitwidth() != bitwidth)
-            return rewriter.notifyMatchFailure(op, "bitwidth mismatch");
+        auto bitwidthMatchResult = bitwidthMatchLambda.template operator()<bitwidth, decltype(this), OpAdaptor>(this, op, adaptor, rewriter);
+        if(bitwidthMatchResult.failed())
+            return bitwidthMatchResult;
 
         return lambda.template operator()<bitwidth, OpAdaptor, INSTrr, INSTri, INSTrm, INSTmi, INSTmr>(op, adaptor, rewriter);
     }
 };
 
 #define PATTERN_FOR_BITWIDTH(bitwidth, patternName, opClassToMatch, opPrefixToReplaceWith, lambda, ...)                                                                                                                   \
-    using patternName ##  bitwidth = MatchRMI<opClassToMatch,  bitwidth,                                                                                                                                                  \
+    using patternName ##  bitwidth = MatchRMI<opClassToMatch,  bitwidth,  lambda,                                                                                                                                         \
         opPrefixToReplaceWith ##  bitwidth ## rr, opPrefixToReplaceWith ##  bitwidth ## ri, opPrefixToReplaceWith ##  bitwidth ## rm, opPrefixToReplaceWith ##  bitwidth ## mi, opPrefixToReplaceWith ##  bitwidth ## mr, \
-        lambda,## __VA_ARGS__ >;
+        ## __VA_ARGS__ >;
 
-#define PATTERN(patternName, opClassToMatch, opPrefixToReplaceWith, lambda, ...)              \
+#define PATTERN(patternName, opClassToMatch, opPrefixToReplaceWith, lambda, ...)                         \
     PATTERN_FOR_BITWIDTH(8,  patternName, opClassToMatch, opPrefixToReplaceWith, lambda,## __VA_ARGS__ ) \
     PATTERN_FOR_BITWIDTH(16, patternName, opClassToMatch, opPrefixToReplaceWith, lambda,## __VA_ARGS__ ) \
     PATTERN_FOR_BITWIDTH(32, patternName, opClassToMatch, opPrefixToReplaceWith, lambda,## __VA_ARGS__ ) \
     PATTERN_FOR_BITWIDTH(64, patternName, opClassToMatch, opPrefixToReplaceWith, lambda,## __VA_ARGS__ )
 
-// TODO it would be nice to use folds for matching mov's and folding them into the add, but that's not possible right now, so we either have to match it here (see commit 8df6c7d), or ignore it for now
 // TODO an alternative would be to generate custom builders for the RR versions, which check if their argument is a movxxri and then fold it into the RR, resulting in an RI version. That probably wouldn't work because the returned thing would of course expect an RR version, not an RI version
 auto binOpMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr
@@ -61,6 +75,7 @@ auto binOpMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
     return mlir::success();
 };
 
+// it would be nice to use folds for matching mov's and folding them into the add, but that's not possible right now, so we either have to match it here, or ignore it for now (binOpMatchReplace's approach)
 // I finally found out when to use the OpAdaptor and when not to: The OpAdaptor seems to give access to the operands in their already converted form, whereas the op itself still has all operands in their original form.
 // In this case we need to access the operand in the original form, to check if it was a constant, we're not interested in what it got converted to
 auto binOpAndImmMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
@@ -93,11 +108,24 @@ auto binOpAndImmMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
 // TODO this binOpAndImmMatchReplace could be split up into multiple patterns, but that might be slower
 PATTERN(AddIPat, mlir::arith::AddIOp, amd64::ADD, binOpAndImmMatchReplace, 2);
 PATTERN(SubIPat, mlir::arith::SubIOp, amd64::SUB, binOpMatchReplace);
-// TODO specify using benefits, that this has to have lower priority than the version which matches a jump with a cmp as an argument (which doesn't exist yet).
-PATTERN(CmpIPat, mlir::arith::CmpIOp, amd64::CMP, binOpMatchReplace);
 PATTERN(AndIPat, mlir::arith::AndIOp, amd64::AND, binOpMatchReplace);
 PATTERN(OrIPat,  mlir::arith::OrIOp,  amd64::OR,  binOpMatchReplace);
 PATTERN(XOrIPat, mlir::arith::XOrIOp, amd64::XOR, binOpMatchReplace);
+
+auto cmpIBitwidthMatcher =
+    []<unsigned innerBitwidth, typename thisType, typename OpAdaptor>(thisType thiis, mlir::arith::CmpIOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter){
+        // cmp always has i1 as a result type, so we need to match the arguments' bitwidths
+        auto tc = thiis->getTypeConverter();
+        auto lhsNewType = tc->convertType(op.getLhs().getType()).template dyn_cast<amd64::RegisterTypeInterface>();
+        auto rhsNewType = tc->convertType(op.getRhs().getType()).template dyn_cast<amd64::RegisterTypeInterface>();
+
+        assert(lhsNewType && rhsNewType && "cmp's operands should be convertible to register types");
+
+        bool success = lhsNewType.getBitwidth() == innerBitwidth && lhsNewType == rhsNewType;
+        return mlir::failure(!success);
+    };
+// TODO specify using benefits, that this has to have lower priority than the version which matches a jump with a cmp as an argument (which doesn't exist yet).
+PATTERN(CmpIPat, mlir::arith::CmpIOp, amd64::CMP, binOpMatchReplace, 1, cmpIBitwidthMatcher);
 
 template <bool isRem>
 auto matchDivRem = []<unsigned actualBitwidth, typename OpAdaptor,
@@ -111,29 +139,27 @@ auto matchDivRem = []<unsigned actualBitwidth, typename OpAdaptor,
     return mlir::success();
 };
 
-#define MULI_DIVI_PAT(bitwidth)                                                                   \
-    using MulIPat ## bitwidth = MatchRMI<mlir::arith::MulIOp, bitwidth,                           \
-        amd64::MUL ## bitwidth ## r, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE,  \
-        binOpMatchReplace>;                                                                       \
-    using DivUIPat ## bitwidth = MatchRMI<mlir::arith::DivUIOp, bitwidth,                         \
-        amd64::DIV ## bitwidth ## r, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE,  \
-        matchDivRem<false>>;                                                                      \
-    using DivSIPat ## bitwidth = MatchRMI<mlir::arith::DivSIOp, bitwidth,                         \
-        amd64::IDIV ## bitwidth ## r, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, \
-        matchDivRem<false>>;                                                                      \
-    using RemUIPat ## bitwidth = MatchRMI<mlir::arith::RemUIOp, bitwidth,                         \
-        amd64::DIV ## bitwidth ## r, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE,  \
-        matchDivRem<true>>;                                                                       \
-    using RemSIPat ## bitwidth = MatchRMI<mlir::arith::RemSIOp, bitwidth,                         \
-        amd64::IDIV ## bitwidth ## r, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, \
-        matchDivRem<true>>;
+#define MULI_DIVI_PAT(bitwidth)                                                                                          \
+    using MulIPat ## bitwidth = MatchRMI<mlir::arith::MulIOp, bitwidth, binOpMatchReplace, amd64::MUL ## bitwidth ## r>; \
+    using DivUIPat ## bitwidth = MatchRMI<mlir::arith::DivUIOp, bitwidth,                                                \
+        matchDivRem<false>,                                                                                              \
+        amd64::DIV ## bitwidth ## r>;                                                                                    \
+    using DivSIPat ## bitwidth = MatchRMI<mlir::arith::DivSIOp, bitwidth,                                                \
+        matchDivRem<false>,                                                                                              \
+        amd64::IDIV ## bitwidth ## r>;                                                                                   \
+    using RemUIPat ## bitwidth = MatchRMI<mlir::arith::RemUIOp, bitwidth,                                                \
+        matchDivRem<true>,                                                                                               \
+        amd64::DIV ## bitwidth ## r>;                                                                                    \
+    using RemSIPat ## bitwidth = MatchRMI<mlir::arith::RemSIOp, bitwidth,                                                \
+        matchDivRem<true>,                                                                                               \
+        amd64::IDIV ## bitwidth ## r>;
 
 MULI_DIVI_PAT(8); MULI_DIVI_PAT(16); MULI_DIVI_PAT(32); MULI_DIVI_PAT(64);
 
-#define SHIFT_PAT(bitwidth) \
-    using ShlIPat ## bitwidth = MatchRMI<mlir::arith::ShLIOp, bitwidth, amd64::SHL ## bitwidth ## rr, amd64::SHL ## bitwidth ## ri, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, binOpMatchReplace>; \
-    using ShrUIPat ## bitwidth = MatchRMI<mlir::arith::ShRUIOp, bitwidth, amd64::SHR ## bitwidth ## rr, amd64::SHL ## bitwidth ## ri, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, binOpMatchReplace>; \
-    using ShrSIPat ## bitwidth = MatchRMI<mlir::arith::ShRSIOp, bitwidth, amd64::SAR ## bitwidth ## rr, amd64::SHL ## bitwidth ## ri, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, binOpMatchReplace>;
+#define SHIFT_PAT(bitwidth)                                                                                                                               \
+    using ShlIPat ## bitwidth  = MatchRMI<mlir::arith::ShLIOp,  bitwidth, binOpMatchReplace, amd64::SHL ## bitwidth ## rr, amd64::SHL ## bitwidth ## ri>; \
+    using ShrUIPat ## bitwidth = MatchRMI<mlir::arith::ShRUIOp, bitwidth, binOpMatchReplace, amd64::SHR ## bitwidth ## rr, amd64::SHL ## bitwidth ## ri>; \
+    using ShrSIPat ## bitwidth = MatchRMI<mlir::arith::ShRSIOp, bitwidth, binOpMatchReplace, amd64::SAR ## bitwidth ## rr, amd64::SHL ## bitwidth ## ri>;
 
 SHIFT_PAT(8); SHIFT_PAT(16); SHIFT_PAT(32); SHIFT_PAT(64);
 
@@ -145,6 +171,16 @@ auto movMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
 };
 
 PATTERN(ConstantIntPat, mlir::arith::ConstantIntOp, amd64::MOV, movMatchReplace);
+
+// branches
+
+auto branchMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
+     typename JMP /* it's weird that leaving out the NOT_AVAILABLE works here, but not in matchDivRem */
+     >(mlir::cf::BranchOp br, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
+    rewriter.replaceOpWithNewOp<JMP>(br, br.getDestOperands(), br.getDest());
+    return mlir::success();
+};
+using BrPat = MatchRMI<mlir::cf::BranchOp, 64, branchMatchReplace, amd64::JMP, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, []{return mlir::success(); }>;
 
 struct MatchCondBr : public mlir::OpConversionPattern<mlir::cf::CondBranchOp> {
     MatchCondBr(mlir::TypeConverter& typeConverter, mlir::MLIRContext* context) : mlir::OpConversionPattern<mlir::cf::CondBranchOp>(typeConverter, context, 3){}
@@ -259,13 +295,14 @@ void prototypeIsel(mlir::Operation* regionOp){
     mlir::TypeConverter typeConverter;
     typeConverter.addConversion([](mlir::IntegerType type) -> std::optional<mlir::Type>{
         switch(type.getIntOrFloatBitWidth()) {
-            case 1: return  amd64::gpr8Type ::get(type.getContext()); // TODO lets see if this makes sense. It doesn't. But the bigger problem is, that this means only the cmp8 pattern ever gets matched, which doesn't make any sense, cmp should be matched depending on the types of the arguments, not of the result :/
-            case 8: return  amd64::gpr8Type ::get(type.getContext());
+            case 8:  return amd64::gpr8Type ::get(type.getContext());
             case 16: return amd64::gpr16Type::get(type.getContext());
+            // cmp is not matched using the result type (always i1), but with the operand type, so this doesn't apply there.
+            case 1:  // TODO  Internally, MLIR seems to need to convert i1's though, so we will handle them as i32 for now.
             case 32: return amd64::gpr32Type::get(type.getContext());
             case 64: return amd64::gpr64Type::get(type.getContext());
 
-            default: assert(false && "unhandled bitwidth");
+            default: assert(false && "unhandled bitwidth in typeConverter");
         }
     });
 
