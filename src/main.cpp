@@ -111,6 +111,8 @@ void prototypeEncode(mlir::Operation* op){
 void testOpCreation(mlir::ModuleOp mod){
     mlir::MLIRContext* ctx = mod.getContext();
 
+    llvm::errs() << termcolor::red << "=== Encoding tests ===\n" << termcolor::reset ;
+
     auto gpr8 = amd64::gpr8Type::get(ctx);
     assert(gpr8.isa<amd64::RegisterTypeInterface>() && gpr8.dyn_cast<amd64::RegisterTypeInterface>().getBitwidth() == 8 && "gpr8 is not a register type");
 
@@ -120,13 +122,13 @@ void testOpCreation(mlir::ModuleOp mod){
 
     auto imm8_1 = builder.create<amd64::MOV8ri>(loc);
     imm8_1.instructionInfo().imm = 1;
-    imm8_1.instructionInfo().regs.setReg1(FE_CX);
+    imm8_1.instructionInfo().regs.reg1 = FE_CX;
     auto imm8_2 = builder.create<amd64::MOV8ri>(loc);
     imm8_2.instructionInfo().imm = 2;
-    imm8_2.instructionInfo().regs.setReg1(FE_R8);
+    imm8_2.instructionInfo().regs.reg1 = FE_R8;
 
     auto add8rr = builder.create<amd64::ADD8rr>(loc, imm8_1, imm8_2);
-    add8rr.instructionInfo().regs.setReg1(FE_CX);
+    add8rr.instructionInfo().regs.reg1 = FE_CX;
 
     mlir::Operation* generic = add8rr;
 
@@ -141,7 +143,7 @@ void testOpCreation(mlir::ModuleOp mod){
     assert(mul8r.hasTrait<mlir::OpTrait::Operand0IsDestN<0>::Impl>());
 
     auto [resC1, resC2] = mul8r.getResultRegisterConstraints();
-    assert(resC1.whichResult == 0 && resC1.reg == FE_AX && resC2.whichResult == 1 && resC2.reg == FE_AH);
+    assert(resC1.which == 0 && resC1.reg == FE_AX && resC2.which == 1 && resC2.reg == FE_AH);
 
     auto mul16r = builder.create<amd64::MUL16r>(loc, imm8_1, imm8_2);
     generic = mul16r;
@@ -149,17 +151,17 @@ void testOpCreation(mlir::ModuleOp mod){
     assert(mul16r.hasTrait<mlir::OpTrait::Operand0IsDestN<0>::Impl>());
 
     auto [resC3, resC4] = mul16r.getResultRegisterConstraints();
-    assert(resC3.whichResult == 0 && resC3.reg == FE_AX && resC4.whichResult == 1 && resC4.reg == FE_DX);
+    assert(resC3.which == 0 && resC3.reg == FE_AX && resC4.which == 1 && resC4.reg == FE_DX);
 
     auto regsTest = builder.create<amd64::CMP8rr>(loc, imm8_1, imm8_2);
 
 
     regsTest.instructionInfo().regs = {FE_AX, FE_DX};
-    assert(regsTest.instructionInfo().regs.getReg1() == FE_AX && regsTest.instructionInfo().regs.getReg2() == FE_DX);
+    assert(regsTest.instructionInfo().regs.reg1 == FE_AX && regsTest.instructionInfo().regs.reg2 == FE_DX);
 
     generic = regsTest;
     opInterface = mlir::dyn_cast<amd64::InstructionOpInterface>(generic);
-    assert(regsTest.instructionInfo().regs.getReg1() == FE_AX && regsTest.instructionInfo().regs.getReg2() == FE_DX);
+    assert(regsTest.instructionInfo().regs.reg1 == FE_AX && regsTest.instructionInfo().regs.reg2 == FE_DX);
 
     // immediate stuff
     auto immTest = builder.create<amd64::MOV8ri>(loc, 42);
@@ -181,7 +183,7 @@ void testOpCreation(mlir::ModuleOp mod){
     assert(memSIBD2.getProperties().displacement == 20);
 
     auto sub8mi = builder.create<amd64::SUB8mi>(loc, memSIBD2);
-    sub8mi.instructionInfo().regs.setReg1(FE_BX);
+    sub8mi.instructionInfo().regs.reg1 = FE_BX;
     sub8mi.instructionInfo().imm = 42;
 
     prototypeEncode(sub8mi);
@@ -198,6 +200,7 @@ void testOpCreation(mlir::ModuleOp mod){
     builder.setInsertionPointToStart(targetBlock1);
     builder.create<amd64::ADD64rr>(loc, imm64, imm64);
 
+    llvm::errs() << termcolor::red << "=== Jump inversion test ===\n" << termcolor::reset ;
     auto jnz = builder.create<amd64::JNZ>(loc, mlir::ValueRange{}, mlir::ValueRange{}, targetBlock1, targetBlock2);
     jmpTestFn.dump();
 

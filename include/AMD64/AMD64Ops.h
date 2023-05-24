@@ -33,26 +33,26 @@ namespace amd64{
 
 /// Get the register of an OpResult of any instruction.
 /// The result number is used to figure out which register the result belongs to.
-inline FeReg registerOf(mlir::OpResult result){
+inline FeReg& registerOf(mlir::OpResult result){
     auto instr = mlir::dyn_cast<amd64::InstructionOpInterface>(result.getDefiningOp());
     assert(instr && "expected an instruction op");
 
     auto& regs = instr.instructionInfo().regs;
     if(result.getResultNumber() == 0){
-        return regs.getReg1();
+        return regs.reg1;
     }else{
         assert(result.getResultNumber() == 1 && "Operands seems to have more than 2 results");
-        return regs.getReg2();
+        return regs.reg2;
     }
 }
 /// Get the register of an Operation of an instruction with exactly one result.
-inline FeReg registerOf(mlir::Operation* op){
+inline FeReg& registerOf(mlir::Operation* op){
     auto instr = mlir::dyn_cast<amd64::InstructionOpInterface>(op);
     assert(instr && "expected an instruction op");
 
     auto& regs = instr.instructionInfo().regs;
     assert(op->getNumResults() == 1 && "Operands seems to have more than 1 result");
-    return regs.getReg1();
+    return regs.reg1;
 }
 // TODO handle block args at some point
 

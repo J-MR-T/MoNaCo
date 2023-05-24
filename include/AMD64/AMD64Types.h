@@ -12,24 +12,25 @@ using FeMnem = uint64_t;
 
 namespace amd64{
 
-
 // chmpxchg16b is the worst for this
 struct OperandRegisterConstraint{
-    int8_t whichOperand;
-    // if whichOperand is -1, this is hasReg
-    union{
-        FeReg reg;
-        bool hasReg;
-    };
+#define NO_CONSTRAINT -1
+    int8_t which;
+    FeReg reg;
+
+    /// TODO I hope this doesn't make it less efficient, because its not POD anymore
+    bool constrainsReg() const{
+        return which != NO_CONSTRAINT;
+    }
 };
 
 struct ResultRegisterConstraint{
-    int8_t whichResult;
-    // if whichOperand is -1, this is hasReg
-    union{
-        FeReg reg;
-        bool hasReg;
-    };
+    int8_t which;
+    FeReg reg;
+
+    bool constrainsReg() const{
+        return which != NO_CONSTRAINT;
+    }
 };
 
 // just use a pair for now, only very niche instrs need more than two op constraints
@@ -43,43 +44,33 @@ using ResultRegisterConstraints  = std::pair<ResultRegisterConstraint,  ResultRe
 
 /// to support saving register info on multi result instructions (up to 2 results for now)
 struct ResultRegisters{
-	uint16_t reg1;
-	uint16_t reg2;
+    // TODO these take up 32 bits each, even tho the information fits within 16 bits by simply shifting, and into 8 bits from an information theory perspective. But this makes accessing the registers much easier, so optimize this later.
+    FeReg reg1;
+    FeReg reg2;
 
-    ResultRegisters(): reg1(0), reg2(0){}
+    ResultRegisters(): reg1((FeReg)FE_NOREG), reg2((FeReg)FE_NOREG){}
 
-    ResultRegisters(FeReg reg1, FeReg reg2): reg1(transform(reg1)), reg2(transform(reg2)){
+    ResultRegisters(FeReg reg1, FeReg reg2): reg1(reg1), reg2(reg2){
+        // assert this, because the combine methods would otherwise fail
         assert(static_cast<uint16_t>(reg1) == reg1 && static_cast<uint16_t>(reg2) == reg2 && "registers contain too much information to be saved in this class");
     }
 
 	/// if this class is implicitly cast to a FeReg, return the first register, as this is the most common case
-	inline operator FeReg() const{
-		return getReg1();
-	}
+    inline bool reg1Empty() const{
+        return reg1 == FE_NOREG;
+    }
 
-	inline FeReg getReg1() const{
-		return transform(reg1);
-	}
-
-	inline FeReg getReg2() const{
-		return transform(reg2);
-	}
-
-	inline void setReg1(FeReg reg){
-		reg1 = transform(reg);
-	}
-
-	inline void setReg2(FeReg reg){
-		reg2 = transform(reg);
-	}
+    inline bool reg2Empty() const{
+        return reg2 == FE_NOREG;
+    }
 
     inline uint32_t combined() const{
         return reg1 | (reg2 << 16);
     }
 
     inline void setFromCombined(uint32_t combined){
-        reg1 = combined & 0x0000FFFF;
-        reg2 = combined & 0xFFFF0000;
+        reg1 = static_cast<FeReg>(combined & 0x0000FFFF);
+        reg2 = static_cast<FeReg>(combined & 0xFFFF0000);
     }
 
     // these 3 are to use this as an mlir property:
@@ -116,7 +107,31 @@ private:
 struct InstructionInfo{
 	ResultRegisters regs;
 	// TODO maybe optimize this later, but for now this is fine
-	int64_t imm; // only has a useful value if the instruction has the HasImm trait
+	int64_t imm; // only has a useful value if the instruction has the Special<HasImm> trait
+
+    /// returns if true if not all of the registers were constrained, i.e. if there is still something to do on this instruction for the register allocator
+    inline bool setRegsFromConstraints(const amd64::ResultRegisterConstraints& constraints){
+        auto allConstrained = true;
+        for(auto constraint : {constraints.first, constraints.second}){
+            allConstrained &= constraint.constrainsReg();
+
+            if(constraint.constrainsReg()){
+                if(constraint.which == 0){
+                    assert((regs.reg1Empty() || regs.reg1 == constraint.reg) && "register constraint mismatch");
+
+                    regs.reg1 = constraint.reg;
+                }else if(constraint.which == 1){
+                    assert((regs.reg2Empty() || regs.reg2 == constraint.reg) && "register constraint mismatch");
+
+                    regs.reg2 = constraint.reg;
+                }else{
+                    assert(false && "invalid result number");
+                }
+            }
+        }
+
+        return !allConstrained;
+    }
 
 	// these 3 are to use this as an mlir property:
 	inline mlir::Attribute asAttribute(mlir::MLIRContext* ctx) const{
@@ -149,6 +164,12 @@ struct InstructionInfo{
 };
 
 // === traits ===
+namespace amd64{
+enum class Special{
+    DivLike,         // zeroing/sign-extending of the upper part
+    HasImm
+};
+}
 
 // the way to define these seems so hacky...
 namespace mlir::OpTrait{
@@ -158,13 +179,17 @@ namespace mlir::OpTrait{
 template<unsigned N>
 class Operand0IsDestN{
 public:
-    template <typename ConcreteType>
+    template<typename ConcreteType>
     class Impl:public mlir::OpTrait::TraitBase<ConcreteType, Impl> {
     };
 };
 
-template<typename ConcreteType>
-class HasImm : public TraitBase<ConcreteType, HasImm> {
+template<amd64::Special specialKind>
+class SpecialCase{
+public:
+    template<typename ConcreteType>
+    class Impl:public mlir::OpTrait::TraitBase<ConcreteType, Impl> {
+    };
 };
 
 } // namespace mlir::OpTrait
