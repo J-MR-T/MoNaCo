@@ -1,8 +1,20 @@
 module {
-  func.func private @giveI8() -> i8
-  func.func private @giveI16() -> i16
-  func.func private @giveI32() -> i32
-  func.func private @giveI64() -> i64
+  func.func private @giveI8() -> i8 {
+    %0 = arith.constant 9 : i8
+    return %0 : i8
+  }
+  func.func private @giveI16() -> i16 {
+    %0 = arith.constant 17 : i16
+    return %0 : i16
+  }
+  func.func private @giveI32() -> i32 {
+    %0 = arith.constant 33 : i32
+    return %0 : i32
+  }
+  func.func private @giveI64() -> i64 {
+    %0 = arith.constant 65 : i64
+    return %0 : i64
+  }
   func.func private @patternMatchingTest() -> () {
     %0 = call @giveI8() : () -> i8
     %1 = call @giveI8() : () -> i8
