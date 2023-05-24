@@ -37,7 +37,7 @@ def EncodeOpInterface : OpInterface<"EncodeOpInterface">{
   let cppNamespace = "::amd64";
 }
 
-def ConditionalJumpInterface : OpInterface<"ConditionalJumpInterface">{
+def ConditionalJumpInterface : OpInterface<"ConditionalJumpInterface", [InstructionOpInterface]>{
   let description = [{
     This is an interface for AMD64 Jump Ops. They can specify how they are inverted using this interface, and their destinations and destination arguments can be queried.
   }];

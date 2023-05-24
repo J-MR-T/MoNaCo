@@ -199,7 +199,7 @@ struct Encoder{
                 mlir::OpBuilder builder(instrOp);
                 jcc = jcc.invert(builder); // TODO as mentioned in AMD64Ops.td, this could be improved, by not inverting the condition, but simply inverting the mnemonic
 
-                failed |= encodeJump(falseBB, mlir::dyn_cast<amd64::InstructionOpInterface>(jcc.getOperation()).getFeMnemonic());
+                failed |= encodeJump(falseBB, jcc.getFeMnemonic());
             }else{
                 // in this case we can let `encodeJump` take care of generating minimal jumps
                 failed |= maybeEncodeJump(trueBB,  mnemonic, nextBB);
