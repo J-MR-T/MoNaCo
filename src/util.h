@@ -45,6 +45,10 @@ using namespace std::literals::string_literals;
 
 #define EXIT_TODO EXIT_TODO_X("Not implemented yet.")
 
+namespace termcolor{
+    extern const char* red, *green, *yellow, *blue, *magenta, *cyan, *white, *reset;
+}
+
 // === concepts ===
 
 // std::sortable doesn't seem to be the same
