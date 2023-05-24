@@ -364,6 +364,24 @@ auto callMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
 
 CALL_PAT(8); CALL_PAT(16); CALL_PAT(32); CALL_PAT(64);
 
+// returns
+auto returnMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
+     typename RET, typename RETi, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE
+     >(mlir::func::ReturnOp returnOp, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
+    if(returnOp.getNumOperands() > 1)
+        return rewriter.notifyMatchFailure(returnOp, "multiple return values not supported");
+
+    if(auto constantInt = mlir::dyn_cast<mlir::arith::ConstantIntOp>(returnOp.getOperand(0).getDefiningOp())){
+        auto reti = rewriter.replaceOpWithNewOp<RETi>(returnOp);
+        reti.instructionInfo().imm = constantInt.value();
+    }else{
+        rewriter.replaceOpWithNewOp<RET>(returnOp, adaptor.getOperands().front());
+    }
+    return mlir::success();
+};
+
+using ReturnPat = MatchRMI<mlir::func::ReturnOp, 64, returnMatchReplace, amd64::RET, amd64::RETi, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, ignoreBitwidthMatchLambda>;
+
 } // end anonymous namespace
 
 
@@ -433,6 +451,7 @@ void prototypeIsel(mlir::Operation* regionOp){
     patterns.add<CondBrPat>(typeConverter, ctx);
 
     ADD_PATTERN(CallPat);
+    patterns.add<ReturnPat>(typeConverter, ctx);
 #undef ADD_PATTERN
     
 
