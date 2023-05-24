@@ -59,6 +59,7 @@ target_link_libraries(monaco PRIVATE ${LIBS})
 
 # if its the debug build, add sanitizer flags
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    # TODO add thread sanitizer for clang?
     target_compile_options(monaco PUBLIC -fsanitize=address,undefined,leak -fno-sanitize-recover=all)
     target_link_options(monaco PUBLIC -fsanitize=address,undefined,leak -fno-sanitize-recover=all)
 endif()

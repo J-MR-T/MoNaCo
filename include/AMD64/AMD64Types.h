@@ -137,7 +137,7 @@ struct InstructionInfo{
 	inline mlir::Attribute asAttribute(mlir::MLIRContext* ctx) const{
         mlir::Builder builder(ctx);
 
-        return builder.getI64ArrayAttr({regs.combined(), imm}); // this is somewhat inefficient, but there is no better way to do this as far as I knwo, and it shouldn't happend during normal compilation
+        return builder.getI64ArrayAttr({regs.combined(), imm}); // this is somewhat inefficient, but there is no better way to do this as far as I know, and it shouldn't happend during normal compilation
 	}
 	inline static mlir::LogicalResult setFromAttr(InstructionInfo& prop, mlir::Attribute attr, mlir::InFlightDiagnostic* diag){
         auto arrayAttr = attr.cast<mlir::ArrayAttr>();

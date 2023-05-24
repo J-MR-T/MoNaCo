@@ -37,13 +37,19 @@ def EncodeOpInterface : OpInterface<"EncodeOpInterface">{
   let cppNamespace = "::amd64";
 }
 
-def InvertJumpInterface : OpInterface<"InvertJumpInterface">{
+def ConditionalJumpInterface : OpInterface<"ConditionalJumpInterface">{
   let description = [{
-    This is an interface for AMD64 Jump Ops. They can specify how they are inverted using this interface.
+    This is an interface for AMD64 Jump Ops. They can specify how they are inverted using this interface, and their destinations and destination arguments can be queried.
   }];
 
   let methods = [
-    InterfaceMethod<"TODO", "FeOp", "invertJump">
+    InterfaceMethod<"TODO", "::amd64::ConditionalJumpInterface", "invert",                       (ins "::mlir::OpBuilder&":$builder)>,
+    InterfaceMethod<"TODO", "::mlir::Operation::operand_range",  "getTrueDestOperands">,
+    InterfaceMethod<"TODO", "::mlir::Operation::operand_range",  "getFalseDestOperands">,
+    InterfaceMethod<"TODO", "::mlir::MutableOperandRange",       "getTrueDestOperandsMutable">,
+    InterfaceMethod<"TODO", "::mlir::MutableOperandRange",       "getFalseDestOperandsMutable">,
+    InterfaceMethod<"TODO", "::mlir::Block*",                    "getTrueDest">,
+    InterfaceMethod<"TODO", "::mlir::Block*",                    "getFalseDest">,
   ];
 
   let cppNamespace = "::amd64";
