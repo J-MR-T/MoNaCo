@@ -130,7 +130,7 @@ auto cmpIBitwidthMatcher =
     []<unsigned innerBitwidth, typename thisType, typename OpAdaptor>(thisType thiis, mlir::arith::CmpIOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter){
         // cmp always has i1 as a result type, so we need to match the arguments' bitwidths
         auto tc = thiis->getTypeConverter();
-        auto lhsNewType = tc->convertType(op.getLhs().getType()).template dyn_cast<amd64::RegisterTypeInterface>();
+        auto lhsNewType = tc->convertType(op.getLhs().getType()).template dyn_cast<amd64::RegisterTypeInterface>(); // TODO maybe we can use the adaptor and just use .getType on that instead of bothering with the type converter. Not just here, but everywhere
         auto rhsNewType = tc->convertType(op.getRhs().getType()).template dyn_cast<amd64::RegisterTypeInterface>();
 
         assert(lhsNewType && rhsNewType && "cmp's operands should be convertible to register types");
@@ -249,7 +249,7 @@ struct ExtUII1Pat : mlir::OpConversionPattern<mlir::arith::ExtUIOp> {
 /// the inBitwidth matches the bitwidth of the input operand to the extui, which needs to be different per pattern, because the corresponding instruction differs.
 template<unsigned inBitwidth>
 /// the outBitwidth matches the bitwidth of the result of the extui, which also affects which instruction is used.
-auto extUiSiBitwidthMatcher = []<unsigned outBitwidth, typename thisType, typename OpAdaptor>(thisType thiis, auto op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter){
+auto truncExtUiSiBitwidthMatcher = []<unsigned outBitwidth, typename thisType, typename OpAdaptor>(thisType thiis, auto op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter){
     // out bitwidth
     auto failure = defaultBitwidthMatchLambda<decltype(op)>.template operator()<outBitwidth, thisType, OpAdaptor>(thiis, op, adaptor, rewriter);
     if(failure.failed())
@@ -259,7 +259,7 @@ auto extUiSiBitwidthMatcher = []<unsigned outBitwidth, typename thisType, typena
     return defaultBitwidthMatchLambda<decltype(op)>.template operator()<inBitwidth, thisType, OpAdaptor>(thiis, op, adaptor, rewriter);
 };
 
-auto extUiSiMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
+auto truncExtUiSiMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename MOVZX, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE
 >(auto szextOp, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
     rewriter.replaceOpWithNewOp<MOVZX>(szextOp, adaptor.getIn());
@@ -268,8 +268,8 @@ auto extUiSiMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
 
 /// only for 16-64 bits outBitwidth, for 8 we have a special pattern. There are more exceptions: Because not all versions of MOVZX exist, MOVZXr8r8 wouldn't make sense (also invalid in MLIR), MOVZXr64r32 is just a MOV, etc.
 #define EXTUI_PAT(outBitwidth, inBitwidth) \
-    using ExtUIPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::ExtUIOp, outBitwidth, extUiSiMatchReplace, amd64::MOVZX ## r ## outBitwidth ## r ## inBitwidth, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, extUiSiBitwidthMatcher<inBitwidth>>; \
-    using ExtSIPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::ExtSIOp, outBitwidth, extUiSiMatchReplace, amd64::MOVSX ## r ## outBitwidth ## r ## inBitwidth, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, extUiSiBitwidthMatcher<inBitwidth>>;
+    using ExtUIPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::ExtUIOp, outBitwidth, truncExtUiSiMatchReplace, amd64::MOVZX ## r ## outBitwidth ## r ## inBitwidth, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<inBitwidth>>; \
+    using ExtSIPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::ExtSIOp, outBitwidth, truncExtUiSiMatchReplace, amd64::MOVSX ## r ## outBitwidth ## r ## inBitwidth, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<inBitwidth>>;
 
 // generalizable cases:
 EXTUI_PAT(16, 8);
@@ -279,18 +279,22 @@ EXTUI_PAT(64, 8); EXTUI_PAT(64, 16);
 // cases that are still valid in mlir, but not covered here:
 // - 32 -> 64 (just a MOV)
 // - any weird integer types, but we ignore those anyway
-using ExtUIPat64_32 = MatchRMI<mlir::arith::ExtUIOp, 64, extUiSiMatchReplace, amd64::MOV32rr, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, extUiSiBitwidthMatcher<32>>;
+using ExtUIPat64_32 = MatchRMI<mlir::arith::ExtUIOp, 64, truncExtUiSiMatchReplace, amd64::MOV32rr, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<32>>;
 // for sign extend, the pattern above would work, but for simplicity, just do it manually here:
-using ExtSIPat64_32 = MatchRMI<mlir::arith::ExtSIOp, 64, extUiSiMatchReplace, amd64::MOVSXr64r32, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, extUiSiBitwidthMatcher<32>>;
+using ExtSIPat64_32 = MatchRMI<mlir::arith::ExtSIOp, 64, truncExtUiSiMatchReplace, amd64::MOVSXr64r32, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<32>>;
 
-// TODO trunc
+// trunc
+#define TRUNC_PAT(outBitwidth, inBitwidth) \
+    using TruncPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::TruncIOp, outBitwidth, truncExtUiSiMatchReplace, amd64::MOV ## outBitwidth ## rr, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<inBitwidth>>;
+TRUNC_PAT(8, 16); TRUNC_PAT(8, 32); TRUNC_PAT(8, 64);
+TRUNC_PAT(16, 32); TRUNC_PAT(16, 64);
+TRUNC_PAT(32, 64);
 
 // branches
-
 auto branchMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename JMP, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE
      >(mlir::cf::BranchOp br, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
-    rewriter.replaceOpWithNewOp<JMP>(br, br.getDestOperands(), br.getDest());
+    rewriter.replaceOpWithNewOp<JMP>(br, adaptor.getDestOperands(), br.getDest());
     return mlir::success();
 };
 using BrPat = MatchRMI<mlir::cf::BranchOp, 64, branchMatchReplace, amd64::JMP, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, ignoreBitwidthMatchLambda>;
@@ -446,6 +450,7 @@ void prototypeIsel(mlir::Operation* regionOp){
     patterns.add<ExtUII1Pat>(typeConverter, ctx);
     patterns.add<ExtUIPat16_8, ExtUIPat32_8, ExtUIPat64_8, ExtUIPat32_16, ExtUIPat64_16, ExtUIPat64_32>(typeConverter, ctx);
     patterns.add<ExtSIPat16_8, ExtSIPat32_8, ExtSIPat64_8, ExtSIPat32_16, ExtSIPat64_16, ExtSIPat64_32>(typeConverter, ctx);
+    patterns.add<TruncPat8_16, TruncPat8_32, TruncPat8_64, TruncPat16_32, TruncPat16_64, TruncPat32_64>(typeConverter, ctx);
 
     patterns.add<BrPat>(typeConverter, ctx);
     patterns.add<CondBrPat>(typeConverter, ctx);
