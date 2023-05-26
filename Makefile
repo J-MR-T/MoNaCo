@@ -1,5 +1,6 @@
 # override this using env var or directly in the Makefile
 LLVM_BUILD_DIR=~/programming/Libs/Cpp/llvm-project/build
+LLVM_RELEASE_BUILD_DIR=$(shell dirname $(LLVM_BUILD_DIR))/buildRelease
 
 # TODO currently you can't just build once, fadec is built at too late a point
 
@@ -22,7 +23,7 @@ test:
 release: setup
 	[ -f build/isRelease ] || $(MAKE) clean && $(MAKE) setup
 	touch build/isRelease
-	$(MAKE) cmake_build_type=Release makeCMakeBearable
+	$(MAKE) cmake_build_type=Release LLVM_BUILD_DIR=$(LLVM_RELEASE_BUILD_DIR) makeCMakeBearable
 
 debug: setup
 	[ -f build/isDebug ] || $(MAKE) clean && $(MAKE) setup
