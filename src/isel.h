@@ -3,4 +3,5 @@
 
 /// TODO
 /// takes an operation and does isel on its regions
-void prototypeIsel(mlir::Operation* regionOp);
+/// returns whether doing isel failed
+bool prototypeIsel(mlir::Operation* regionOp);

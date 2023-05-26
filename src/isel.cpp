@@ -390,7 +390,7 @@ using ReturnPat = MatchRMI<mlir::func::ReturnOp, 64, returnMatchReplace, amd64::
 
 
 /// takes an operation and does isel on its regions
-void prototypeIsel(mlir::Operation* regionOp){
+bool prototypeIsel(mlir::Operation* regionOp){
     using namespace amd64;
     using namespace mlir::arith;
 
@@ -459,20 +459,9 @@ void prototypeIsel(mlir::Operation* regionOp){
     patterns.add<ReturnPat>(typeConverter, ctx);
 #undef ADD_PATTERN
     
-
-    llvm::DebugFlag = true;
     //llvm::setCurrentDebugType("greedy-rewriter");
     //llvm::setCurrentDebugType("dialect-conversion");
 
-    DEBUGLOG("Before pattern matching:");
-    regionOp->dump();
     //auto result = mlir::applyPatternsAndFoldGreedily(patternMatchingTestFn, std::move(patterns)); // TODO I think this only applies normal rewrite patterns, not conversion patterns...
-    auto result = mlir::applyPartialConversion(regionOp, target, std::move(patterns));
-    if(result.failed()){
-        llvm::errs() << "Pattern matching failed :(\n";
-    }else{
-        llvm::errs() << "Pattern matching succeeded :)\n";
-    }
-    DEBUGLOG("After pattern matching:");
-    regionOp->dump();
+    return mlir::failed(mlir::applyPartialConversion(regionOp, target, std::move(patterns)));
 }
