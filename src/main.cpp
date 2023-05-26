@@ -1,3 +1,6 @@
+#include <chrono>
+#include <string>
+
 #include <fadec-enc.h>
 #include <fadec.h>
 
@@ -29,9 +32,11 @@ inline mlir::Operation* getFuncForCall(mlir::ModuleOp mod, auto call){
 struct Encoder{
     mlir::ModuleOp mod;
     // TODO test mmap against this later
+    // actually not, don't measure writing to a file at all, just write it to mem, compare that against llvm
     std::vector<uint8_t> buf;
     uint8_t* cur;
 
+    // Has to use an actual map instead of a vector, because a jump/call doesn't know the index of the target block
     mlir::DenseMap<mlir::Block*, uint8_t*> blocksToBuffer;
 
     struct UnresolvedBranchInfo{
@@ -42,13 +47,16 @@ struct Encoder{
     };
     mlir::SmallVector<UnresolvedBranchInfo, 64> unresolvedBranches;
 
-    Encoder(mlir::ModuleOp mod) : mod(mod), buf(4096), cur(&buf[0]) {}
+    Encoder(mlir::ModuleOp mod) : mod(mod), buf(), cur() {
+        // reserve 1MiB for now
+        buf.reserve(1 << 20);
+        cur = buf.data();
+    }
 
     /// can only be called with instructions that can actually be encoded
     /// assumes that there is enough space in the buffer, don't use this is you don't know what you're doing
     /// returns if the encoding failed
     bool encodeOp(amd64::InstructionOpInterface instrOp){
-        // TODO see if there is *some way* to use a vector for mapping blocks to their buffer addresses, for now I have to use a map, because a jump/call doesn't know the index of the target block
 
         // there will be many case distinctions here, the alternative would be a general 'encode' interface, where every instruction defines its own encoding.
         // that would be more extensible, but probably even more code, and slower
@@ -58,11 +66,10 @@ struct Encoder{
 
         assert(cur + 15 <= buf.data() + buf.size() && "Buffer is too small to encode instruction");
 
-        auto [opConstr1, opConstr2] = instrOp.getOperandRegisterConstraints();
         if(instrOp->hasTrait<Operand0IsDestN<0>::Impl>()){
             assert(!(opConstr1.which == 0 || opConstr2.which == 0)  && "Operand 0 is constrained to a register, but is also constrained to the destination register");
         }
-        auto [resConstr1, resConstr2] = instrOp.getResultRegisterConstraints();
+        auto [resConstr1, _] = instrOp.getResultRegisterConstraints();
 
         FeMnem mnemonic = instrOp.getFeMnemonic();
 
@@ -99,7 +106,7 @@ struct Encoder{
                 }else{
                     auto asOpResult = dyn_cast<mlir::OpResult>(operandValue);
 
-                    assert(asOpResult && "Operand is neither a memory op, nor an OpResult"); // TODO oh god what about block args. also: how do i do register allocation and asm emitting at the same time with block args? They don't know where to store their arg to immediately, do they?
+                    assert(asOpResult && "Operand is neither a memory op, nor an OpResult");
                     // as long as there is no 'op-result' interface, this is probably the only way to do it
                     operands[machineOperandsCovered] = amd64::registerOf(asOpResult);
                 }
@@ -205,6 +212,8 @@ struct Encoder{
             // try to generate minimal jumps (it will always be at least one though)
             if(trueBB == nextBB){
                 // if we branch to the subsequent block on true, invert the condition, then encode the conditional branch to the false block, don't do anything else
+
+                // technically mnemonic inversion could be done with just xoring with 1 (the lowest bit is the condition code), but that's not very API-stable...
                 mlir::OpBuilder builder(instrOp);
                 jcc = jcc.invert(builder); // TODO as mentioned in AMD64Ops.td, this could be improved, by not inverting the condition, but simply inverting the mnemonic
 
@@ -221,7 +230,7 @@ struct Encoder{
         return failed;
     }
 
-    void debugEncodeOp(amd64::InstructionOpInterface op){
+    bool debugEncodeOp(amd64::InstructionOpInterface op){
         auto curBefore = cur;
         auto failed = encodeOp(op);
         if(failed)
@@ -237,6 +246,7 @@ struct Encoder{
             fd_format(&instr, fmtbuf, sizeof(fmtbuf));
             llvm::errs() << fmtbuf << "\n";
         }
+        return failed;
     }
 
     /// encodes all ops in the functions contained in the module
@@ -274,26 +284,24 @@ struct Encoder{
             uint8_t* whereToJump = it->second;
             fe_enc64(&whereToEncode, kind, (uintptr_t) whereToJump);
         }
+    }
 
-        if constexpr (encodeImpl == &Encoder::debugEncodeOp){
-            llvm::errs() << "Done encoding, dumping buffer:\n";
+    void dumpAfterEncodingDone(){
+        // dump the entire buffer
+        // decode & print to test if it works
+        auto max = cur;
 
-            // dump the entire buffer
-            // decode & print to test if it works
-            auto max = cur;
-
-            for(uint8_t* cur = buf.data(); cur < max;){
-                FdInstr instr; 
-                auto numBytesEncoded = fd_decode(cur, max - cur, 64, 0, &instr);
-                if(numBytesEncoded < 0){
-                    llvm::errs() << "Test encoding resulted in non-decodable instruction :(. Trying to find next decodable instruction...\n";
-                    cur++;
-                }else{
-                    char fmtbuf[64];
-                    fd_format(&instr, fmtbuf, sizeof(fmtbuf));
-                    llvm::errs() << fmtbuf << "\n";
-                    cur += numBytesEncoded;
-                }
+        for(uint8_t* cur = buf.data(); cur < max;){
+            FdInstr instr; 
+            auto numBytesEncoded = fd_decode(cur, max - cur, 64, 0, &instr);
+            if(numBytesEncoded < 0){
+                llvm::errs() << "Test encoding resulted in non-decodable instruction :(. Trying to find next decodable instruction...\n";
+                cur++;
+            }else{
+                char fmtbuf[64];
+                fd_format(&instr, fmtbuf, sizeof(fmtbuf));
+                llvm::errs() << fmtbuf << "\n";
+                cur += numBytesEncoded;
             }
         }
     }
@@ -415,31 +423,6 @@ void testOpCreation(mlir::ModuleOp mod){
     jnz->erase();
 
     jmpTestFn.dump();
-
-
-    // TODO maybe premature optimization, just do map[block*] -> address and a vector of unresolved jumps for now. a vector that maps blocks by number to address would be faster, could be accomplished using indices of the functions region's blocks
-
-    // idea: (although probably with a POD struct instead of a tuple)
-    llvm::SmallDenseMap<mlir::Block*, 
-            std::tuple<uint16_t /* number of jumps to this block that have already been encountered */,
-                       uint8_t** /* value of 'cur' obj file pointer at start of block */,
-                       llvm::SmallVector<uint8_t**, 2> /* unresolved jumps to this block */
-            >, 16>
-        blockJmpInfo;
-    // every time we enter a new block: check if there is already a map entry for the new block:
-    //   if not: we add it (if it has any predecessors), with a number of 0, a pointer to the current obj file pointer, and no unresolved jumps
-    //   if yes: we have already found a jump to this block, so set the current obj file pointer to 'here' and resolve all unresolved jumps to this block, and remove them from the vector.
-    //      If the number of jumps that have already been encountered is == the number of predecessors, remove the map entry
-    //
-    // every time we jump to a block: check if there is already a map entry for the target:
-    //   if yes: Check if the cur obj file pointer is null.
-    //      if yes (that means we have not encountered the block itself yet): 
-    //             Add the current obj file pointer to the unresolved jumps vector and increment the number of jumps that have already been encountered.
-    //      if no: Use normal jump encoding, get and use the target block pointer (the uint8_t** from the tuple), and increment the number of jumps that have already been encountered.
-    //             If the number of jumps that have already been encountered is == the number of predecessors, remove the map entry
-    //   if no: add a map entry with a number of 0, a nullptr, and no unresolved jumps.
-    //             If the number of jumps that have already been encountered is == the number of predecessors, remove the map entry (i.e. in this case don't add it in the first place)
-
 }
 
 /// gives every value in this op's region it's constraint, or rbx as first result register, r8 as second
@@ -489,6 +472,13 @@ void dummyRegalloc(mlir::Operation* op){
 }
 
 int main(int argc, char *argv[]) {
+#define MEASURE_TIME_START(point) auto point ## _start = std::chrono::high_resolution_clock::now()
+
+#define MEASURE_TIME_END(point) auto point ## _end = std::chrono::high_resolution_clock::now()
+
+#define MEASURED_TIME_AS_SECONDS(point, iterations) std::chrono::duration_cast<std::chrono::duration<double>>(point ## _end - point ## _start).count()/(static_cast<double>(iterations))
+
+
     ArgParse::parse(argc, argv);
 
     auto& args = ArgParse::args;
@@ -512,9 +502,50 @@ int main(int argc, char *argv[]) {
 
     auto owningModRef = readMLIRMod(inputFile, ctx);
 
-    if(args.isel()){
-        Encoder encoder(*owningModRef);
+    if(args.benchmark()){
+        // TODO what happens if this throws an exception? Is that fine?
+        unsigned iterations = std::stoi(std::string{args.iterations() ? *args.iterations : "1"});
 
+        std::vector<mlir::OwningOpRef<mlir::ModuleOp>> modClones(iterations);
+        for(unsigned i = 0; i < iterations; i++){
+            modClones[i] = mlir::OwningOpRef<mlir::ModuleOp>(owningModRef->clone());
+        }
+
+        if(args.isel()){
+            MEASURE_TIME_START(totalMLIR);
+
+            for(unsigned i = 0; i < iterations; i++){
+                Encoder encoder(*modClones[i]);
+                prototypeIsel(*modClones[i]);
+                // to test the encoding
+                for(auto& funcOpaque : owningModRef->getOps()){
+                    auto func = mlir::dyn_cast<mlir::func::FuncOp>(funcOpaque);
+                    assert(func);
+
+                    dummyRegalloc(func);
+                }
+                encoder.encodeModRegion<&Encoder::encodeOp>(*owningModRef);
+            }
+
+            MEASURE_TIME_END(totalMLIR);
+
+            llvm::outs() << "ISel + dummy RegAlloc + encoding took " << MEASURED_TIME_AS_SECONDS(totalMLIR, iterations) << " seconds\n";
+
+            // TODO the encoding certainly won't work with block args currently
+        }else if(args.fallback()){
+            MEASURE_TIME_START(totalLLVM);
+
+            for(auto i = 0u; i < iterations; i++){
+                auto obj = llvm::SmallVector<char, 0>();
+                fallbackToLLVMCompilation(*modClones[i], obj);
+            }
+
+            MEASURE_TIME_END(totalLLVM);
+
+            llvm::outs() << "LLVM Fallback compilation took " << MEASURED_TIME_AS_SECONDS(totalLLVM, iterations) << " seconds\n";
+        }
+    }else if(args.isel()){
+        Encoder encoder(*owningModRef);
         prototypeIsel(*owningModRef);
         // to test the encoding
         for(auto& funcOpaque : owningModRef->getOps()){
@@ -523,16 +554,22 @@ int main(int argc, char *argv[]) {
 
             dummyRegalloc(func);
         }
-        encoder.encodeModRegion<&Encoder::debugEncodeOp>(*owningModRef);
+        encoder.encodeModRegion<&Encoder::encodeOp>(*owningModRef);
 
-        // TODO the encoding certainly won't work with block args currently
-
-        return EXIT_SUCCESS;
+        if(args.debug()){
+            llvm::outs() << "After ISel:\n";
+            owningModRef->dump();
+            llvm::outs() << "Encoded:\n";
+            encoder.dumpAfterEncodingDone();
+        }
+    }else if(args.fallback()){
+        auto obj = llvm::SmallVector<char, 0>();
+        return fallbackToLLVMCompilation(*owningModRef, obj);
+    }else if(args.debug()){
+        mlir::OpBuilder builder(&ctx);
+        auto testMod = mlir::OwningOpRef<mlir::ModuleOp>(builder.create<mlir::ModuleOp>(builder.getUnknownLoc()));
+        testOpCreation(*testMod);
     }
-
-    mlir::OpBuilder builder(&ctx);
-    auto testMod = mlir::OwningOpRef<mlir::ModuleOp>(builder.create<mlir::ModuleOp>(builder.getUnknownLoc()));
-    testOpCreation(*testMod);
 
     return EXIT_SUCCESS;
 }
