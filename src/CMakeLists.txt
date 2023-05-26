@@ -62,6 +62,9 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     # TODO add thread sanitizer for clang?
     target_compile_options(monaco PUBLIC -fsanitize=address,undefined,leak -fno-sanitize-recover=all)
     target_link_options(monaco PUBLIC -fsanitize=address,undefined,leak -fno-sanitize-recover=all)
+elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
+    # to make absolutely sure there are no assertions, even if the LLVM build is debug
+    target_compile_options(monaco PUBLIC -O3 -DNDEBUG)
 endif()
 
 # I would like to not use this, but because I have to use the C preprocessor instead of tablegen for patterns, this is very important
