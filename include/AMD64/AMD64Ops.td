@@ -422,19 +422,19 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
   // TODO this isn't that nice, but to ensure DX/AH isn't relevant for the result, we need to special case DIV/IDIVs during encoding, and put an XOR rdx, rdx/XOR ah, ah before it for DIV, and CWD/CDQ/CQO for IDIV (what about an 8 bit idiv?).
   // TODO the register allocator still needs to know, not to put the second operand in DX/AH. Although we know that this instruction will clobber DX/AH, the register allocator would still be within it's rights for a normal instructino, to put the second operand in DX/AH.
 
-  // indicate to the encoder, that this is a special case
-  defvar traits = [Operand0IsDestN<0>, SpecialCase<"DivLike">];
+  defvar traits = [Operand0IsDestN<0>];
   // DIV: 2 results
   let results = (outs gprType:$quotient, gprType:$remainder) in
   let resultConstraint1 = "{.which = 0, .reg = FE_AX}", resultConstraint2 = !if(!eq(bitwidth, "8"), "{.which = 1, .reg = FE_AH}", "{.which = 1, .reg = FE_DX}") in {
     let operands = (ins gprType:$src1, gprType:$src2) in {
-      def DIV # bitwidth # "r"  : Instruction<"DIV"  # bitwidth # "r", traits>;
-      def IDIV # bitwidth # "r" : Instruction<"IDIV" # bitwidth # "r", traits>;
+      // indicate to the encoder, that these are special cases
+      def DIV # bitwidth # "r"  : Instruction<"DIV"  # bitwidth # "r", traits # [SpecialCase<"DIV"> ]>;
+      def IDIV # bitwidth # "r" : Instruction<"IDIV" # bitwidth # "r", traits # [SpecialCase<"IDIV">]>;
     }
 
     let operands = (ins gprType:$src1, memLoc:$src2) in {
-      def DIV # bitwidth # "m"  : Instruction<"DIV"  # bitwidth # "m", traits>;
-      def IDIV # bitwidth # "m" : Instruction<"IDIV" # bitwidth # "m", traits>;
+      def DIV # bitwidth # "m"  : Instruction<"DIV"  # bitwidth # "m", traits # [SpecialCase<"DIV"> ]>;
+      def IDIV # bitwidth # "m" : Instruction<"IDIV" # bitwidth # "m", traits # [SpecialCase<"IDIV">]>;
     }
   }
 }

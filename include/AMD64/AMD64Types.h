@@ -166,7 +166,8 @@ struct InstructionInfo{
 // === traits ===
 namespace amd64{
 enum class Special{
-    DivLike,         // zeroing/sign-extending of the upper part
+    IDIV,         // sign-extending of the upper part
+    DIV,          // zero-extending of the upper part
     HasImm
 };
 }

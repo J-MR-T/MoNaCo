@@ -141,17 +141,24 @@ struct Encoder{
         // TODO special cases
         // - jumps
         // - calls
-        // - DIV/IDIV because rdx needs to be zeroed/sign extended
+        // - DIV/IDIV because rdx needs to be zeroed/sign extended (2 separate cases)
         // - returns (wait is that actually a special case?)
-        if(instrOp->hasTrait<SpecialCase<Special::DivLike>::Impl>()) [[unlikely]] {
+        
+        if(instrOp->hasTrait<SpecialCase<Special::DIV>::Impl>()) [[unlikely]] {
+            assert(cur + 30 <= buf.data() + buf.size() && "Buffer is too small to encode div like instruction");
+
+            // in this case we need to simply XOR edx, edx, which also zeroes the upper 32 bits of rdx
+            failed |= fe_enc64(&cur, FE_XOR32rr, FE_DX, FE_DX);
+
+            // then encode the div normally
+            encodeNormally();
+        }else if(instrOp->hasTrait<SpecialCase<Special::IDIV>::Impl>()) [[unlikely]] {
             assert(cur + 30 <= buf.data() + buf.size() && "Buffer is too small to encode div like instruction");
 
             auto resultType = instrOp->getResult(0).getType().cast<amd64::RegisterTypeInterface>();
             assert(resultType && "Result of div like instruction is not a register type");
 
             // the CQO family is FE_C_SEPxx, CBW (which we need for 8 bit div) is FE_C_EX16
-
-            // TODO this can be optimized to handle DIV and IDIV independently, which would be a bit more efficient at runtime, because we don't need a sign extension for DIV, just an XOR DX/AH, DX/AH.
 
             // sign extend ax into dx:ax (for different sizes), for 8 bit sign extend al into ax
             switch(resultType.getBitwidth()){
