@@ -209,14 +209,18 @@ namespace ArgParse{
     
     // struct for all possible arguments
     const struct {
-        const Arg help{  "h", "help"  , 0, "Show this help message and exit", FLAG};
-        const Arg input{ "i", "input" , 1, "Input file"                     , REQUIRED};
-        const Arg output{"o", "output", 2, "Output file"};
-        const Arg isel{  "s", "isel"  , 0, "Just do Instruction Selection"  , FLAG};
+        const Arg help{     "h", "help",           0, "Show this help message and exit",                                      FLAG};
+        const Arg input{    "i", "input",          1, "Input file"                     ,                                      REQUIRED};
+        const Arg output{   "o", "output",         2, "Output file"};
+        const Arg isel{     "s", "isel",           0, "Just do Instruction Selection"  ,                                      FLAG};
+        const Arg fallback{ "F", "force-fallback", 0, "Force fallback to MLIR module compilation through the LLVM toolchain", FLAG};
+        const Arg debug{    "d", "debug",          0, "Print debug information (set llvm::DebugFlag)",                        FLAG};
+        const Arg benchmark{"b", "benchmark",      0, "Benchmark the compiler",                                               FLAG};
+        const Arg iterations{"", "iterations",     0, "Number of iterations for benchmarking"};
 
         const Arg sentinel{"", "", 0, ""};
 
-        const Arg* const all[5] = {&help, &input, &output, &isel, &sentinel};
+        const Arg* const all[9] = {&help, &input, &output, &isel, &fallback, &debug, &benchmark, &iterations, &sentinel};
         
         // iterator over all
         const Arg* begin() const{

@@ -11,8 +11,10 @@
 #include "util.h"
 #include "AMD64/AMD64Dialect.h"
 #include "AMD64/AMD64Ops.h"
-
 #include "isel.h"
+#include "fallback.h"
+
+// TODO put encoding + regalloc in its own file
 
 inline mlir::Operation* getFuncForCall(mlir::ModuleOp mod, auto call){
     // TODO performance test if this cache is worth it (or even works)
@@ -488,6 +490,8 @@ int main(int argc, char *argv[]) {
         ArgParse::printHelp(argv[0]);
         return EXIT_SUCCESS;
     }
+
+    llvm::DebugFlag = args.debug();
 
     mlir::MLIRContext ctx;
     ctx.loadAllAvailableDialects();

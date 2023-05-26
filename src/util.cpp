@@ -1,36 +1,18 @@
-#include "mlir/Parser/Parser.h"
+#include "util.h"
+
 #include <regex>
+#include <stdlib.h>
+#include <fcntl.h>
 
 #pragma GCC diagnostic push 
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #pragma GCC diagnostic ignored "-Wcomment"
 #include <llvm/Config/llvm-config.h>
 
-// stuff I assume i need for writing object files...
-#include <llvm/ADT/APFloat.h>
-#include <llvm/ADT/STLExtras.h>
-#include <llvm/IR/IRBuilder.h>
-#include <llvm/IR/Instructions.h>
-#include <llvm/IR/LLVMContext.h>
-#include <llvm/IR/LegacyPassManager.h>
-#include <llvm/IR/Module.h>
-#include <llvm/IR/Type.h>
-#include <llvm/IR/Verifier.h>
-#include <llvm/MC/TargetRegistry.h>
-#include <llvm/Support/FileSystem.h>
-#include <llvm/Support/TargetSelect.h>
-#include <llvm/Support/raw_ostream.h>
-#include <llvm/Target/TargetMachine.h>
-#include <llvm/Target/TargetOptions.h>
-#include <llvm/TargetParser/Host.h>
-#include <llvm/Support/MemoryBuffer.h>
-#include <llvm/Support/MemoryBufferRef.h>
-
 #include <mlir/Bytecode/BytecodeReader.h>
 #include <mlir/Tools/mlir-translate/Translation.h>
+#include <mlir/Parser/Parser.h>
 #pragma GCC diagnostic pop
-
-#include "util.h"
 
 namespace termcolor{
     const char* red     = "\033[0;31m";
