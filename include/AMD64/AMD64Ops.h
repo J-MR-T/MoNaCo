@@ -30,6 +30,8 @@ namespace amd64{
 
 // TODO decide: should this always return the register constraint, or should we leave it up to the regallocator to set those constraints as the actual registers later on?
 // TODO also: Is there some way to set return register constraints on ops on creation? That might save a bit of time. Although do that at the end, no premature optimization :).
+// TODO needs an overload for block args
+// TODO put in a different file
 
 /// Get the register of an OpResult of any instruction.
 /// The result number is used to figure out which register the result belongs to.
@@ -54,7 +56,6 @@ inline FeReg& registerOf(mlir::Operation* op){
     assert(op->getNumResults() == 1 && "Operands seems to have more than 1 result");
     return regs.reg1;
 }
-// TODO handle block args at some point
 
 } // end namespace amd64
 
