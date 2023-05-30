@@ -47,14 +47,19 @@ inline FeReg& registerOf(mlir::OpResult result){
         return regs.reg2;
     }
 }
+
+/// Get the register of an Operation of an instruction with exactly one result.
+inline FeReg& registerOf(amd64::InstructionOpInterface instr){
+    auto& regs = instr.instructionInfo().regs;
+    assert(instr->getNumResults() == 1 && "Operands seems to have more than 1 result");
+    return regs.reg1;
+}
+
 /// Get the register of an Operation of an instruction with exactly one result.
 inline FeReg& registerOf(mlir::Operation* op){
     auto instr = mlir::dyn_cast<amd64::InstructionOpInterface>(op);
     assert(instr && "expected an instruction op");
-
-    auto& regs = instr.instructionInfo().regs;
-    assert(op->getNumResults() == 1 && "Operands seems to have more than 1 result");
-    return regs.reg1;
+    return registerOf(instr);
 }
 
 } // end namespace amd64
