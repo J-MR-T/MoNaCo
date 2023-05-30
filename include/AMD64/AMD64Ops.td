@@ -177,6 +177,21 @@ def MemB : MemSIBD_subset<"MemB">;
 let hasBase = 0, hasScaleIndex = 0, hasDisplacement = 1 in
 def MemD : MemSIBD_subset<"MemD">;
 
+def RawMemoryOp : MemOp<"RawMemoryOp"> {
+  let arguments = (ins Property<"FeOp">:$feMem);
+  let results = (outs memLoc:$memloc);
+  let encoding = [{
+    return getProperties().feMem;
+  }];
+  let builders = [
+    OpBuilder<(ins "FeOp":$feMemArg), [{
+      auto& prop = $_state.getOrAddProperties<RawMemoryOp::Properties>();
+      prop.feMem = feMemArg;
+      build($_builder, $_state);
+    }]>
+  ];
+}
+
 // === properties ===
 
 // this is heavily based on mlir/test/lib/Dialect/Test/TestOps.td|cpp|h
