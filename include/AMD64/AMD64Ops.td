@@ -336,8 +336,7 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
 
   // zero result instructions
   let results = (outs) in {
-    // normal MOVmr, but without the destination operand as the first operand, just one operand each.
-    let operands = (ins gprType:$src1) in 
+    let operands = (ins memLoc:$memLoc, gprType:$src1) in 
     def "MOV" # bitwidth # "mr" : Instruction<"MOV" # bitwidth # "mr">;
   }
 
