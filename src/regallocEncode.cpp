@@ -421,16 +421,22 @@ struct AbstractRegAllocerEncoder{
     /// returns whether it failed
     bool run(){
         bool failed = false; // TODO
+        // TODO this is not right, doesn't expand the vector yet
         for(auto func : mod.getOps<mlir::func::FuncOp>()){
+            // TODO uncomment once it exists
+            //emitPrologue(func);
 
+            // regions are assumed to be disjoint
             // TODO this can't be in any order, this needs to be RPO
             for(auto& block : func.getBlocks()){
+                // map block to start of block in buffer
+                encoder.blocksToBuffer[&block] = encoder.cur;
+
                 // iterate over all but the last instruction
-            
                 auto endIt = block.end();
                 for(auto& op: llvm::make_range(block.begin(), --endIt)){
 
-                    if(auto instr = mlir::dyn_cast<amd64::InstructionOpInterface>(&op)){
+                    if(auto instr = mlir::dyn_cast<amd64::InstructionOpInterface>(&op)) [[likely]]{
                         DEBUGLOG("Allocating for instruction: " << instr << ":");
 
                         // two operands max for now
@@ -446,7 +452,10 @@ struct AbstractRegAllocerEncoder{
                 }
                 handleTerminator(endIt);
             }
+
+            // TODO resolving unresolvedBranches after every function might give better cache locality, and be better if we don't exceed the in-place-allocated limit, consider doing that
         }
+        failed|= encoder.resolveBranches();
         return failed;
     }
 
@@ -880,41 +889,6 @@ inline void emitEpilogue(Encoder& encoder){
     // - (more?)
 }
 
-
-inline bool regallocEncodeImpl(Encoder& encoder, mlir::ModuleOp mod){
-    // TODO update this appropriately everywhere
-    bool failed = false;
-
-    // TODO get rid of this, once there's an actual regallocer
-	for(auto& funcOpaque : mod.getOps()){
-		auto func = mlir::dyn_cast<mlir::func::FuncOp>(funcOpaque);
-		assert(func);
-
-		dummyRegalloc(func);
-	}
-
-    // TODO this is not right, doesn't expand the vector yet
-    for(auto func : mod.getOps<mlir::func::FuncOp>()){
-        // regions are assumed to be disjoint
-        auto& blocklist = func.getBlocks();
-
-        emitPrologue(encoder);
-
-        // TODO needs to call regalloc of course, but that's not implemented yet
-        for(auto& block : blocklist){
-            // map block to start of block in buffer
-            encoder.blocksToBuffer[&block] = encoder.cur;
-
-            for(auto& op : block)
-                if(auto instrOp = mlir::dyn_cast<amd64::InstructionOpInterface>(op)) [[likely]] // don't try to encode memory ops etc.
-                    encoder.encodeIntraBlockOp(mod, instrOp);
-        }
-        // TODO resolving unresolvedBranches after every function might give better cache locality, and be better if we don't exceed the in-place-allocated limit, consider doing that
-    }
-
-    failed |= encoder.resolveBranches();
-    return failed;
-}
 
 // TODO parameters for optimization level (-> which regallocer to use)
 bool regallocEncode(std::vector<uint8_t>& buf, mlir::ModuleOp mod, bool debug){
