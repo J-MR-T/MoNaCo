@@ -102,22 +102,11 @@ void testOpCreation(mlir::ModuleOp mod){
 
     builder.setInsertionPointToStart(entryBB);
     auto targetBlock1 = jmpTestFn.addBlock();
-    auto targetBlock2 = jmpTestFn.addBlock();
     auto imm64 = builder.create<amd64::MOV64ri>(loc, 42);
     builder.create<amd64::ADD64rr>(loc, imm64, imm64);
     builder.create<amd64::JMP>(loc, targetBlock1);
     builder.setInsertionPointToStart(targetBlock1);
     builder.create<amd64::ADD64rr>(loc, imm64, imm64);
-
-    llvm::errs() << termcolor::red << "=== Jump inversion test ===\n" << termcolor::reset ;
-    auto jnz = builder.create<amd64::JNZ>(loc, mlir::ValueRange{}, mlir::ValueRange{}, targetBlock1, targetBlock2);
-    jmpTestFn.dump();
-
-    auto jz = jnz.invert(builder);
-    jnz->replaceAllUsesWith(jz);
-    jnz->erase();
-
-    jmpTestFn.dump();
 }
 
 int main(int argc, char *argv[]) {

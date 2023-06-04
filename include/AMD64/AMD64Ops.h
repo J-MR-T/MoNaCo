@@ -62,6 +62,19 @@ inline FeReg& registerOf(mlir::Operation* op){
     return registerOf(instr);
 }
 
+inline FeReg& registerOf(mlir::Value value){
+    if (auto result = value.dyn_cast<mlir::OpResult>()) {
+        return registerOf(result);
+    } else {
+        return registerOf(value.getDefiningOp());
+    }
+}
+
+/// Get the register of a block argument
+inline FeReg& registerOf(mlir::BlockArgument& arg, mlir::DenseMap<mlir::BlockArgument, FeReg>& blockArgToReg){
+    return blockArgToReg[arg];
+}
+
 } // end namespace amd64
 
 // my own interfaces are included in AMD64Types.h

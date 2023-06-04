@@ -16,7 +16,7 @@ def InstructionOpInterface : OpInterface<"InstructionOpInterface">{
     InterfaceMethod<"TODO", "InstructionInfo&", "instructionInfo", /*args=*/ (ins ), /*methodBody=*/ [{
       return $_op.getProperties().instructionInfoImpl;
     }]>,
-    StaticInterfaceMethod<"TODO", "FeMnem", "getFeMnemonic">,
+    StaticInterfaceMethod<"TODO", "FeMnem",                            "getFeMnemonic">,
     StaticInterfaceMethod<"TODO", "amd64::OperandRegisterConstraints", "getOperandRegisterConstraints">, // TODO document that Operand0IsDestN has priority over operand register constraints, i.e. if that is set, then any operand register constraint for operand 0 is ignored
     StaticInterfaceMethod<"TODO", "amd64::ResultRegisterConstraints",  "getResultRegisterConstraints">,
   ];
@@ -43,13 +43,14 @@ def ConditionalJumpInterface : OpInterface<"ConditionalJumpInterface", [Instruct
   }];
 
   let methods = [
-    InterfaceMethod<"TODO", "::amd64::ConditionalJumpInterface", "invert",                       (ins "::mlir::OpBuilder&":$builder)>,
-    InterfaceMethod<"TODO", "::mlir::Operation::operand_range",  "getTrueDestOperands">,
-    InterfaceMethod<"TODO", "::mlir::Operation::operand_range",  "getFalseDestOperands">,
-    InterfaceMethod<"TODO", "::mlir::MutableOperandRange",       "getTrueDestOperandsMutable">,
-    InterfaceMethod<"TODO", "::mlir::MutableOperandRange",       "getFalseDestOperandsMutable">,
-    InterfaceMethod<"TODO", "::mlir::Block*",                    "getTrueDest">,
-    InterfaceMethod<"TODO", "::mlir::Block*",                    "getFalseDest">,
+    StaticInterfaceMethod<"TODO", "FeMnem",                           "invert">, // technically mnemonic inversion could be done with just xoring with 1 (the lowest bit is the condition code), but that's not very API-stable...
+    StaticInterfaceMethod<"TODO", "::amd64::conditional::predicate",  "getPredicate">,
+    InterfaceMethod<"TODO",       "::mlir::Operation::operand_range", "getTrueDestOperands">,
+    InterfaceMethod<"TODO",       "::mlir::Operation::operand_range", "getFalseDestOperands">,
+    InterfaceMethod<"TODO",       "::mlir::MutableOperandRange",      "getTrueDestOperandsMutable">,
+    InterfaceMethod<"TODO",       "::mlir::MutableOperandRange",      "getFalseDestOperandsMutable">,
+    InterfaceMethod<"TODO",       "::mlir::Block*",                   "getTrueDest">,
+    InterfaceMethod<"TODO",       "::mlir::Block*",                   "getFalseDest">,
   ];
 
   let cppNamespace = "::amd64";

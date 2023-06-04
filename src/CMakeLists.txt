@@ -67,7 +67,6 @@ elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
     target_compile_options(monaco PUBLIC -O3 -DNDEBUG)
 endif()
 
-# I would like to not use this, but because I have to use the C preprocessor instead of tablegen for patterns, this is very important
-target_compile_options(monaco PRIVATE -Wno-unused-local-typedefs)
+target_compile_options(monaco PRIVATE -Wno-enum-compare)
 
 mlir_check_all_link_libraries(monaco)

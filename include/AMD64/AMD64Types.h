@@ -12,10 +12,27 @@ using FeMnem = uint64_t;
 
 namespace amd64{
 
+namespace conditional{
+enum predicate{
+    Z = 0, // E
+    NZ,    // NE
+    L,
+    GE,
+    LE,
+    G,
+    C,     // B
+    NC,    // AE
+    BE,
+    A
+};
+}
+
+// TODO template this and only have one of the two
+
 // chmpxchg16b is the worst for this
 struct OperandRegisterConstraint{
 #define NO_CONSTRAINT -1
-    int8_t which;
+    int8_t which = NO_CONSTRAINT;
     FeReg reg;
 
     /// TODO I hope this doesn't make it less efficient, because its not POD anymore
@@ -25,7 +42,7 @@ struct OperandRegisterConstraint{
 };
 
 struct ResultRegisterConstraint{
-    int8_t which;
+    int8_t which = NO_CONSTRAINT;
     FeReg reg;
 
     bool constrainsReg() const{
@@ -33,9 +50,32 @@ struct ResultRegisterConstraint{
     }
 };
 
-// just use a pair for now, only very niche instrs need more than two op constraints
-using OperandRegisterConstraints = std::pair<OperandRegisterConstraint, OperandRegisterConstraint>;
-using ResultRegisterConstraints  = std::pair<ResultRegisterConstraint,  ResultRegisterConstraint>;
+// TODO think if 'which' can be eliminated somehow, this is quite ugly
+// a light wrapper around a pair
+template<typename T>
+struct Constraints{
+    T first, second;
+
+    constexpr Constraints(T first, T second): first(first), second(second){}
+    constexpr Constraints(std::pair<T, T> pair): first(pair.first), second(pair.second){}
+
+    operator std::pair<T, T>(){
+        return std::make_pair(first, second);
+    }
+
+    // TODO also a bit ugly
+    // TODO I think this is also not right, because the operand index i, with which it is called, doesn't always equate to the ith *register* operand (memory op in the middle/...)
+    T operator [](int i){
+        if(i == 0)
+            return first.which == 0 ? first : T();
+        else if(i == 1)
+            return first.which == 1 ? first : (second.which == 1 ? second : T());
+        else
+            assert(false && "invalid index");
+    }
+};
+using OperandRegisterConstraints = Constraints<OperandRegisterConstraint>;
+using ResultRegisterConstraints  = Constraints<ResultRegisterConstraint>;
 
 // TODO put the rest of the stuff into the namespace as well
 }

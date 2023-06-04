@@ -475,22 +475,18 @@ def JMP : Instruction<"JMP", [Terminator]>{
   }];
 }
 
-// conditional jumps as terminator, 2 successors, with TODO invert condition interface
+// conditional jumps as terminator, 2 successors, with invert condition interface
 // heavily based on the cf.cond_br, just without the condition
 class Jcc<string mnemonic, string invertedJumpMnemonic> : Instruction<mnemonic, [Terminator, AttrSizedOperandSegments, ConditionalJumpInterface]>{
   let operands = (ins Variadic<AnyType>:$trueDestOperands, Variadic<AnyType>:$falseDestOperands);
 
   let successors = (successor AnySuccessor:$trueDest, AnySuccessor:$falseDest);
-  
-  let extraExtraClassDeclarations = ["amd64::ConditionalJumpInterface invert(mlir::OpBuilder&);"];
 
-  // TODO this works, yes, but isn't that nice, and we only need it in encoding. So at some point make a method that just returns the inverted FeMnem, and uses that in encoding
-  let extraExtraClassDefinitions = [[{
-    ::amd64::ConditionalJumpInterface $cppClass::invert(mlir::OpBuilder& builder) {
-      // inverted destinations
-      return builder.create<amd64:: }] # invertedJumpMnemonic # [{>(getLoc(), getFalseDestOperands(), getTrueDestOperands(), getFalseDest(), getTrueDest());
-    }
-  }]];
+  let extraExtraClassDeclarations = [
+    // We only need it in encoding -> don't construct a whole different op for it, just return the inverted mnemonic
+    "static constexpr FeMnem invert(){ return FE_" # invertedJumpMnemonic # "; }",
+    "static constexpr conditional::predicate getPredicate(){ return conditional::" # !substr(mnemonic, 1) /* remove the J */ # "; }",
+  ];
 }
 
 multiclass JccAndInverted<string mnemonic, string invertedJumpMnemonic> {
