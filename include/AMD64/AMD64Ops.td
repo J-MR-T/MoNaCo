@@ -525,14 +525,10 @@ def CALL : Instruction<"CALL">{
   }]];
 }
 
-// returns
-let results = (outs) in {
-  let operandConstraint1 = "{.which = 0, .reg = FE_AX}" in
-  let operands = (ins gpr64:$ret) in 
-  def RET : Instruction<"RET", [Terminator]>;
-
-  let operands = (ins) in 
-  defm RET : Instr_i<"RET", [Terminator]>;
-}
+// return
+let results = (outs) in
+let operandConstraint1 = "{.which = 0, .reg = FE_AX}" in
+let operands = (ins gpr64:$ret) in 
+def RET : Instruction<"RET", [Terminator]>;
 
 #endif
