@@ -221,10 +221,10 @@ public:
         bool failed = false;
         // TODO optimize the ordering of this, probably jmp>call>div
         // TODO special cases
-        // - jumps
         // - calls
         // - DIV/IDIV because rdx needs to be zeroed/sign extended (2 separate cases)
-        // - returns (wait is that actually a special case?)
+        //
+        // jumps are handled separately
         
         if(instrOp->hasTrait<SpecialCase<Special::DIV>::Impl>()) [[unlikely]] {
             assert(cur + 30 <= buf.data() + buf.capacity() && "Buffer is too small to encode div like instruction");
@@ -273,12 +273,21 @@ public:
 
             // can't use maybeEncodeJump here, because a call always needs to be encoded
             failed |= encodeJump(entryBB, mnemonic);
-        }else if(auto jcc = mlir::dyn_cast<amd64::ConditionalJumpInterface>(instrOp.getOperation())) [[unlikely]] {
         }else{
             failed |= encodeNormally();
         }
 
         return failed;
+    }
+
+    /// returns a pointer to the next instruction to encode.
+    [[nodiscard("Saving a pointer to the current instruction needs to be done in the caller, this only returns it.")]] uint8_t* saveCur(){
+        return cur;
+    }
+
+    /// restores the pointer to the current instruction to the given value.
+    void restoreCur(uint8_t* newCur){
+        cur = newCur;
     }
 
     bool resolveBranches(){
@@ -402,8 +411,19 @@ struct AbstractRegAllocerEncoder{
     
     mlir::ModuleOp mod;
 
-    uint64_t stackSize = 0;
-    uint8_t* stackAllocationInstruction = nullptr; // TODO set this
+    /// size of the stack of the current function, measured in bytes from the base pointer. Includes saving of callee-saved registers. This is for easy access to the current top of stack
+    uint32_t stackSizeFromBP = 0;
+    /// number of bytes used for special purposes, like saving return address and BP
+    uint8_t specialStackBytes = 0;
+    // -> the sum of these two needs to be 16 byte aligned, that's the criterion we will use to top up the allocation
+
+    /// the SUB64rr rsp, xxx instruction that allocates the stackframe
+    uint8_t* stackAllocationInstruction = nullptr;
+    /// the ADD64rr rsp, xxx instruction***s*** that deallocate the stackframe
+    llvm::SmallVector<uint8_t*, 8> stackDeallocationInstructions;
+
+    /// the number of bytes we need to allocate at the end doesn't include the preallocated stack bytes (specialStackBytes + what is needed for saving callee saved regs), because they are already allocated, so these need to be saved, to be subtracted from the total
+    uint8_t preAllocatedStackBytes = 0;
 
     AbstractRegAllocerEncoder(mlir::ModuleOp mod, std::vector<uint8_t>& buf) : encoder(buf, blockArgToReg), mod(mod) {}
 
@@ -420,11 +440,10 @@ struct AbstractRegAllocerEncoder{
 
     /// returns whether it failed
     bool run(){
-        bool failed = false; // TODO
+        bool failed = false; // TODO |= this in the right places
         // TODO this is not right, doesn't expand the vector yet
         for(auto func : mod.getOps<mlir::func::FuncOp>()){
-            // TODO uncomment once it exists
-            //emitPrologue(func);
+            emitPrologue(func);
 
             // regions are assumed to be disjoint
             // TODO this can't be in any order, this needs to be RPO
@@ -437,8 +456,6 @@ struct AbstractRegAllocerEncoder{
                 for(auto& op: llvm::make_range(block.begin(), --endIt)){
 
                     if(auto instr = mlir::dyn_cast<amd64::InstructionOpInterface>(&op)) [[likely]]{
-                        DEBUGLOG("Allocating for instruction: " << instr << ":");
-
                         // two operands max for now
                         // TODO make this nicer
                         assert(instr->getNumOperands() <= 2);
@@ -455,7 +472,32 @@ struct AbstractRegAllocerEncoder{
 
             // TODO resolving unresolvedBranches after every function might give better cache locality, and be better if we don't exceed the in-place-allocated limit, consider doing that
         }
-        failed|= encoder.resolveBranches();
+
+        failed |= encoder.resolveBranches();
+
+        assert(stackAllocationInstruction);
+        // TODO not sure i should assert this
+        //assert(!stackDeallocationInstructions.empty()); // at least one return
+
+        assert(specialStackBytes < preAllocatedStackBytes && stackSizeFromBP + specialStackBytes >= preAllocatedStackBytes);
+
+        // fix all stack frame allocations/deallocations with final size of stack frame
+        auto totalSize = stackSizeFromBP + specialStackBytes;
+        auto paddingForAlignment = 16 - (totalSize % 16);
+
+        // don't need to allocate what's already allocated, but do need to pad
+        auto allocationSize = totalSize - preAllocatedStackBytes + paddingForAlignment;
+
+        // allocation
+        encoder.restoreCur(stackAllocationInstruction);
+        encoder.encodeRaw(FE_SUB64rr, FE_BP, allocationSize);
+
+        // deallocation
+        for(auto instr : stackDeallocationInstructions){
+            encoder.restoreCur(instr);
+            encoder.encodeRaw(FE_ADD64rr, FE_BP, allocationSize);
+        }
+
         return failed;
     }
 
@@ -475,34 +517,34 @@ protected:
 
     // TODO the case distinction depending on the slot kind can be avoided for allocateEncodeValueDef, by using a template and if constexpr, but see if that actually makes the code faster first
     /// move from the register the value is currently in, to the slot, or from the operand register override, if it is set
-    inline bool moveFromOperandRegToSlot(mlir::Value val, ValueSlot slot, FeReg operandRegOverride = (FeReg) FE_NOREG){
+    inline bool moveFromOperandRegToSlot(mlir::Value fromVal, ValueSlot toSlot, FeReg operandRegOverride = (FeReg) FE_NOREG){
         /// the register the value is currently in
-        FeReg& valReg = registerOf(val);
+        FeReg& fromValReg = registerOf(fromVal);
 
         if(operandRegOverride != (FeReg) FE_NOREG)
-            valReg = operandRegOverride;
+            fromValReg = operandRegOverride;
 
-        if(slot.kind == ValueSlot::Register){
+        if(toSlot.kind == ValueSlot::Register){
             FeMnem mnem;
-            switch(slot.bitwidth){
+            switch(toSlot.bitwidth){
                 // TODO try to eliminate partial register deps
                 case 8:  mnem = FE_MOV8rr;  break;
                 case 16: mnem = FE_MOV16rr; break;
                 case 32: mnem = FE_MOV32rr; break;
                 case 64: mnem = FE_MOV64rr; break;
-                default: assert(false && "invalid bitwidth");
+                default: fromVal.dump(); DEBUGLOG("reg: " << toSlot.reg << "\t bw: " << toSlot.bitwidth); assert(false && "invalid bitwidth");
             }
-            bool failed = encoder.encodeRaw(mnem, slot.reg, valReg);
+            bool failed = encoder.encodeRaw(mnem, toSlot.reg, fromValReg);
 
             // TODO think again about whether this is really necessary
             // we're moving into the register of the arg, so overwrite the register of the value to be in the slot, so it's location is up to date again
             // TODO -> this means we have to have already encoded the instruction using the value from the operand register
-            valReg = slot.reg;
+            fromValReg = toSlot.reg;
             return failed;
         }else{
-            assert(slot.kind == ValueSlot::Stack && "slot neither register nor stack");
+            assert(toSlot.kind == ValueSlot::Stack && "slot neither register nor stack");
             FeMnem mnem;
-            switch(slot.bitwidth){
+            switch(toSlot.bitwidth){
                 // TODO try to eliminate partial register deps
                 case 8:  mnem = FE_MOV8mr;  break;
                 case 16: mnem = FE_MOV16mr; break;
@@ -510,7 +552,7 @@ protected:
                 case 64: mnem = FE_MOV64mr; break;
                 default: assert(false && "invalid bitwidth");
             }
-            return encoder.encodeRaw(mnem, slot.mem, valReg);
+            return encoder.encodeRaw(mnem, toSlot.mem, fromValReg);
         }
     }
 
@@ -548,12 +590,14 @@ protected:
     }
 
     inline bool moveFromSlotToOperandReg(mlir::Value val, FeReg reg){
+        assert(valueToSlot.contains(val));
         return moveFromSlotToOperandReg(val, valueToSlot[val], reg);
     }
 
     /// only use: moving phis
     /// returns whether it failed
     inline bool moveFromSlotToSlot(mlir::Value from, mlir::Value to, FeReg memMemMoveReg){
+        assert(valueToSlot.contains(to));
         // TODO maybe do a case for when the slot is the same
 
         // simply calling the two movs separately is an option, but in every case but a mem-mem move it will generate one MOVrr too much. That probably doesn't cost much performance though
@@ -609,7 +653,7 @@ protected:
         FeReg memMemMoveReg = FE_AX;
 
         /// only guaranteed to be valid if isCriticalEdge is true
-        auto condJump = mlir::cast<amd64::ConditionalJumpInterface>(terminator);
+        auto condJump = mlir::dyn_cast<amd64::ConditionalJumpInterface>(terminator);
         if constexpr(isCriticalEdge){
             assert(condJump && "critical edges can only be on conditional jumps");
 
@@ -641,6 +685,7 @@ protected:
                 }
             }else{
                 // no dependencies, just load the values in any order -> just in the order we encounter them now
+                // load the operand into the slot of the arg
                 handleChainElement(operand, arg);
             }
         }
@@ -720,8 +765,9 @@ protected:
         // We still have to take care of PHI cycles/chains here, i.e. do a kind of topological sort, which handles a cycle by copying one of the values in the cycle to a temporary register
 
         if(auto ret = mlir::dyn_cast<amd64::RET>(*it)){
-            // TODO call emitEpilogue when its finalized
+            // first load the operand, because it is very probably on the stack, and it will get moved into AX (return reg), which we don't touch in the epilogue
             loadValueForUse(ret.getOperand(), 0, ret.getOperandRegisterConstraints().first);
+            emitEpilogue();
 
             encoder.encodeIntraBlockOp(mod, ret);
         }else if (auto jmp = mlir::dyn_cast<amd64::JMP>(*it)){
@@ -735,6 +781,15 @@ protected:
             // so we pass the handleCFGEdge helper as an argument (parameterized depending on whether or not this is a critical edge), to be called by the encoder function
             encoder.encodeJcc<&AbstractRegAllocerEncoder<Derived>::handleCFGEdgeHelper<false>, &AbstractRegAllocerEncoder<Derived>::handleCFGEdgeHelper<true>>(*this, jcc);
         }
+    }
+
+    // TODO put in concrete regallocer
+    inline void emitPrologue(mlir::func::FuncOp func){
+        static_cast<Derived*>(this)->emitPrologueImpl(func);
+    }
+
+    inline void emitEpilogue(){
+        static_cast<Derived*>(this)->emitEpilogueImpl();
     }
 };
 
@@ -784,11 +839,8 @@ public:
             std::get<0>(resultInfoForSpilling[i]) = result;
 
             uint8_t bitwidth = mlir::dyn_cast<amd64::RegisterTypeInterface>(result.getType()).getBitwidth();
-            auto memLoc = static_cast<FeOp>(FE_MEM(FE_BP, 0,0, stackSize));
+            FeOp memLoc = FE_MEM(FE_BP, 0,0, stackSizeFromBP -= bitwidth / 8);
             std::get<1>(resultInfoForSpilling[i]) = valueToSlot[result] = ValueSlot{.kind = ValueSlot::Kind::Stack, .mem = memLoc, .bitwidth = bitwidth};
-
-            // TODO check that this is done as a shift
-            stackSize += bitwidth / 8;
 
             // allocate registers for the result
             if(i == 0){
@@ -817,6 +869,67 @@ public:
         for(auto [result, slot, reg] : resultInfoForSpilling){
             moveFromOperandRegToSlot(result, slot, reg);
         }
+    }
+
+    void emitPrologueImpl(mlir::func::FuncOp func){
+        // - save callee saved registers
+        //      - push rbp
+        //      - mov rbp, rsp
+        //      - push {rbx, r12, r13, r14, r15}
+        //      - at this point, the stack is 8 bytes off of being 16 byte aligned, because we've pushed 6*8=3*16 bytes -> the alignment is the same as immediately after the call
+        // - stack frame setup
+        //      - one sub rsp, xxx to reserve space for spilling etc., this also needs to take care of alignment
+        //          - needs to be rewritten at the end, once the final size of the stackframe is known
+        // - spill arguments
+
+        encoder.encodeRaw(FE_PUSHr, FE_BP);
+        encoder.encodeRaw(FE_MOV64rr, FE_BP, FE_SP);
+
+        for (auto reg : {FE_BX, FE_R12, FE_R13, FE_R14, FE_R15})
+            encoder.encodeRaw(FE_PUSHr, reg);
+
+        stackSizeFromBP = 5*8;
+        specialStackBytes = 2*8; // return address and saved rbp
+        preAllocatedStackBytes = stackSizeFromBP + specialStackBytes;
+
+        // this position needs to be rewritten, with the final stackSizeFromBP at the end
+        stackAllocationInstruction = encoder.saveCur();
+        encoder.encodeRaw(FE_SUB64ri, FE_SP, 0);
+
+        // spill args
+        static constexpr FeReg argRegs[] = {FE_DI, FE_SI, FE_DX, FE_CX, FE_R8, FE_R9};
+
+        for(auto [i, arg] : llvm::enumerate(func.getArguments())){
+            if(i < 6){
+                assert(arg.getType().isIntOrFloat() && "only int/float args supported for now");
+                uint8_t bitwidth = arg.getType().getIntOrFloatBitWidth();
+                auto slot = valueToSlot[arg] = ValueSlot{.kind = ValueSlot::Stack, .mem = FE_MEM(FE_BP, 0, 0, stackSizeFromBP -= bitwidth/8), .bitwidth = bitwidth};
+
+                moveFromOperandRegToSlot(arg, slot, argRegs[i]);
+            }else{
+                EXIT_TODO_X("more than 6 args not implemented yet");
+            }
+        }
+    }
+
+    void emitEpilogueImpl(){
+        // - stack frame cleanup
+        //      - add rsp, stackSize
+        //          - needs to be rewritten at the end, once the final size of the stackfrae is known
+        // - restore callee saved registers
+        //      - pop {r15, r14, r13, r12, rbx}
+        //      - mov rsp, rbp
+        //      - pop rbp
+
+        // needs to be rewritten later
+        stackDeallocationInstructions.push_back(encoder.saveCur());
+        encoder.encodeRaw(FE_ADD64ri, FE_SP, 0);
+
+        for (auto reg : {FE_R15, FE_R14, FE_R13, FE_R12, FE_BX})
+            encoder.encodeRaw(FE_POPr, reg);
+
+        encoder.encodeRaw(FE_MOV64rr, FE_SP, FE_BP);
+        encoder.encodeRaw(FE_POPr, FE_BP);
     }
 
 private:
@@ -869,24 +982,6 @@ void dummyRegalloc(mlir::Operation* op){
         }
     }
 
-}
-
-// TODO move these next 3 to the AbstractRegAllocerEncoder
-
-// TODO these need a regallocer as an arg
-inline void emitPrologue(Encoder& encoder){
-    // TODO decide on wether a pure 'encode' wrapper in the Encoder class is unnecessary, or actually makes the code nicer
-    // TODO prologue
-    // - stack frame setup
-    // - save callee saved registers
-    // - (more?)
-}
-
-inline void emitEpilogue(Encoder& encoder){
-    // TODO epilogue
-    // - restore callee saved registers
-    // - stack frame cleanup
-    // - (more?)
 }
 
 
