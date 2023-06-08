@@ -515,6 +515,7 @@ def CALL : Instruction<"CALL">{
   // TODO maybe use a block instead of a function type later on
   let operands = (ins FlatSymbolRefAttr:$callee, Variadic<AnyType>:$operands);
   let results = (outs anygprType:$ret); // only single return value for now.
+  // TODO we will need some info about what size the callee returns, see RET
   let resultConstraint1 = "{.which = 0, .reg = FE_AX}";
 
   let extraExtraClassDeclarations = [[{
@@ -528,7 +529,9 @@ def CALL : Instruction<"CALL">{
 // return
 let results = (outs) in
 let operandConstraint1 = "{.which = 0, .reg = FE_AX}" in
-let operands = (ins gpr64:$ret) in 
+// the burden is on the caller to use this correctly
+// TODO maybe add a verifier check, to check all returns have types matching the function return type
+let operands = (ins anygprType:$ret) in 
 def RET : Instruction<"RET", [Terminator]>;
 
 #endif
