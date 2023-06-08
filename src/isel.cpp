@@ -95,11 +95,11 @@ auto binOpMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
 auto binOpAndImmMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr
      >(auto op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
-    auto constantOp = mlir::dyn_cast<mlir::arith::ConstantIntOp>(op.getLhs().getDefiningOp());
+    auto constantOp = mlir::dyn_cast_or_null<mlir::arith::ConstantIntOp>(op.getLhs().getDefiningOp());
     auto other = adaptor.getRhs();
 
     if(!constantOp){
-        constantOp = mlir::dyn_cast<mlir::arith::ConstantIntOp>(op.getRhs().getDefiningOp());
+        constantOp = mlir::dyn_cast_or_null<mlir::arith::ConstantIntOp>(op.getRhs().getDefiningOp());
         other = adaptor.getLhs();
     }
 
@@ -375,11 +375,39 @@ auto returnMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
     if(returnOp.getNumOperands() > 1)
         return rewriter.notifyMatchFailure(returnOp, "multiple return values not supported");
 
-    rewriter.replaceOpWithNewOp<RET>(returnOp, adaptor.getOperands().front());
+    auto retOperand = adaptor.getOperands().front();
+
+    rewriter.replaceOpWithNewOp<RET>(returnOp, retOperand);
     return mlir::success();
 };
 
 using ReturnPat = MatchRMI<mlir::func::ReturnOp, 64, returnMatchReplace, amd64::RET, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, ignoreBitwidthMatchLambda>;
+
+// see https://mlir.llvm.org/docs/DialectConversion/#type-converter and https://mlir.llvm.org/docs/DialectConversion/#region-signature-conversion
+// -> this is necessary to convert the types of the region ops
+/// similar to `RegionOpConversion` from OpenMPToLLVM.cpp
+struct FuncPat : public mlir::OpConversionPattern<mlir::func::FuncOp>{
+    FuncPat(mlir::TypeConverter& typeConverter, mlir::MLIRContext* context) : mlir::OpConversionPattern<mlir::func::FuncOp>(typeConverter, context, 1){}
+
+    mlir::LogicalResult matchAndRewrite(mlir::func::FuncOp func, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
+        DEBUGLOG("Trying to rewrite function " << func.getName());
+
+        // TODO the whole signature conversion doesn't work, instead we use the typeconverter to convert the function type, which isn't pretty, but it works
+        //mlir::TypeConverter::SignatureConversion signatureConversion(func.getNumArguments());
+        //signatureConversion.getConvertedTypes()
+        //
+        //if(failed(getTypeConverter()->convertSignatureArgs(func.getFunctionType(), signatureConversion)))
+        //    return mlir::failure();
+
+        auto newFunc = rewriter.create<mlir::func::FuncOp>(func.getLoc(), func.getName(), mlir::dyn_cast<mlir::FunctionType>(getTypeConverter()->convertType(adaptor.getFunctionType())) /* this is also probably wrong, type converter still says its illegal afterwards */, adaptor.getSymVisibilityAttr(), adaptor.getArgAttrsAttr(), adaptor.getResAttrsAttr());
+        rewriter.inlineRegionBefore(func.getRegion(), newFunc.getRegion(), newFunc.getRegion().end());
+        if (failed(rewriter.convertRegionTypes(&newFunc.getRegion(), *getTypeConverter())))
+            return mlir::failure();
+
+        rewriter.replaceOp(func, newFunc->getResults());
+        return mlir::success();
+    }
+};
 
 } // end anonymous namespace
 
@@ -406,17 +434,36 @@ bool prototypeIsel(mlir::Operation* regionOp){
     });
 
     // all register and memloc types are already legal
-    // TODO this is probably not needed in the end, because we shouldn't encounter them at first. But for now with manually created ops it is needed.
+    // TODO this is probably not needed in the end, because we shouldn't encounter them in the first place. But for now with manually created ops it is needed.
     typeConverter.addConversion([](amd64::RegisterTypeInterface type) -> std::optional<mlir::Type>{
         return type;
     });
     typeConverter.addConversion([](amd64::memLocType type) -> std::optional<mlir::Type>{
         return type;
     });
+    // TODO this might be entirely stupid
+    typeConverter.addConversion([&typeConverter](mlir::FunctionType functionType) -> std::optional<mlir::Type>{
+        llvm::SmallVector<mlir::Type, 6> inputs;
+        llvm::SmallVector<mlir::Type, 1> results;
+        if(mlir::failed(typeConverter.convertTypes(functionType.getInputs(), inputs))
+                || mlir::failed(typeConverter.convertTypes(functionType.getResults(), results)))
+            return {};
+
+        return mlir::FunctionType::get(functionType.getContext(), 
+            inputs, results
+        );
+    });
 
     mlir::ConversionTarget target(*ctx);
     target.addLegalDialect<mlir::BuiltinDialect>();
     target.addLegalDialect<amd64::AMD64Dialect>();
+
+    // from https://discourse.llvm.org/t/lowering-and-type-conversion-of-block-arguments/63570
+    // funcs are only legal once their args have been converted
+    // TODO if this costs a lot of performance, try defining an amd64::FuncOp and make all of func illegal
+    target.addDynamicallyLegalOp<mlir::func::FuncOp>([&](mlir::func::FuncOp op) { return typeConverter.isLegal(op.getFunctionType()); });
+    // this also needs a pattern to rewrite func ops, see `FuncPat`
+
     //target.addLegalDialect<mlir::func::FuncDialect>();
     // func is legal, except for returns and calls, as soon as those have instructions
     //target.addIllegalOp<mlir::func::ReturnOp>();
@@ -452,6 +499,9 @@ bool prototypeIsel(mlir::Operation* regionOp){
 
     ADD_PATTERN(CallPat);
     patterns.add<ReturnPat>(typeConverter, ctx);
+
+
+    patterns.add<FuncPat>(typeConverter, ctx);
 #undef ADD_PATTERN
     
     //llvm::setCurrentDebugType("greedy-rewriter");
