@@ -480,7 +480,7 @@ struct AbstractRegAllocerEncoder{
                 handleTerminator(endIt);
             };
 
-            // do a reverse post order traversal of the CFG, to make sure we encounter all definitions of uses before their uses.
+            // do a reverse post order traversal (RPOT) of the CFG, to make sure we encounter all definitions of uses before their uses.
             // except for the entry block, blocks with block args, should have a terminator that jumps to that block visited before the block arg is ever used. So we can allocate a slot at that point
             // a reverse post order traversal, is effectively a topological sorting, by lowest number of *incoming* edges/predecessors.
             // we will make this a DAG, by ignoring back- and self-edges
