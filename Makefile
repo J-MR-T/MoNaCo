@@ -15,6 +15,8 @@ setup:
 
 clean:
 	rm -rf build
+	rm -rf lib/fadec/build
+
 
 test:
 	$(MAKE) debug
