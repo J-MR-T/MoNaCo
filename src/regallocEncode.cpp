@@ -8,6 +8,11 @@
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 
+// `ForwardIterator` for use with `walk` is defined here ...
+#include <mlir/IR/Visitors.h>
+// ... but `ReverseIterator`, also for use with `walk`, is defined here:
+#include <mlir/IR/Iterators.h>
+
 #include "util.h"
 #include "AMD64/AMD64Dialect.h"
 #include "AMD64/AMD64Ops.h"
@@ -28,7 +33,7 @@ struct Encoder{
     mlir::DenseMap<mlir::BlockArgument, FeReg>& blockArgToRegs;
 
     // Has to use an actual map instead of a vector, because a jump/call doesn't know the index of the target block
-    mlir::DenseMap<mlir::Block*, uint8_t*> blocksToBuffer;
+    mlir::DenseMap<mlir::Block*, uint8_t*> blocksToBuffer; // TODO might make sense to make this a reference, and have the regallocer own it, because it needs it too
     llvm::DenseMap<mlir::SymbolRefAttr, mlir::Operation*> symbolrefToFuncCache;
 
     struct UnresolvedBranchInfo{
@@ -443,17 +448,22 @@ struct AbstractRegAllocerEncoder{
         bool failed = false; // TODO |= this in the right places
         // TODO this is not right, doesn't expand the vector yet
         for(auto func : mod.getOps<mlir::func::FuncOp>()){
+            if(func.isExternal())
+                continue;
+
             emitPrologue(func);
 
-            // regions are assumed to be disjoint
-            // TODO this can't be in any order, this needs to be RPO
-            for(auto& block : func.getBlocks()){
+            // this lambda is only for readability, to separate the traversal from the actual handling of a block
+            auto encodeBlock = [&](mlir::Block* block){
+                encoder.blocksToBuffer[block] = encoder.cur;
+
+                DEBUGLOG("encoding block:"); block->dump();
+                return; // TODO remove
                 // map block to start of block in buffer
-                encoder.blocksToBuffer[&block] = encoder.cur;
 
                 // iterate over all but the last instruction
-                auto endIt = block.end();
-                for(auto& op: llvm::make_range(block.begin(), --endIt)){
+                auto endIt = block->end();
+                for(auto& op: llvm::make_range(block->begin(), --endIt)){
 
                     if(auto instr = mlir::dyn_cast<amd64::InstructionOpInterface>(&op)) [[likely]]{
                         // two operands max for now
@@ -468,7 +478,43 @@ struct AbstractRegAllocerEncoder{
                     }
                 }
                 handleTerminator(endIt);
+            };
+
+            // do a reverse post order traversal of the CFG, to make sure we encounter all definitions of uses before their uses.
+            // except for the entry block, blocks with block args, should have a terminator that jumps to that block visited before the block arg is ever used. So we can allocate a slot at that point
+            // a reverse post order traversal, is effectively a topological sorting, by lowest number of *incoming* edges/predecessors.
+            // we will make this a DAG, by ignoring back- and self-edges
+            // the blocksToBuffer map can already be used as a 'visited' set, because we only add to it, when we will certainly encode the block, so at any point we find a block from it in this traversal, the block is certainly encoded.
+
+            auto* entryBlock = &func.getBlocks().front();
+            llvm::SmallVector<mlir::Block*, 4> worklist({entryBlock});
+            // TODO condition probably worklist not empty
+
+            while(!worklist.empty() /* TODO find good exit condition */){
+                auto* currentBlock = worklist.pop_back_val();
+                // when we enter this loop with the current block, we *will encode it for certain*
+                encodeBlock(currentBlock);
+
+                // decide which blocks to encode next
+                for(auto* possibleNextBlock : currentBlock->getSuccessors()){
+                    // skip self edges *from* the current block, to itself
+                    if(currentBlock == possibleNextBlock)
+                        continue;
+
+                    // if all predecessors are already encoded , we can encode it
+                    bool allPredecessorsEncoded = true;
+                    for(auto* pred : possibleNextBlock->getPredecessors())
+                        if(pred != possibleNextBlock /* self edges are alright, we can still handle that block, even if we havent seen it*/ && !encoder.blocksToBuffer.contains(pred))
+                            allPredecessorsEncoded = false; // TODO could do this with an elaborate &=, see if it makes a performance difference
+
+                    // if we have encoded all predecessors (or the possible next block has only itself as predecessor), we can visit the block now
+                    if(allPredecessorsEncoded)
+                        worklist.push_back(possibleNextBlock);
+
+                    // if we haven't, then by definition we will see the block again later, when we encode it's last unencoded predecessor, so handle it then
+                }
             }
+
 
             // TODO resolving unresolvedBranches after every function might give better cache locality, and be better if we don't exceed the in-place-allocated limit, consider doing that
         }
@@ -763,6 +809,15 @@ protected:
         // Because we're traversing in RPO, we know that the block args are already allocated.
         // Because this is an unconditional branch, we cannot be on a critical edge, so we can just use normal MOVs to load the values
         // We still have to take care of PHI cycles/chains here, i.e. do a kind of topological sort, which handles a cycle by copying one of the values in the cycle to a temporary register
+        auto tryAllocateSlotsForBlockArgsOfSuccessor = [this](mlir::Block::BlockArgListType blockArgs){
+            for(auto arg : blockArgs){
+                // allocate a slot for the block arg
+                // TODO this needs to be functionality of a concrete regallocer implementation, not the abstract one, because it decides where to put block args
+                uint8_t bitwidth = arg.getType().cast<amd64::RegisterTypeInterface>().getBitwidth();
+                valueToSlot.try_emplace(arg, ValueSlot{.kind = ValueSlot::Stack, .mem = allocateNewStackslot(bitwidth), .bitwidth = bitwidth});
+                // TODO a possible optimization would be to use another map for blocks whose blockargs have already been allocated, and skip this loop entirely. Might be worth it for blocks with a lot of args. But might cost performance otherwise
+            }
+        };
 
         if(auto ret = mlir::dyn_cast<amd64::RET>(*it)){
             // first load the operand, because it is very probably on the stack, and it will get moved into AX (return reg), which we don't touch in the epilogue
@@ -772,11 +827,18 @@ protected:
             encoder.encodeIntraBlockOp(mod, ret);
         }else if (auto jmp = mlir::dyn_cast<amd64::JMP>(*it)){
             auto blockArgs = jmp.getDest()->getArguments();
+            tryAllocateSlotsForBlockArgsOfSuccessor(blockArgs);
+
             auto blockArgOperands = jmp.getDestOperands();
 
             handleCFGEdgeHelper<false>(blockArgs, blockArgOperands, jmp.getOperation());
             encoder.encodeJMP(jmp);
         }else if(auto jcc = mlir::dyn_cast<amd64::ConditionalJumpInterface>(*it)){
+            for(auto dst: {jcc.getTrueDest(), jcc.getFalseDest()}){
+                auto blockArgs = dst->getArguments();
+                tryAllocateSlotsForBlockArgsOfSuccessor(blockArgs);
+            }
+
             // this is a problem, because we only have a single jump here, which gets encoded into 2 (max) later on, but we need to place the MOVs in between those two
             // so we pass the handleCFGEdge helper as an argument (parameterized depending on whether or not this is a critical edge), to be called by the encoder function
             encoder.encodeJcc<&AbstractRegAllocerEncoder<Derived>::handleCFGEdgeHelper<false>, &AbstractRegAllocerEncoder<Derived>::handleCFGEdgeHelper<true>>(*this, jcc);
@@ -790,6 +852,11 @@ protected:
 
     inline void emitEpilogue(){
         static_cast<Derived*>(this)->emitEpilogueImpl();
+    }
+
+    /// allocates a new stackslot and returns an FeOp that can be used to access it
+    inline FeOp allocateNewStackslot(uint8_t bitwidth){
+        return FE_MEM(FE_BP, 0,0, stackSizeFromBP -= bitwidth / 8);
     }
 };
 
@@ -839,7 +906,7 @@ public:
             std::get<0>(resultInfoForSpilling[i]) = result;
 
             uint8_t bitwidth = mlir::dyn_cast<amd64::RegisterTypeInterface>(result.getType()).getBitwidth();
-            FeOp memLoc = FE_MEM(FE_BP, 0,0, stackSizeFromBP -= bitwidth / 8);
+            FeOp memLoc = allocateNewStackslot(bitwidth);
             std::get<1>(resultInfoForSpilling[i]) = valueToSlot[result] = ValueSlot{.kind = ValueSlot::Kind::Stack, .mem = memLoc, .bitwidth = bitwidth};
 
             // allocate registers for the result
@@ -903,7 +970,7 @@ public:
             if(i < 6){
                 assert(arg.getType().isIntOrFloat() && "only int/float args supported for now");
                 uint8_t bitwidth = arg.getType().getIntOrFloatBitWidth();
-                auto slot = valueToSlot[arg] = ValueSlot{.kind = ValueSlot::Stack, .mem = FE_MEM(FE_BP, 0, 0, stackSizeFromBP -= bitwidth/8), .bitwidth = bitwidth};
+                auto slot = valueToSlot[arg] = ValueSlot{.kind = ValueSlot::Stack, .mem = allocateNewStackslot(bitwidth), .bitwidth = bitwidth};
 
                 moveFromOperandRegToSlot(arg, slot, argRegs[i]);
             }else{
