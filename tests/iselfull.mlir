@@ -1,16 +1,26 @@
+// RUN: %monaco -p isel %s | FileCheck %s
+
 module {
+  // CHECK: giveI8
+  // CHECK-SAME: amd64.gpr8
   func.func private @giveI8() -> i8 {
     %0 = arith.constant 9 : i8
     return %0 : i8
   }
+  // CHECK: giveI16
+  // CHECK-SAME: amd64.gpr16
   func.func private @giveI16() -> i16 {
     %0 = arith.constant 17 : i16
     return %0 : i16
   }
+  // CHECK: giveI32
+  // CHECK-SAME: amd64.gpr32
   func.func private @giveI32() -> i32 {
     %0 = arith.constant 33 : i32
     return %0 : i32
   }
+  // CHECK: giveI64
+  // CHECK-SAME: amd64.gpr64
   func.func private @giveI64() -> i64 {
     %0 = arith.constant 65 : i64
     return %0 : i64
