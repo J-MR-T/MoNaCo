@@ -373,10 +373,13 @@ CALL_PAT(8); CALL_PAT(16); CALL_PAT(32); CALL_PAT(64);
 auto returnMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename RET, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE
      >(mlir::func::ReturnOp returnOp, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
+    mlir::Value retOperand;
     if(returnOp.getNumOperands() > 1)
         return rewriter.notifyMatchFailure(returnOp, "multiple return values not supported");
-
-    auto retOperand = adaptor.getOperands().front();
+    else if(returnOp.getNumOperands() == 0)
+        retOperand = rewriter.create<amd64::MOV64ri>(returnOp.getLoc(), 0); // TODO this is not right yet, need to know the return type for the right bitwidth
+    else
+        retOperand = adaptor.getOperands().front();
 
     rewriter.replaceOpWithNewOp<RET>(returnOp, retOperand);
     return mlir::success();
