@@ -27,7 +27,19 @@ using namespace std::literals::string_literals;
 
 #ifndef NDEBUG
 
-#define DEBUGLOG(x) do { llvm::errs() << "Line " << STRINGIZE_MACRO(__LINE__) << ": " << x << "\n"; fflush(stderr); } while(0)
+// __FILE__ isn't necessarily just the file name
+// from https://stackoverflow.com/a/38237385
+constexpr const char* file_name(const char* path) {
+    const char* file = path;
+    while (*path) {
+        if (*path++ == '/') {
+            file = path;
+        }
+    }
+    return file;
+}
+
+#define DEBUGLOG(x) do { llvm::errs() << "File: " << file_name(__FILE__) << "Line " << STRINGIZE_MACRO(__LINE__) << ": " << x << "\n"; fflush(stderr); } while(0)
 #define IFDEBUG(x) x
 #define IFDEBUGELSE(x, y) x
 
@@ -47,6 +59,23 @@ using namespace std::literals::string_literals;
 
 namespace termcolor{
     extern const char* red, *green, *yellow, *blue, *magenta, *cyan, *white, *reset;
+
+    template<typename T>
+    struct colored_text{
+        const char* color;
+        const T& t;
+
+        // overload for llvm::raw_ostream
+        friend llvm::raw_ostream& operator<<(llvm::raw_ostream& os, const colored_text& ct){
+            os << ct.color << ct.t << reset;
+            return os;
+        }
+    };
+
+    template<typename T>
+    inline colored_text<T> make(const char* color, const T& t){
+        return {color, t};
+    }
 }
 
 // === concepts ===
@@ -60,7 +89,7 @@ concept ordered_key = requires(T a, T b){
 
 // === datastructures ===
 
-// like https://www.llvm.org/docs/ProgrammersManual.html#dss-sortedvectormap recommends, use a sorted vector for strict insert then query map (this is even a subset of that, it doesn't support inserting after building at all)
+// like https://www.llvm.org/docs/ProgrammersManual.html#dss-sortedvectormap recommends, use a sorted vector for strict insert then query map
 template<ordered_key K, typename V>
 struct InsertBeforeQueryMap{
     using ElemPairType = typename std::pair<K,V>;
@@ -209,19 +238,20 @@ namespace ArgParse{
     
     // struct for all possible arguments
     const struct {
-        const Arg help{     "h", "help",           0, "Show this help message and exit",                                      FLAG};
-        const Arg input{    "i", "input",          1, "Input file"                     ,                                      REQUIRED};
-        const Arg output{   "o", "output",         2, "Output file"};
-        const Arg isel{     "s", "isel",           0, "Just do Instruction Selection"  ,                                      FLAG};
-        const Arg fallback{ "F", "force-fallback", 0, "Force fallback to MLIR module compilation through the LLVM toolchain", FLAG};
-        const Arg debug{    "d", "debug",          0, "Print debug information (set llvm::DebugFlag)",                        FLAG};
-        const Arg benchmark{"b", "benchmark",      0, "Benchmark the compiler",                                               FLAG};
-        const Arg iterations{"", "iterations",     0, "Number of iterations for benchmarking"};
+        const Arg help{      "h", "help",           0, "Show this help message and exit",                                                          FLAG};
+        const Arg input{     "i", "input",          1, "Input file"                     ,                                                          REQUIRED};
+        const Arg output{    "o", "output",         2, "Output file"};
+        const Arg fallback{  "F", "force-fallback", 0, "Force fallback to MLIR module compilation through the LLVM toolchain",                     FLAG};
+        const Arg noFallback{"n", "no-fallback",    0, "Do not fallback to MLIR module compilation through the LLVM toolchain",                    FLAG};
+        const Arg print{     "p", "print",          0, "Print parts of the compilation process. Expects 'input' 'isel', or 'asm' as an argument"};
+        const Arg debug{     "d", "debug",          0, "Print maximum debug information (set llvm::DebugFlag and all -p options)",                 FLAG};
+        const Arg benchmark{ "b", "benchmark",      0, "Benchmark the compiler",                                                                   FLAG};
+        const Arg iterations{"",  "iterations",     0, "Number of iterations for benchmarking (default: 1)"};
 
         const Arg sentinel{"", "", 0, ""};
 
-        const Arg* const all[9] = {&help, &input, &output, &isel, &fallback, &debug, &benchmark, &iterations, &sentinel};
-        
+        const Arg* const all[10] = {&help, &input, &output, &fallback, &noFallback, &print, &debug, &benchmark, &iterations, &sentinel};
+
         // iterator over all
         const Arg* begin() const{
             return all[0];
