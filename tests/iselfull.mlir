@@ -51,18 +51,29 @@ module {
     %13 = "arith.constant"() <{value = 16 : i16}> : () -> i16
     %14 = "arith.constant"() <{value = 32 : i32}> : () -> i32
     // ISEL: [[VAL1:%[0-9]+]] = {{.*}}MOV64ri{{.*}}instructionInfo{{.*}}64]}>
+    // ASM: mov{{.*}}, 0x40
+    // ASM-NEXT: mov qword ptr [[[MEM1:rbp\-0x[0-9a-f]+]]]
     %15 = "arith.constant"() <{value = 64 : i64}> : () -> i64
     %16 = "arith.addi"(%12, %0) : (i8, i8) -> i8
     %17 = "arith.addi"(%13, %2) : (i16, i16) -> i16
     %18 = "arith.addi"(%14, %4) : (i32, i32) -> i32
     // ISEL: [[VAL2:%[0-9]+]] = {{.*}}ADD64{{.*}}{{[[VAL1]]|64}}{{.*}}
+    // ASM: add r
+    // ASM-NEXT: mov qword ptr [[[MEM2:rbp\-0x[0-9a-f]+]]]
     %19 = "arith.addi"(%15, %6) : (i64, i64) -> i64
+    // ASM: mov [[REG1:r[0-9a-z]+]], qword ptr [[[MEM2]]]
+    // ASM-NEXT: mov [[REG2:r[0-9a-z]+]], qword ptr [[[MEM2]]]
+    // ASM-NEXT: add [[REG1]], [[REG2]]
     %20 = "arith.addi"(%19, %19) : (i64, i64) -> i64
     %21 = "arith.addi"(%0, %12) : (i8, i8) -> i8
     %22 = "arith.addi"(%2, %13) : (i16, i16) -> i16
     %23 = "arith.addi"(%4, %14) : (i32, i32) -> i32
     %24 = "arith.addi"(%6, %15) : (i64, i64) -> i64
+    // ASM: mov [[REG1:r[0-9a-z]+]], qword ptr [[[MEM2]]]
+    // ASM-NEXT: mov [[REG2:r[0-9a-z]+]], qword ptr [[[MEM1]]]
     // ISEL: CMP64rr{{.*}}[[VAL2]], [[VAL1]]
+    // TODO this is where it fails, because there's a cmp rax, rax for some reason
+    // COM: ASM-NEXT: cmp [[REG1]], [[REG2]]
     %25 = "arith.cmpi"(%19, %15) <{predicate = 5 : i64}> : (i64, i64) -> i1
     // ISEL-NEXT: SETGE{{.*}}gpr8
     // ISEL-NEXT: [[VAL3:%[0-9]+]] = {{.*}}MOVZXr64r8
