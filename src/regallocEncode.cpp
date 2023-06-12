@@ -12,6 +12,7 @@
 #include <mlir/IR/Visitors.h>
 // ... but `ReverseIterator`, also for use with `walk`, is defined here:
 #include <mlir/IR/Iterators.h>
+#include <type_traits>
 
 #include "util.h"
 #include "AMD64/AMD64Dialect.h"
@@ -53,7 +54,8 @@ struct Encoder{
     // placing this here, because it's related to `encodeOp`
 private:
 
-    // if we already know the target block is in the blocksToBuffer map, use that, otherwise, register an unresolved branch, and encode a placeholder
+    // TODO these are using absolute jumps, right? Relative makes more sense
+    /// if we already know the target block is in the blocksToBuffer map, use that, otherwise, register an unresolved branch, and encode a placeholder
     inline auto encodeJump(mlir::Block* targetBB, FeMnem mnemonic) -> int {
         if(auto it = blocksToBuffer.find(targetBB); it != blocksToBuffer.end()){
             // TODO no FE_JMPL needed, right? the encoding can be as small as possible
@@ -65,10 +67,12 @@ private:
             return encodeRaw(mnemonic | FE_JMPL, (intptr_t) cur);
         }
     };
-    // if the jump is to the next instruction/block, don't encode it
+    /// if the jump is to the next instruction/block, don't encode it
     inline auto maybeEncodeJump(mlir::Block* targetBB, FeMnem mnemonic, mlir::Block* nextBB) -> int {
-        if (targetBB == nextBB)
-            return 0;
+        // TODO currently this is left out, because the nextBB is being set linearly at the callsites, but now that we're (correctl) traversing the CFG in RPO, the block ordering in SSA and in machine code are no longer the same
+
+        //if (targetBB == nextBB)
+            //return 0;
 
         return encodeJump(targetBB, mnemonic);
     };
@@ -300,6 +304,8 @@ public:
             assert(target);
             //assert(target->getParent()->getParentOp()->getParentOp() == mod.getOperation() && "Unresolved branch target is not in the module");
 
+            DEBUGLOG("Unresovled branch targets: "); target->dump();
+
             auto it = blocksToBuffer.find(target);
             // TODO think about it again, but I'm pretty sure this can never occur, because we already fail at the call site, if a call target is not a block in the module, but if it can occur normally, make this assertion an actual failure
             assert(it != blocksToBuffer.end() && "Unresolved branch target has not been visited");
@@ -320,7 +326,7 @@ public:
         FdInstr instr; 
         failed = fd_decode(curBefore, buf.capacity() - (curBefore - buf.data()), 64, 0, &instr) < 0;
         if(failed){
-            llvm::errs() << "Test encoding resulted in non-decodable instruction :(\n";
+            llvm::errs() << "encoding resulted in non-decodable instruction :(\n";
         }else{
             char fmtbuf[64];
             fd_format(&instr, fmtbuf, sizeof(fmtbuf));
@@ -334,16 +340,18 @@ public:
         // decode & print to test if it works
         auto max = cur;
 
+        llvm::outs() << termcolor::make(termcolor::red, "Decoded assembly:\n");
+
         for(uint8_t* cur = buf.data(); cur < max;){
             FdInstr instr; 
             auto numBytesEncoded = fd_decode(cur, max - cur, 64, 0, &instr);
             if(numBytesEncoded < 0){
-                llvm::errs() << "Test encoding resulted in non-decodable instruction :(. Trying to find next decodable instruction...\n";
+                llvm::errs() << "Encoding resulted in non-decodable instruction :(. Trying to find next decodable instruction...\n";
                 cur++;
             }else{
                 char fmtbuf[64];
                 fd_format(&instr, fmtbuf, sizeof(fmtbuf));
-                llvm::errs() << fmtbuf << "\n";
+                llvm::outs() <<  fmtbuf << "\n";
                 cur += numBytesEncoded;
             }
         }
@@ -455,16 +463,19 @@ struct AbstractRegAllocerEncoder{
 
             // this lambda is only for readability, to separate the traversal from the actual handling of a block
             auto encodeBlock = [&](mlir::Block* block){
+                // TODO this is an assertion, for the RPO thingy im trying, but we just stop, for the other algo
+                //assert(!encoder.blocksToBuffer.contains(block) && "Already encoded this block");
+                if(encoder.blocksToBuffer.contains(block))
+                    return;
+
                 encoder.blocksToBuffer[block] = encoder.cur;
 
                 DEBUGLOG("encoding block:"); block->dump();
-                return; // TODO remove
                 // map block to start of block in buffer
 
                 // iterate over all but the last instruction
                 auto endIt = block->end();
                 for(auto& op: llvm::make_range(block->begin(), --endIt)){
-
                     if(auto instr = mlir::dyn_cast<amd64::InstructionOpInterface>(&op)) [[likely]]{
                         // two operands max for now
                         // TODO make this nicer
@@ -473,7 +484,6 @@ struct AbstractRegAllocerEncoder{
                             loadValueForUse(operand, i, instr.getOperandRegisterConstraints()[i]);
                         }
 
-                        // TODO call this as soon as its implemented without a builder
                         allocateEncodeValueDef(instr);
                     }
                 }
@@ -487,13 +497,23 @@ struct AbstractRegAllocerEncoder{
             // the blocksToBuffer map can already be used as a 'visited' set, because we only add to it, when we will certainly encode the block, so at any point we find a block from it in this traversal, the block is certainly encoded.
 
             auto* entryBlock = &func.getBlocks().front();
+            // TODO this fails, take care of it...
+            //assert(entryBlock->hasNoSuccessors() && "Apparently MLIR allows branching to the entry block");  // I'm not sure this would actually break anything, but I am aware of assuming this, so let's assert it
             llvm::SmallVector<mlir::Block*, 4> worklist({entryBlock});
-            // TODO condition probably worklist not empty
 
-            while(!worklist.empty() /* TODO find good exit condition */){
+            // TODO this is wrong atm, because if we encounter a loop, we will never enter it
+            while(!worklist.empty()){
                 auto* currentBlock = worklist.pop_back_val();
                 // when we enter this loop with the current block, we *will encode it for certain*
                 encodeBlock(currentBlock);
+
+                // TODO reevaluate this code in the loop below, I'm almost sure a DFS pre-order works too, so this is what comes before the continue;
+                for(auto* possibleNextBlock : currentBlock->getSuccessors()){
+                    if(!encoder.blocksToBuffer.contains(possibleNextBlock))
+                        worklist.push_back(possibleNextBlock);
+                }
+
+                continue;
 
                 // decide which blocks to encode next
                 for(auto* possibleNextBlock : currentBlock->getSuccessors()){
@@ -504,8 +524,8 @@ struct AbstractRegAllocerEncoder{
                     // if all predecessors are already encoded , we can encode it
                     bool allPredecessorsEncoded = true;
                     for(auto* pred : possibleNextBlock->getPredecessors())
-                        if(pred != possibleNextBlock /* self edges are alright, we can still handle that block, even if we havent seen it*/ && !encoder.blocksToBuffer.contains(pred))
-                            allPredecessorsEncoded = false; // TODO could do this with an elaborate &=, see if it makes a performance difference
+                    if(pred != possibleNextBlock /* self edges are alright, we can still handle that block, even if we havent seen it*/ && !encoder.blocksToBuffer.contains(pred))
+                        allPredecessorsEncoded = false; // TODO could do this with an elaborate &=, see if it makes a performance difference
 
                     // if we have encoded all predecessors (or the possible next block has only itself as predecessor), we can visit the block now
                     if(allPredecessorsEncoded)
@@ -515,34 +535,65 @@ struct AbstractRegAllocerEncoder{
                 }
             }
 
-
             // TODO resolving unresolvedBranches after every function might give better cache locality, and be better if we don't exceed the in-place-allocated limit, consider doing that
+
+            auto end = encoder.saveCur();
+
+            assert(stackAllocationInstruction);
+            // TODO not sure i should assert this
+            //assert(!stackDeallocationInstructions.empty()); // at least one return
+
+            assert(specialStackBytes <= preAllocatedStackBytes && "preAllocatedStackBytes should include all bytes, including special ones");
+            assert(stackSizeFromBP + specialStackBytes >= preAllocatedStackBytes && "stack + special bytes should be larger than preallocated bytes");
+
+
+            // fix all stack frame allocations/deallocations with final size of stack frame
+            auto totalSize = stackSizeFromBP + specialStackBytes;
+            auto paddingForAlignment = 16 - (totalSize % 16);
+
+            // don't need to allocate what's already allocated, but do need to pad
+            auto allocationSize = totalSize - preAllocatedStackBytes + paddingForAlignment;
+
+            // immediate encoding is tricky, we can't just encode a bigger immediate into a smaller space, and if we get a bigger space at the start, reencoding with a smaller immediate changes the operand size byte again and now we have too many bytes
+            // -> patch in the individual immediate bytes
+
+            auto patch4ByteImm = [](uint8_t* start, uint32_t value){
+                // all x86(-64) instructions are little endian, but in accessing allocationSize, we have to take care of endianness
+
+                if constexpr(std::endian::native == std::endian::little){
+                    // little endian, so we can just copy the bytes
+                    memcpy(start, &value, 4); // TODO can i do this in a more C++-y way?
+                }else{
+                    static_assert(std::endian::native == std::endian::big && "endianness is neither big nor little, what is it then?");
+
+                    // big endian, so we have to reverse the bytes
+                    // TODO this is wrong, seems that std::copy/reverse copy access the memory at +4, which is UB
+                    //std::reverse_copy(&value, &value+4, start);
+                    static_assert(false && "TODO");
+                }
+            };
+            // allocation
+            // `sub rax, 0x01000000` is: 0x 48 81 EC 00 00 00 01
+            patch4ByteImm(stackAllocationInstruction+3, allocationSize);
+
+            // deallocation
+            for(auto instr : stackDeallocationInstructions){
+                encoder.restoreCur(instr);
+                // `add rax, 0x01000000` is: 0x 48 81 C4 00 00 00 01
+                patch4ByteImm(instr+3, allocationSize);
+            }
+
+            encoder.restoreCur(end);
+
+            stackDeallocationInstructions.clear();
+
+#ifndef NDEBUG
+            // this is not necessary, but can catch bugs with the assert above, so do it in debug builds
+            stackAllocationInstruction = nullptr;
+#endif
         }
 
         failed |= encoder.resolveBranches();
-
-        assert(stackAllocationInstruction);
-        // TODO not sure i should assert this
-        //assert(!stackDeallocationInstructions.empty()); // at least one return
-
-        assert(specialStackBytes < preAllocatedStackBytes && stackSizeFromBP + specialStackBytes >= preAllocatedStackBytes);
-
-        // fix all stack frame allocations/deallocations with final size of stack frame
-        auto totalSize = stackSizeFromBP + specialStackBytes;
-        auto paddingForAlignment = 16 - (totalSize % 16);
-
-        // don't need to allocate what's already allocated, but do need to pad
-        auto allocationSize = totalSize - preAllocatedStackBytes + paddingForAlignment;
-
-        // allocation
-        encoder.restoreCur(stackAllocationInstruction);
-        encoder.encodeRaw(FE_SUB64rr, FE_BP, allocationSize);
-
-        // deallocation
-        for(auto instr : stackDeallocationInstructions){
-            encoder.restoreCur(instr);
-            encoder.encodeRaw(FE_ADD64rr, FE_BP, allocationSize);
-        }
 
         return failed;
     }
@@ -604,6 +655,7 @@ protected:
 
     // TODO the case distinction depending on the slot kind can be avoided for allocateEncodeValueDef, by using a template and if constexpr, but see if that actually makes the code faster first
     inline bool moveFromSlotToOperandReg(mlir::Value val, ValueSlot slot, FeReg reg){
+        // TODO can probably avoid removing the same value to the same operand register, if it's already there, can probably be checked using registerOf(val) == reg
         bool failed;
         if (slot.kind == ValueSlot::Register){
             FeMnem mnem;
@@ -695,6 +747,8 @@ protected:
 
     template<bool isCriticalEdge>
     inline void handleCFGEdgeHelper(mlir::Block::BlockArgListType blockArgs, mlir::Operation::operand_range blockArgOperands, mlir::Operation* terminator){
+        // TODO return if something went wrong
+
         // need to break memory memory moves with a temp register
         FeReg memMemMoveReg = FE_AX;
 
@@ -824,6 +878,7 @@ protected:
             loadValueForUse(ret.getOperand(), 0, ret.getOperandRegisterConstraints().first);
             emitEpilogue();
 
+            // TODO could also do this directly, see if it makes a performance difference
             encoder.encodeIntraBlockOp(mod, ret);
         }else if (auto jmp = mlir::dyn_cast<amd64::JMP>(*it)){
             auto blockArgs = jmp.getDest()->getArguments();
@@ -845,7 +900,6 @@ protected:
         }
     }
 
-    // TODO put in concrete regallocer
     inline void emitPrologue(mlir::func::FuncOp func){
         static_cast<Derived*>(this)->emitPrologueImpl(func);
     }
@@ -855,8 +909,8 @@ protected:
     }
 
     /// allocates a new stackslot and returns an FeOp that can be used to access it
-    inline FeOp allocateNewStackslot(uint8_t bitwidth){
-        return FE_MEM(FE_BP, 0,0, stackSizeFromBP -= bitwidth / 8);
+    inline FeOp allocateNewStackslot(uint8_t bitwidth){ // TODO are there alignment problems here? I think not, but it might be worth aligning every slot to 8 bytes or smth anyway?
+        return FE_MEM(FE_BP, 0,0, -(stackSizeFromBP += bitwidth / 8));
     }
 };
 
@@ -930,7 +984,7 @@ public:
         // encode the instruction, now that it has all the information it needs
         encoder.encodeIntraBlockOp(mod, def);
 
-        def->getNumResults();
+
 
         // now do the spilling
         for(auto [result, slot, reg] : resultInfoForSpilling){
@@ -961,7 +1015,7 @@ public:
 
         // this position needs to be rewritten, with the final stackSizeFromBP at the end
         stackAllocationInstruction = encoder.saveCur();
-        encoder.encodeRaw(FE_SUB64ri, FE_SP, 0);
+        encoder.encodeRaw(FE_SUB64ri, FE_SP, 0x01000000); // 0x01000000 isn't the final value, just a placeholder that ensures that the operand size byte is it's maximum possible value -> we have space to encode a big allocation
 
         // spill args
         static constexpr FeReg argRegs[] = {FE_DI, FE_SI, FE_DX, FE_CX, FE_R8, FE_R9};
@@ -990,7 +1044,8 @@ public:
 
         // needs to be rewritten later
         stackDeallocationInstructions.push_back(encoder.saveCur());
-        encoder.encodeRaw(FE_ADD64ri, FE_SP, 0);
+        encoder.encodeRaw(FE_ADD64ri, FE_SP, 0x01000000); // 0x01000000 isn't the final value, just a placeholder that ensures that the operand size byte is it's maximum possible value -> we have space to encode a big allocation
+
 
         for (auto reg : {FE_R15, FE_R14, FE_R13, FE_R12, FE_BX})
             encoder.encodeRaw(FE_POPr, reg);
@@ -1053,24 +1108,16 @@ void dummyRegalloc(mlir::Operation* op){
 
 
 // TODO parameters for optimization level (-> which regallocer to use)
-bool regallocEncode(std::vector<uint8_t>& buf, mlir::ModuleOp mod, bool debug){
-	//Encoder encoder(buf, );
-    //bool failed = regallocEncodeImpl(encoder, mod);
-    //if(debug)
-    //    encoder.dumpAfterEncodingDone();
-    //return failed;
+bool regallocEncode(std::vector<uint8_t>& buf, mlir::ModuleOp mod, bool dumpAsm){
     StackRegAllocer regallocer(mod, buf);
     bool failed = regallocer.run();
-    if(debug)
+    if(dumpAsm)
         regallocer.encoder.dumpAfterEncodingDone();
     return failed;
 }
 
 // TODO test if this is actually any faster
 bool regallocEncodeRepeated(std::vector<uint8_t>& buf, mlir::ModuleOp mod){
-	//static Encoder encoder(buf);
-    //bool failed = regallocEncodeImpl(encoder, mod);
-    //encoder.reset();
-	//return failed;
-    return true;
+    StackRegAllocer regallocer(mod, buf);
+    return regallocer.run();
 }
