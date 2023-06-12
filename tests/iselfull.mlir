@@ -25,6 +25,7 @@ module {
     %0 = arith.constant 65 : i64
     return %0 : i64
   }
+  // TODO test more stuff on the individual instructions
   func.func private @patternMatchingTest() -> () {
     %0 = call @giveI8() : () -> i8
     %1 = call @giveI8() : () -> i8
