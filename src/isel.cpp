@@ -21,7 +21,7 @@ namespace {
 #include "AMD64/Lowerings.cpp.inc"
 
 // use this to mark that a specific type of instruction is not available to use in the lambda of a pattern
-using NOT_AVAILABLE = int;
+using NOT_AVAILABLE = void;
 
 template <typename opClassToMatch>
 auto defaultBitwidthMatchLambda = []<unsigned bitwidth, typename thisType, typename OpAdaptor>(thisType thiis, opClassToMatch op, OpAdaptor, mlir::ConversionPatternRewriter& rewriter){
@@ -267,14 +267,14 @@ auto truncExtUiSiMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
 };
 
 /// only for 16-64 bits outBitwidth, for 8 we have a special pattern. There are more exceptions: Because not all versions of MOVZX exist, MOVZXr8r8 wouldn't make sense (also invalid in MLIR), MOVZXr64r32 is just a MOV, etc.
-#define EXTUI_PAT(outBitwidth, inBitwidth) \
+#define EXT_UI_SI_PAT(outBitwidth, inBitwidth) \
     using ExtUIPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::ExtUIOp, outBitwidth, truncExtUiSiMatchReplace, amd64::MOVZX ## r ## outBitwidth ## r ## inBitwidth, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<inBitwidth>>; \
     using ExtSIPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::ExtSIOp, outBitwidth, truncExtUiSiMatchReplace, amd64::MOVSX ## r ## outBitwidth ## r ## inBitwidth, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<inBitwidth>>;
 
 // generalizable cases:
-EXTUI_PAT(16, 8);
-EXTUI_PAT(32, 8); EXTUI_PAT(32, 16);
-EXTUI_PAT(64, 8); EXTUI_PAT(64, 16);
+EXT_UI_SI_PAT(16, 8);
+EXT_UI_SI_PAT(32, 8); EXT_UI_SI_PAT(32, 16);
+EXT_UI_SI_PAT(64, 8); EXT_UI_SI_PAT(64, 16);
 
 // cases that are still valid in mlir, but not covered here:
 // - 32 -> 64 (just a MOV)
@@ -394,8 +394,6 @@ struct FuncPat : public mlir::OpConversionPattern<mlir::func::FuncOp>{
     FuncPat(mlir::TypeConverter& typeConverter, mlir::MLIRContext* context) : mlir::OpConversionPattern<mlir::func::FuncOp>(typeConverter, context, 1){}
 
     mlir::LogicalResult matchAndRewrite(mlir::func::FuncOp func, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
-        DEBUGLOG("Trying to rewrite function " << func.getName());
-
         // TODO the whole signature conversion doesn't work, instead we use the typeconverter to convert the function type, which isn't pretty, but it works
         //mlir::TypeConverter::SignatureConversion signatureConversion(func.getNumArguments());
         //signatureConversion.getConvertedTypes()
@@ -403,7 +401,12 @@ struct FuncPat : public mlir::OpConversionPattern<mlir::func::FuncOp>{
         //if(failed(getTypeConverter()->convertSignatureArgs(func.getFunctionType(), signatureConversion)))
         //    return mlir::failure();
 
-        auto newFunc = rewriter.create<mlir::func::FuncOp>(func.getLoc(), func.getName(), mlir::dyn_cast<mlir::FunctionType>(getTypeConverter()->convertType(adaptor.getFunctionType())) /* this is also probably wrong, type converter still says its illegal afterwards */, adaptor.getSymVisibilityAttr(), adaptor.getArgAttrsAttr(), adaptor.getResAttrsAttr());
+        auto newFunc = rewriter.create<mlir::func::FuncOp>(
+            func.getLoc(), func.getName(),
+            mlir::dyn_cast<mlir::FunctionType>(getTypeConverter()->convertType(adaptor.getFunctionType())) /* this is also probably wrong, type converter still says its illegal afterwards */,
+            adaptor.getSymVisibilityAttr(),
+            adaptor.getArgAttrsAttr(),
+            adaptor.getResAttrsAttr());
         rewriter.inlineRegionBefore(func.getRegion(), newFunc.getRegion(), newFunc.getRegion().end());
         if (failed(rewriter.convertRegionTypes(&newFunc.getRegion(), *getTypeConverter())))
             return mlir::failure();
@@ -413,8 +416,24 @@ struct FuncPat : public mlir::OpConversionPattern<mlir::func::FuncOp>{
     }
 };
 
+// TODO remove this, this is a skeleton to show that the bare 'ConversionPattern' class also works
+struct TestConvPatternWOOp : public mlir::ConversionPattern{
+    TestConvPatternWOOp(mlir::TypeConverter& tc, mlir::MLIRContext* context) : mlir::ConversionPattern(tc, "test.conv.pat", 1, context){}
+
+    mlir::LogicalResult matchAndRewrite(mlir::Operation *op, mlir::ArrayRef<mlir::Value> operands, mlir::ConversionPatternRewriter &rewriter) const override {
+        (void)op; (void)operands; (void)rewriter;
+        return mlir::failure();
+    }
+};
+
 } // end anonymous namespace
 
+
+// TODO make it possible to
+// - select from different preexisting pattern sets based on optimization level (if there is a performance difference between the sets)
+//      (maybe 'populate with -Ox patterns' methods?)
+// - register custom type conversions
+// - register custom patterns to the pattern set
 
 /// takes an operation and does isel on its regions
 bool prototypeIsel(mlir::Operation* regionOp){
@@ -504,8 +523,9 @@ bool prototypeIsel(mlir::Operation* regionOp){
     ADD_PATTERN(CallPat);
     patterns.add<ReturnPat>(typeConverter, ctx);
 
-
     patterns.add<FuncPat>(typeConverter, ctx);
+
+    patterns.add<TestConvPatternWOOp>(typeConverter, ctx);
 #undef ADD_PATTERN
     
     //llvm::setCurrentDebugType("greedy-rewriter");
