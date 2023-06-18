@@ -47,14 +47,15 @@ struct Encoder{
 
 	Encoder(std::vector<uint8_t>& buf, mlir::DenseMap<mlir::BlockArgument, FeReg>& blockArgToRegs) : buf(buf), cur(), blockArgToRegs(blockArgToRegs){
         // reserve 1MiB for now
-        buf.reserve(1 << 20);
+        buf.reserve(1 << 20); // TODO expand it when necessary
+        // TODO oh god i just realized, what if the vector needs to be reallocated, that would invalidate all points like in unresolvedBranches or blocksToBuffer
         cur = buf.data();
     }
 
     // placing this here, because it's related to `encodeOp`
 private:
 
-    // TODO these are using absolute jumps, right? Relative makes more sense
+    // TODO these are using absolute jumps at the moment, right? Relative makes more sense
     /// if we already know the target block is in the blocksToBuffer map, use that, otherwise, register an unresolved branch, and encode a placeholder
     inline auto encodeJump(mlir::Block* targetBB, FeMnem mnemonic) -> int {
         if(auto it = blocksToBuffer.find(targetBB); it != blocksToBuffer.end()){
@@ -490,6 +491,8 @@ struct AbstractRegAllocerEncoder{
             // a reverse post order traversal, is effectively a topological sorting, by lowest number of *incoming* edges/predecessors.
             // we will make this a DAG, by ignoring back- and self-edges
             // the blocksToBuffer map can already be used as a 'visited' set, because we only add to it, when we will certainly encode the block, so at any point we find a block from it in this traversal, the block is certainly encoded.
+            
+            // TODO just do a post order traversal, and save it, instead
 
             auto* entryBlock = &func.getBlocks().front();
             // TODO this fails, take care of it...
@@ -589,6 +592,9 @@ struct AbstractRegAllocerEncoder{
         }
 
         failed |= encoder.resolveBranches();
+
+        // TODO at some point trim the vector to size
+        // the current problem with that is, that the vector doesn't know it's own size, it thinks its empty, so resize populate the vector with the default value, which is not what we want
 
         return failed;
     }
@@ -870,10 +876,11 @@ protected:
 
         if(auto ret = mlir::dyn_cast<amd64::RET>(*it)){
             // first load the operand, because it is very probably on the stack, and it will get moved into AX (return reg), which we don't touch in the epilogue
+            // TODO our RET always has exactly one operand, but it might be a good idea to support no operand return in RET, instead of converting a no operand cf.ret to a RET with a dummy operand
             loadValueForUse(ret.getOperand(), 0, ret.getOperandRegisterConstraints().first);
             emitEpilogue();
 
-            // TODO could also do this directly, see if it makes a performance difference
+            // TODO could also do this directly (simply encode RET), see if it makes a performance difference
             encoder.encodeIntraBlockOp(mod, ret);
         }else if (auto jmp = mlir::dyn_cast<amd64::JMP>(*it)){
             auto blockArgs = jmp.getDest()->getArguments();
@@ -938,6 +945,7 @@ public:
         moveFromSlotToOperandReg(val, slot, whichReg);
     }
 
+    // TODO return failure
     void allocateEncodeValueDefImpl(amd64::InstructionOpInterface def){
 #ifndef NDEBUG
         for(auto results: def->getResults()){
@@ -1075,6 +1083,7 @@ void dummyRegalloc(mlir::Operation* op){
             auto& instructionInfo = instrOp.instructionInfo();
 
             // result registers
+            // TODO wait why am i not using setRegsFromConstraints anywhere else
             bool maybeStillEmptyRegs = instructionInfo.setRegsFromConstraints(instrOp.getResultRegisterConstraints());
             if(maybeStillEmptyRegs){
                 // TODO this isn't the cleanest solution, probably make some sort of Register wrapper which can be empty
