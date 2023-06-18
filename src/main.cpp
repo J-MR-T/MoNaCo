@@ -138,6 +138,15 @@ int main(int argc, char *argv[]) {
         // second pass: RegAlloc + encoding
         // - will need a third pass in between to do liveness analysis later
         regallocEncode(encoded, *owningModRef, printOpts & PRINT_ASM);
+
+        if(args.output()){
+            std::error_code ec;
+            llvm::raw_fd_ostream out(*args.output, ec);
+            if(ec){
+                err(EXIT_FAILURE, "Could not open output file %s", std::string{*args.output}.c_str());
+            }
+            out.write(reinterpret_cast<const char*>(encoded.data()), encoded.size());
+        }
     }
 
     return EXIT_SUCCESS;
