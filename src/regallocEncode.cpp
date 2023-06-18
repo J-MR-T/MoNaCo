@@ -302,8 +302,6 @@ public:
             assert(target);
             //assert(target->getParent()->getParentOp()->getParentOp() == mod.getOperation() && "Unresolved branch target is not in the module");
 
-            DEBUGLOG("Unresovled branch targets: "); target->dump();
-
             auto it = blocksToBuffer.find(target);
             // TODO think about it again, but I'm pretty sure this can never occur, because we already fail at the call site, if a call target is not a block in the module, but if it can occur normally, make this assertion an actual failure
             assert(it != blocksToBuffer.end() && "Unresolved branch target has not been visited");
@@ -468,7 +466,6 @@ struct AbstractRegAllocerEncoder{
 
                 encoder.blocksToBuffer[block] = encoder.cur;
 
-                DEBUGLOG("encoding block:"); block->dump();
                 // map block to start of block in buffer
 
                 // iterate over all but the last instruction
