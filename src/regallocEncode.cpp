@@ -1017,8 +1017,8 @@ public:
 
         for(auto [i, arg] : llvm::enumerate(func.getArguments())){
             if(i < 6){
-                assert(arg.getType().isIntOrFloat() && "only int/float args supported for now");
-                uint8_t bitwidth = arg.getType().getIntOrFloatBitWidth();
+                auto argAsRegType = mlir::cast<amd64::RegisterTypeInterface>(arg.getType());
+                uint8_t bitwidth = argAsRegType.getBitwidth();
                 auto slot = valueToSlot[arg] = ValueSlot{.kind = ValueSlot::Stack, .mem = allocateNewStackslot(bitwidth), .bitwidth = bitwidth};
 
                 moveFromOperandRegToSlot(arg, slot, argRegs[i]);
