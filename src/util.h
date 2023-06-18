@@ -243,7 +243,7 @@ namespace ArgParse{
         const Arg output{    "o", "output",         2, "Output file"};
         const Arg fallback{  "F", "force-fallback", 0, "Force fallback to MLIR module compilation through the LLVM toolchain",                     FLAG};
         const Arg noFallback{"n", "no-fallback",    0, "Do not fallback to MLIR module compilation through the LLVM toolchain",                    FLAG};
-        const Arg print{     "p", "print",          0, "Print parts of the compilation process. Expects 'input' 'isel', or 'asm' as an argument"};
+        const Arg print{     "p", "print",          0, "Print parts of the compilation process. Expects 'input', 'isel', 'asm', or any combination of those as an argument"};
         const Arg debug{     "d", "debug",          0, "Print maximum debug information (set llvm::DebugFlag and all -p options)",                 FLAG};
         const Arg benchmark{ "b", "benchmark",      0, "Benchmark the compiler",                                                                   FLAG};
         const Arg iterations{"",  "iterations",     0, "Number of iterations for benchmarking (default: 1)"};
