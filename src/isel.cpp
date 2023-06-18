@@ -309,12 +309,16 @@ struct CondBrPat : public mlir::OpConversionPattern<mlir::cf::CondBranchOp> {
         auto block1 = op.getTrueDest();
         auto block2 = op.getFalseDest();
 
-        if(auto constI1 = mlir::dyn_cast<mlir::arith::ConstantIntOp>(op.getCondition().getDefiningOp())){
+        // constant conditions, that can either occur naturally or through folding, will result in i1 constants that get matched by the constant int pattern, and thus converted to MOV8ri (because i1 is modeled as 8 bit)
+        assert(getTypeConverter()->convertType(mlir::IntegerType::get(getContext(), 1)) == amd64::gpr8Type::get(getContext()));
+        if(auto constI1AsMov8 = mlir::dyn_cast<amd64::MOV8ri>(adaptor.getCondition().getDefiningOp())){
             // unconditional branch, if it's a constant condition
-            if(constI1.value())
+            if(constI1AsMov8.instructionInfo().imm)
                 rewriter.replaceOpWithNewOp<amd64::JMP>(op, ops1, block1);
             else
                 rewriter.replaceOpWithNewOp<amd64::JMP>(op, ops2, block2);
+
+            // TODO how do I remove this, if it's only used here? erasing it results in an error about failing to legalize the erased op
             return mlir::success();
         }
 
