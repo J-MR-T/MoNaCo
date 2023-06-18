@@ -201,18 +201,16 @@ public:
                 assert(machineOperandsCovered < 4 && "Something went deeply wrong, there are more than 4 operands");
 
                 auto operandValue = instrOp->getOperand(mlirOpOperandsCovered);
-                if(auto encodeInterface = dyn_cast<amd64::EncodeOpInterface>(operandValue.getDefiningOp())){
-                    encodeInterface.dump();
-                    operands[machineOperandsCovered] = encodeInterface.encode();
+                if(auto blockArg = dyn_cast<mlir::BlockArgument>(operandValue)) [[unlikely]]{
+                    // this seems overcomplicated, but it makes the most sense to put all of this functionality into the registerOf method, such that ideally no other code has to ever touch the way registers are stored.
+                    operands[machineOperandsCovered] = amd64::registerOf(blockArg, blockArgToRegs);
                 }else if(auto asOpResult = dyn_cast<mlir::OpResult>(operandValue)){
                     // as long as there is no 'op-result' interfaces in mlir, this is probably the only way to do it
                     operands[machineOperandsCovered] = amd64::registerOf(asOpResult);
+                }else if(auto encodeInterface = dyn_cast<amd64::EncodeOpInterface>(operandValue.getDefiningOp())){
+                    operands[machineOperandsCovered] = encodeInterface.encode();
                 }else{
-                    auto blockArg = dyn_cast<mlir::BlockArgument>(operandValue);
-                    assert(blockArg && "Operand to encode is neither a memory op, an OpResult, nor a BlockArgument");
-
-                    // this seems overcomplicated, but it makes the most sense to put all of this functionality into the registerOf method, such that ideally no other code has to ever touch the way registers are stored.
-                    operands[machineOperandsCovered] = amd64::registerOf(blockArg, blockArgToRegs);
+                    assert(false && "Operand is neither block argument, nor op result, nor memory op");
                 }
             }
 
