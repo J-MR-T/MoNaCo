@@ -1108,6 +1108,10 @@ bool regallocEncode(std::vector<uint8_t>& buf, mlir::ModuleOp mod, bool dumpAsm)
     bool failed = regallocer.run();
     if(dumpAsm)
         regallocer.encoder.dumpAfterEncodingDone();
+
+    // TODO this is a super ugly solution which needs to get fixed later, but since I'm not sure if the vector is even going to stay, i dont want to waste time on a better solution yet
+    std::vector copy(buf.begin(), buf.begin() + (regallocer.encoder.cur - regallocer.encoder.buf.data()));
+    buf = std::move(copy);
     return failed;
 }
 
