@@ -72,8 +72,7 @@ module {
     // ASM: mov [[REG1:r[0-9a-z]+]], qword ptr [[[MEM2]]]
     // ASM-NEXT: mov [[REG2:r[0-9a-z]+]], qword ptr [[[MEM1]]]
     // ISEL: CMP64rr{{.*}}[[VAL2]], [[VAL1]]
-    // TODO this is where it fails, because there's a cmp rax, rax for some reason
-    // COM: ASM-NEXT: cmp [[REG1]], [[REG2]]
+    // ASM-NEXT: cmp [[REG1]], [[REG2]]
     %25 = "arith.cmpi"(%19, %15) <{predicate = 5 : i64}> : (i64, i64) -> i1
     // ISEL-NEXT: SETGE{{.*}}gpr8
     // ISEL-NEXT: [[VAL3:%[0-9]+]] = {{.*}}MOVZXr64r8

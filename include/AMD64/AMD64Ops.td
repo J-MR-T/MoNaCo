@@ -324,6 +324,7 @@ defm ADD : Instr8_16_32_64_rmi<"ADD">;
 // ops defined through multiclasses
 defm ADD : Instr8_16_32_64_rmi<"ADD", [Pure, Operand0IsDestN<0>]>;
 defm SUB : Instr8_16_32_64_rmi<"SUB", [Pure, Operand0IsDestN<0>]>;
+let results = (outs) in 
 defm CMP : Instr8_16_32_64_rmi<"CMP">; // not pure, because the flags aren't modeled as a result
 defm AND : Instr8_16_32_64_rmi<"AND", [Pure, Operand0IsDestN<0>]>;
 defm OR  : Instr8_16_32_64_rmi<"OR",  [Pure, Operand0IsDestN<0>]>;

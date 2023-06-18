@@ -144,7 +144,7 @@ auto cmpIMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      >(mlir::arith::CmpIOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
 
     auto loc = op->getLoc();
-    auto CMP = rewriter.create<CMPrr>(loc, adaptor.getLhs(), adaptor.getRhs());
+    rewriter.create<CMPrr>(loc, adaptor.getLhs(), adaptor.getRhs());
 
     if(!op->use_empty()){
         using mlir::arith::CmpIPredicate;
@@ -161,7 +161,7 @@ auto cmpIMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
             case CmpIPredicate::uge: rewriter.replaceOpWithNewOp<amd64::SETAE8r>(op); break;
         }
     }else{
-        rewriter.replaceOp(op, mlir::ValueRange{CMP}); // we need to replace the root op, so use the CMP in that case
+        rewriter.eraseOp(op); // we need to replace the root op, the CMP doesn't have a result, so replace it with nothing
     }
     return mlir::success();
 };
