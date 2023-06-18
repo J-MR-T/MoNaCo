@@ -89,8 +89,8 @@ class MemOp<string mnemonic, list<Trait> traits = []>: AMD64_Op<mnemonic, traits
   }];
 }
 
-// TODO for local variables/memref.alloca/llvm.alloca: define a memop-like alloca operation, that gives back a memloc and also implements the encoding interface, it can then be used just as a normal variable
-//      not sure about that anymore
+//  for local variables/memref.alloca/llvm.alloca, we could define a memop-like alloca operation, that gives back a memloc and also implements the encoding interface, it can then be used just as a normal variable
+//  not sure about that anymore, for normal local variables simply encoding the right memloc is simpler. But when memref allocas are implemented at some point, then this might be useful
 
 // trying to reduce code duplication with this somewhat generic mem op, which will be instantiated with different bits.
 // sadly looks quite hiddeous, but that's better than 5 different memory ops with basically the same code with a few things stripped out
