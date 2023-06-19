@@ -39,7 +39,7 @@ constexpr const char* file_name(const char* path) {
     return file;
 }
 
-#define DEBUGLOG(x) do { llvm::errs() << "File: " << file_name(__FILE__) << "Line " << STRINGIZE_MACRO(__LINE__) << ": " << x << "\n"; fflush(stderr); } while(0)
+#define DEBUGLOG(x) do { llvm::errs() << "File: " << file_name(__FILE__) << "\tLine " << STRINGIZE_MACRO(__LINE__) << ":\t" << x << "\n"; fflush(stderr); } while(0)
 #define IFDEBUG(x) x
 #define IFDEBUGELSE(x, y) x
 
