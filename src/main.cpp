@@ -73,6 +73,17 @@ int main(int argc, char *argv[]) {
         owningModRef->print(llvm::outs());
     }
 
+    auto maybeWriteToFile = [](auto encoded){
+        if(args.output()){
+            std::error_code ec;
+            llvm::raw_fd_ostream out(*args.output, ec);
+            if(ec){
+                err(EXIT_FAILURE, "Could not open output file %s", std::string{*args.output}.c_str());
+            }
+            out.write(reinterpret_cast<const char*>(encoded.data()), encoded.size());
+        }
+    };
+
     if(args.benchmark()){
         // TODO what happens if this throws an exception? Is that fine?
         unsigned iterations = 1;
@@ -123,7 +134,10 @@ int main(int argc, char *argv[]) {
         }
     }else if(args.fallback()){
         auto obj = llvm::SmallVector<char, 0>();
-        return fallbackToLLVMCompilation(*owningModRef, obj);
+        if(fallbackToLLVMCompilation(*owningModRef, obj))
+            return EXIT_FAILURE;
+
+        maybeWriteToFile(obj);
     }else{ // "normal" case
 
         // first pass: ISel
@@ -139,14 +153,7 @@ int main(int argc, char *argv[]) {
         // - will need a third pass in between to do liveness analysis later
         regallocEncode(encoded, *owningModRef, printOpts & PRINT_ASM);
 
-        if(args.output()){
-            std::error_code ec;
-            llvm::raw_fd_ostream out(*args.output, ec);
-            if(ec){
-                err(EXIT_FAILURE, "Could not open output file %s", std::string{*args.output}.c_str());
-            }
-            out.write(reinterpret_cast<const char*>(encoded.data()), encoded.size());
-        }
+        maybeWriteToFile(encoded);
     }
 
     return EXIT_SUCCESS;
