@@ -318,38 +318,43 @@ struct CondBrPat : public mlir::OpConversionPattern<mlir::cf::CondBranchOp> {
             else
                 rewriter.replaceOpWithNewOp<amd64::JMP>(op, ops2, block2);
 
-            // TODO how do I remove this, if it's only used here? erasing it results in an error about failing to legalize the erased op
+            // TODO how do I remove this MOV8ri, if it's only used here? erasing it results in an error about failing to legalize the erased op
             return mlir::success();
         }
 
+        // conditional branch
+
+        auto setccPredicate = mlir::dyn_cast<amd64::PredicateInterface>(adaptor.getCondition().getDefiningOp());
         auto cmpi = mlir::dyn_cast<mlir::arith::CmpIOp>(op.getCondition().getDefiningOp());
-        if(!cmpi){
+        auto CMP = setccPredicate->getPrevNode();
+        if(!setccPredicate || !cmpi || !CMP){
             return mlir::failure(); // TODO this will not cover all cases yet. handle i1 arithmetic here
         }
 
-        // cmp should already have been replaced by the cmp pattern, so we don't need to do that here
-        // but the cmp can be arbitrarily far away, so we need to possibly reinsert it here.
+        // we're using the SETcc here, because the cmpi might have been folded, so we need to get to the original CMP, which is the CMP before the SETcc, then the SETcc has the right predicate
 
-        if(cmpi->getNextNode() != op){
+        // cmp should already have been replaced by the cmp pattern, so we don't need to do that here
+        // but the cmp can be arbitrarily far away, so we need to reinsert it here, except if it's immediately before our current op (cond.br), and it's the replacement for the SETcc that we're using
+        if(!(cmpi->getNextNode() == op && setccPredicate->getNextNode() == cmpi)){
             // TODO IR/Builders.cpp suggests that this gets inserted at the right point, but check again
             // clone the cmpi, it will then have no uses and get pattern matched with the normal cmp pattern as we want. The SET from that pattern shouldn't be generated, because the cmpi is dead.
-            rewriter.clone(*cmpi);
+            rewriter.clone(*CMP);
         }
 
-        // conditional branch
-        using mlir::arith::CmpIPredicate;
 
-        switch(cmpi.getPredicate()){
-            case CmpIPredicate::eq:  rewriter.replaceOpWithNewOp<amd64::JE>(op,  ops1, ops2, block1, block2); break;
-            case CmpIPredicate::ne:  rewriter.replaceOpWithNewOp<amd64::JNE>(op, ops1, ops2, block1, block2); break;
-            case CmpIPredicate::slt: rewriter.replaceOpWithNewOp<amd64::JL>(op,  ops1, ops2, block1, block2); break;
-            case CmpIPredicate::sle: rewriter.replaceOpWithNewOp<amd64::JLE>(op, ops1, ops2, block1, block2); break;
-            case CmpIPredicate::sgt: rewriter.replaceOpWithNewOp<amd64::JG>(op,  ops1, ops2, block1, block2); break;
-            case CmpIPredicate::sge: rewriter.replaceOpWithNewOp<amd64::JGE>(op, ops1, ops2, block1, block2); break;
-            case CmpIPredicate::ult: rewriter.replaceOpWithNewOp<amd64::JB>(op,  ops1, ops2, block1, block2); break;
-            case CmpIPredicate::ule: rewriter.replaceOpWithNewOp<amd64::JBE>(op, ops1, ops2, block1, block2); break;
-            case CmpIPredicate::ugt: rewriter.replaceOpWithNewOp<amd64::JA>(op,  ops1, ops2, block1, block2); break;
-            case CmpIPredicate::uge: rewriter.replaceOpWithNewOp<amd64::JAE>(op, ops1, ops2, block1, block2); break;
+        using namespace amd64::conditional;
+
+        switch(setccPredicate.getPredicate()){
+            case Z:  rewriter.replaceOpWithNewOp<amd64::JE>(op,  ops1, ops2, block1, block2); break;
+            case NZ: rewriter.replaceOpWithNewOp<amd64::JNE>(op, ops1, ops2, block1, block2); break;
+            case L:  rewriter.replaceOpWithNewOp<amd64::JL>(op,  ops1, ops2, block1, block2); break;
+            case LE: rewriter.replaceOpWithNewOp<amd64::JLE>(op, ops1, ops2, block1, block2); break;
+            case G:  rewriter.replaceOpWithNewOp<amd64::JG>(op,  ops1, ops2, block1, block2); break;
+            case GE: rewriter.replaceOpWithNewOp<amd64::JGE>(op, ops1, ops2, block1, block2); break;
+            case C:  rewriter.replaceOpWithNewOp<amd64::JB>(op,  ops1, ops2, block1, block2); break;
+            case BE: rewriter.replaceOpWithNewOp<amd64::JBE>(op, ops1, ops2, block1, block2); break;
+            case A:  rewriter.replaceOpWithNewOp<amd64::JA>(op,  ops1, ops2, block1, block2); break;
+            case NC: rewriter.replaceOpWithNewOp<amd64::JAE>(op, ops1, ops2, block1, block2); break;
         }
 
         return mlir::success();

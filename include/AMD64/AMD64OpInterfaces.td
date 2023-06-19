@@ -37,14 +37,25 @@ def EncodeOpInterface : OpInterface<"EncodeOpInterface">{
   let cppNamespace = "::amd64";
 }
 
-def ConditionalJumpInterface : OpInterface<"ConditionalJumpInterface", [InstructionOpInterface]>{
+def PredicateInterface : OpInterface<"PredicateInterface">{
+  let description = [{
+    This is an interface for all AMD64 Ops which have prediactes. They can be queried using this interface.
+  }];
+
+  let methods = [
+    InterfaceMethod<"TODO", "::amd64::conditional::predicate",  "getPredicate">,
+  ];
+
+  let cppNamespace = "::amd64";
+}
+
+def ConditionalJumpInterface : OpInterface<"ConditionalJumpInterface", [InstructionOpInterface, PredicateInterface]>{
   let description = [{
     This is an interface for AMD64 Jump Ops. They can specify how they are inverted using this interface, and their destinations and destination arguments can be queried.
   }];
 
   let methods = [
     StaticInterfaceMethod<"TODO", "FeMnem",                           "invert">, // technically mnemonic inversion could be done with just xoring with 1 (the lowest bit is the condition code), but that's not very API-stable...
-    StaticInterfaceMethod<"TODO", "::amd64::conditional::predicate",  "getPredicate">,
     InterfaceMethod<"TODO",       "::mlir::Operation::operand_range", "getTrueDestOperands">,
     InterfaceMethod<"TODO",       "::mlir::Operation::operand_range", "getFalseDestOperands">,
     InterfaceMethod<"TODO",       "::mlir::MutableOperandRange",      "getTrueDestOperandsMutable">,

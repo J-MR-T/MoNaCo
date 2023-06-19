@@ -426,11 +426,15 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
     // CMOVcc
     if !not(!eq(bitwidth, "8")) then // TODO what about 8 bit CMOV?
       foreach cond = ["Z" /* == E */, "NZ" /* == NE */, "L", "GE", "LE", "G", "C" /* == B */, "NC" /* == AE */, "BE", "A"] in {
-        let operands = (ins gprType:$src1) in
-        def CMOV # cond # bitwidth # "rr" : Instruction<"CMOV" # cond # bitwidth # "rr">;
-        
-        let operands = (ins memLoc:$src1) in
-        def CMOV # cond # bitwidth # "rm" : Instruction<"CMOV" # cond # bitwidth # "rm">;
+        let extraExtraClassDeclarations = [
+        "static constexpr conditional::predicate getPredicate(){ return conditional::" # cond # "; }",
+        ] in {
+          let operands = (ins gprType:$src1) in
+          def CMOV # cond # bitwidth # "rr" : Instruction<"CMOV" # cond # bitwidth # "rr">;
+
+          let operands = (ins memLoc:$src1) in
+          def CMOV # cond # bitwidth # "rm" : Instruction<"CMOV" # cond # bitwidth # "rm">;
+        }
       }
   }
 
@@ -502,13 +506,17 @@ defm "" : JccAndInverted<"JC", "JNC">; // == "JB", "JAE"
 defm "" : JccAndInverted<"JBE", "JA">;
 
 // SETcc
-class SETcc<string menmonic> : Instruction<menmonic, []> {
+class SETcc<string mnemonic, string cond> : Instruction<mnemonic, [PredicateInterface]> {
   let operands = (ins);
   let results = (outs gpr8:$result);
+
+  let extraExtraClassDeclarations = [
+    "static constexpr conditional::predicate getPredicate(){ return conditional::" # cond # "; }",
+  ];
 }
 
 foreach cond = ["Z" /* == E */, "NZ" /* == NE */, "L", "GE", "LE", "G", "C" /* == B */, "NC" /* == AE */, "BE", "A"] in {
-  def "SET" # cond # "8r" : SETcc<"SET" # cond # "8r">;
+  def "SET" # cond # "8r" : SETcc<"SET" # cond # "8r", cond>;
 }
 
 // similar to func.call

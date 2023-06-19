@@ -70,10 +70,8 @@ private:
     };
     /// if the jump is to the next instruction/block, don't encode it
     inline auto maybeEncodeJump(mlir::Block* targetBB, FeMnem mnemonic, mlir::Block* nextBB) -> int {
-        // TODO currently this is left out, because the nextBB is being set linearly at the callsites, but now that we're (correctl) traversing the CFG in RPO, the block ordering in SSA and in machine code are no longer the same
-
-        //if (targetBB == nextBB)
-            //return 0;
+        if (targetBB == nextBB)
+            return 0;
 
         return encodeJump(targetBB, mnemonic);
     };
@@ -97,21 +95,19 @@ public:
             static_assert(false, "Too many arguments");
     }
 
-    bool encodeJMP(amd64::JMP jmp){
+    bool encodeJMP(amd64::JMP jmp, mlir::Block* nextBB = nullptr){
         auto targetBB = jmp.getDest();
 
-        return maybeEncodeJump(targetBB, jmp.getFeMnemonic(), jmp->getBlock()->getNextNode());
+        return maybeEncodeJump(targetBB, jmp.getFeMnemonic(), nextBB);
     }
 
     /// encode a Jcc, encoding the minimal number of jumps
     /// TODO this is a bit hiddeous: have to slightly break abstraction, because this needs the register allocator to do some work
     template<auto destSetupNoCrit, auto destSetupCrit>
-    bool encodeJcc(auto& regallocer, amd64::ConditionalJumpInterface jcc){
+    bool encodeJcc(auto& regallocer, amd64::ConditionalJumpInterface jcc, mlir::Block* nextBB = nullptr){
         auto trueBB = jcc.getTrueDest();
         auto falseBB = jcc.getFalseDest();
         assert(trueBB && falseBB && "Conditional jump has no true or no false destination");
-
-        auto nextBB = jcc->getBlock()->getNextNode();
 
         // TODO are branches to the entry block valid in MLIR? If so, this needs to be changed, because the entry block has an implicit predecessor
         auto trueIsCritical = trueBB->getSinglePredecessor() == nullptr; // it has at least one predecessor (parent block of jcc), so if it has no single predecessor, it has more than one
@@ -740,7 +736,7 @@ protected:
             case amd64::conditional::A:  mnem = isRegister ? FE_CMOVA64rr  : FE_CMOVA64rm;  break;
             default: assert(false && "invalid condition code");
         }
-        encoder.encodeRaw(mnem, memMemMoveReg, isRegister ? fromSlot.reg : fromSlot.mem);
+        encoder.encodeRaw(mnem, memMemMoveReg, isRegister ? (FeOp) fromSlot.reg : (FeOp) fromSlot.mem);
 
         // 3.
         moveFromOperandRegToSlot(conditionallyMoveTo, valueToSlot[conditionallyMoveTo], memMemMoveReg);
@@ -889,7 +885,8 @@ protected:
             auto blockArgOperands = jmp.getDestOperands();
 
             handleCFGEdgeHelper<false>(blockArgs, blockArgOperands, jmp.getOperation());
-            encoder.encodeJMP(jmp);
+            // TODO next is currently, because the nextBB is being set linearly at the callsites, but the traversal is not linear anymore, so this needs to be passed correctly
+            encoder.encodeJMP(jmp, nullptr);
         }else if(auto jcc = mlir::dyn_cast<amd64::ConditionalJumpInterface>(*it)){
             for(auto dst: {jcc.getTrueDest(), jcc.getFalseDest()}){
                 auto blockArgs = dst->getArguments();
@@ -898,7 +895,8 @@ protected:
 
             // this is a problem, because we only have a single jump here, which gets encoded into 2 (max) later on, but we need to place the MOVs in between those two
             // so we pass the handleCFGEdge helper as an argument (parameterized depending on whether or not this is a critical edge), to be called by the encoder function
-            encoder.encodeJcc<&AbstractRegAllocerEncoder<Derived>::handleCFGEdgeHelper<false>, &AbstractRegAllocerEncoder<Derived>::handleCFGEdgeHelper<true>>(*this, jcc);
+            // TODO next is currently, because the nextBB is being set linearly at the callsites, but the traversal is not linear anymore, so this needs to be passed correctly
+            encoder.encodeJcc<&AbstractRegAllocerEncoder<Derived>::handleCFGEdgeHelper<false>, &AbstractRegAllocerEncoder<Derived>::handleCFGEdgeHelper<true>>(*this, jcc, nullptr);
         }
     }
 
