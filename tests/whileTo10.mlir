@@ -2,7 +2,6 @@
 // CHECK: 10
 
 module {
-  func.func private @putchar(i64) -> i64
   func.func private @main() -> i64 {
     %c0_i64 = arith.constant 0 : i64
     cf.br ^bb1(%c0_i64 : i64)
