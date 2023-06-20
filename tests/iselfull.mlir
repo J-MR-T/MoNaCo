@@ -90,6 +90,11 @@ module {
     "cf.cond_br"(%30)[^bb2, ^bb1] {operand_segment_sizes = array<i32: 1, 0, 0>} : (i1) -> ()
   ^bb2:
     %31 = "arith.cmpi"(%26, %29) <{predicate = 0 : i64}> : (i64, i64) -> i1
-    "cf.cond_br"(%31)[^bb1, ^bb2] {operand_segment_sizes = array<i32: 1, 0, 0>} : (i1) -> ()
+    cf.cond_br %31, ^bb1, ^bb3(%20, %14 : i64, i32)
+  ^bb3(%50 : i64, %51 : i32):
+    %52 = "arith.extsi"(%51) : (i32) -> i64
+    %53 = "arith.addi"(%50, %52) : (i64, i64) -> i64
+    %54 = "arith.cmpi"(%53, %50) <{predicate = 1 : i64}> : (i64, i64) -> i1
+    cf.cond_br %54, ^bb1, ^bb3(%53, %14 : i64, i32)
   }
 }

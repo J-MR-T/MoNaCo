@@ -406,31 +406,34 @@ using ReturnPat = MatchRMI<mlir::func::ReturnOp, 64, returnMatchReplace, amd64::
 // see https://mlir.llvm.org/docs/DialectConversion/#type-converter and https://mlir.llvm.org/docs/DialectConversion/#region-signature-conversion
 // -> this is necessary to convert the types of the region ops
 /// similar to `RegionOpConversion` from OpenMPToLLVM.cpp
-struct FuncPat : public mlir::OpConversionPattern<mlir::func::FuncOp>{
-    FuncPat(mlir::TypeConverter& typeConverter, mlir::MLIRContext* context) : mlir::OpConversionPattern<mlir::func::FuncOp>(typeConverter, context, 1){}
-
-    mlir::LogicalResult matchAndRewrite(mlir::func::FuncOp func, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
-        // TODO the whole signature conversion doesn't work, instead we use the typeconverter to convert the function type, which isn't pretty, but it works
-        //mlir::TypeConverter::SignatureConversion signatureConversion(func.getNumArguments());
-        //signatureConversion.getConvertedTypes()
-        //
-        //if(failed(getTypeConverter()->convertSignatureArgs(func.getFunctionType(), signatureConversion)))
-        //    return mlir::failure();
-
-        auto newFunc = rewriter.create<mlir::func::FuncOp>(
-            func.getLoc(), func.getName(),
-            mlir::dyn_cast<mlir::FunctionType>(getTypeConverter()->convertType(adaptor.getFunctionType())) /* this is also probably wrong, type converter still says its illegal afterwards */,
-            adaptor.getSymVisibilityAttr(),
-            adaptor.getArgAttrsAttr(),
-            adaptor.getResAttrsAttr());
-        rewriter.inlineRegionBefore(func.getRegion(), newFunc.getRegion(), newFunc.getRegion().end());
-        if (failed(rewriter.convertRegionTypes(&newFunc.getRegion(), *getTypeConverter())))
-            return mlir::failure();
-
-        rewriter.replaceOp(func, newFunc->getResults());
-        return mlir::success();
-    }
-};
+// TODO i found this other way with `populateAnyFunctionOpInterfaceTypeConversionPattern`, performance test the two against one another
+//struct FuncPat : public mlir::OpConversionPattern<mlir::func::FuncOp>{
+//    FuncPat(mlir::TypeConverter& typeConverter, mlir::MLIRContext* context) : mlir::OpConversionPattern<mlir::func::FuncOp>(typeConverter, context, 1){}
+//
+//    mlir::LogicalResult matchAndRewrite(mlir::func::FuncOp func, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
+//        // TODO the whole signature conversion doesn't work, instead we use the typeconverter to convert the function type, which isn't pretty, but it works
+//        //mlir::TypeConverter::SignatureConversion signatureConversion(func.getNumArguments());
+//        //signatureConversion.getConvertedTypes()
+//        //
+//        //if(failed(getTypeConverter()->convertSignatureArgs(func.getFunctionType(), signatureConversion)))
+//        //    return mlir::failure();
+//
+//        auto newFunc = rewriter.create<mlir::func::FuncOp>(
+//            func.getLoc(), func.getName(),
+//            mlir::dyn_cast<mlir::FunctionType>(getTypeConverter()->convertType(adaptor.getFunctionType())) [> this is also probably wrong, type converter still says its illegal afterwards <],
+//            adaptor.getSymVisibilityAttr(),
+//            adaptor.getArgAttrsAttr(),
+//            adaptor.getResAttrsAttr());
+//        rewriter.inlineRegionBefore(func.getRegion(), newFunc.getRegion(), newFunc.getRegion().end());
+//        if (failed(rewriter.convertRegionTypes(&newFunc.getRegion(), *getTypeConverter())))
+//            return rewriter.notifyMatchFailure(func, "failed to convert region types");
+//
+//        //convertFuncOpTypes(func, *getTypeConverter(), rewriter);
+//
+//        rewriter.replaceOp(func, newFunc->getResults());
+//        return mlir::success();
+//    }
+//};
 
 // TODO remove this, this is a skeleton to show that the bare 'ConversionPattern' class also works
 struct TestConvPatternWOOp : public mlir::ConversionPattern{
@@ -500,7 +503,10 @@ bool prototypeIsel(mlir::Operation* regionOp){
     // from https://discourse.llvm.org/t/lowering-and-type-conversion-of-block-arguments/63570
     // funcs are only legal once their args have been converted
     // TODO if this costs a lot of performance, try defining an amd64::FuncOp and make all of func illegal
-    target.addDynamicallyLegalOp<mlir::func::FuncOp>([&](mlir::func::FuncOp op) { return typeConverter.isLegal(op.getFunctionType()); });
+    target.addDynamicallyLegalOp<mlir::func::FuncOp>([&](mlir::func::FuncOp op) {
+        return typeConverter.isSignatureLegal(op.getFunctionType()) && typeConverter.isLegal(&op.getBody());
+    });
+
     // this also needs a pattern to rewrite func ops, see `FuncPat`
 
     //target.addLegalDialect<mlir::func::FuncDialect>();
@@ -539,7 +545,7 @@ bool prototypeIsel(mlir::Operation* regionOp){
     ADD_PATTERN(CallPat);
     patterns.add<ReturnPat>(typeConverter, ctx);
 
-    patterns.add<FuncPat>(typeConverter, ctx);
+    mlir::populateAnyFunctionOpInterfaceTypeConversionPattern(patterns, typeConverter);
 
     patterns.add<TestConvPatternWOOp>(typeConverter, ctx);
 #undef ADD_PATTERN
