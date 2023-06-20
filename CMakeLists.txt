@@ -65,10 +65,10 @@ endmacro()
 
 set(FADEC_SRC_PATH "${MONACO_SOURCE_DIR}/lib/fadec")
 set(FADEC_LIB_PATH "${FADEC_SRC_PATH}/build/libfadec.a")
-if (CMAKE_BUILD_TYPE STREQUAL "Release")
-	configure_fadec("${FADEC_SRC_PATH}" release) # TODO ensure this is actually replaced on replacing builds
-else()
+if (CMAKE_BUILD_TYPE STREQUAL "Debug")
     configure_fadec("${FADEC_SRC_PATH}" debug)
+else()
+	configure_fadec("${FADEC_SRC_PATH}" release) # TODO ensure this is actually replaced on replacing builds
 endif()
 
 add_subdirectory(src)
