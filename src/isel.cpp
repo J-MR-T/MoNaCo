@@ -253,9 +253,7 @@ auto truncExtUiSiBitwidthMatcher = []<unsigned outBitwidth, typename thisType, t
     // out bitwidth
     auto failure = defaultBitwidthMatchLambda<decltype(op)>.template operator()<outBitwidth, thisType, OpAdaptor>(thiis, op, adaptor, rewriter);
     if(failure.failed())
-        return rewriter.notifyMatchFailure(op, "out bitwidth match failure for trunc/extui/extsi");
-
-    // TODO the in bitwidth matching is wrong of course, it is currently trying to match the type of the result *again*, which is stupid
+        return rewriter.notifyMatchFailure(op, "out bitwidth mismatch");
 
     // in bitwidth
     mlir::Type opType = adaptor.getIn().getType();
