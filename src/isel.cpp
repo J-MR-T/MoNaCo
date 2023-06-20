@@ -253,10 +253,19 @@ auto truncExtUiSiBitwidthMatcher = []<unsigned outBitwidth, typename thisType, t
     // out bitwidth
     auto failure = defaultBitwidthMatchLambda<decltype(op)>.template operator()<outBitwidth, thisType, OpAdaptor>(thiis, op, adaptor, rewriter);
     if(failure.failed())
-        return failure;
+        return rewriter.notifyMatchFailure(op, "out bitwidth match failure for trunc/extui/extsi");
+
+    // TODO the in bitwidth matching is wrong of course, it is currently trying to match the type of the result *again*, which is stupid
 
     // in bitwidth
-    return defaultBitwidthMatchLambda<decltype(op)>.template operator()<inBitwidth, thisType, OpAdaptor>(thiis, op, adaptor, rewriter);
+    mlir::Type opType = adaptor.getIn().getType();
+    auto typeToMatch= thiis->getTypeConverter()->convertType(opType).template dyn_cast<amd64::RegisterTypeInterface>();
+    assert(typeToMatch && "expected register type");
+
+    if(typeToMatch.getBitwidth() != inBitwidth)
+        return rewriter.notifyMatchFailure(op, "in bitwidth mismatch");
+
+    return mlir::success();
 };
 
 auto truncExtUiSiMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
