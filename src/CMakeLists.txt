@@ -65,6 +65,9 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
     # to make absolutely sure there are no assertions, even if the LLVM build is debug
     target_compile_options(monaco PUBLIC -O3 -DNDEBUG)
+elseif(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+    # to make absolutely sure there are no assertions, even if the LLVM build is debug
+    target_compile_options(monaco PUBLIC -O2 -DNDEBUG -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer)
 endif()
 
 target_compile_options(monaco PRIVATE -Wno-enum-compare)
