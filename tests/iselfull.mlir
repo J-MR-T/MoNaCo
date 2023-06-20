@@ -80,6 +80,7 @@ module {
     %27 = "arith.constant"() <{value = 7 : i64}> : () -> i64
     %28 = "arith.andi"(%19, %27) : (i64, i64) -> i64
     // ISEL: SHL{{.*}}[[VAL3]]
+    // ASM: shl{{.*}}cl
     %29 = "arith.shli"(%26, %28) : (i64, i64) -> i64
     // ISEL: CMP64rr{{.*}}[[VAL2]], [[VAL1]]
     "cf.cond_br"(%25)[^bb2, ^bb1] {operand_segment_sizes = array<i32: 1, 0, 0>} : (i1) -> ()
