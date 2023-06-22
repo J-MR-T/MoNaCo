@@ -3,9 +3,8 @@
 
 // Correct RPO is: entry/bb0, bb1, bb3, bb4, bb2. Unambiguous
 module {
-  func.func private @main() -> i64 {
-    // CHECK: 0x0
-	%0 = arith.constant 0 : i1
+  func.func private @fn(%10: i64, %11: i64) -> i64 {
+    %0 = arith.cmpi slt, %10, %11 : i64
     cf.br ^bb1
   ^bb1:
     // CHECK: 0x1
