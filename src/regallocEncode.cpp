@@ -382,7 +382,7 @@ struct ValueSlot{
         /// set only from the FeReg enum
         FeReg reg;
         /// set only via FE_MEM
-        FeOp mem; // TODO this is probably actually a bad idea, and I should just have a memory op here. If I decide to encode stuff directly, without the builder, that is
+        FeOp mem;
     };
     uint8_t bitwidth;
 
@@ -491,8 +491,7 @@ struct AbstractRegAllocerEncoder{
             // TODO just do a post order traversal, and save it, instead
 
             auto* entryBlock = &func.getBlocks().front();
-            // TODO this fails, take care of it...
-            //assert(entryBlock->hasNoSuccessors() && "Apparently MLIR allows branching to the entry block");  // I'm not sure this would actually break anything, but I am aware of assuming this, so let's assert it
+            assert(entryBlock->hasNoPredecessors() && "Apparently MLIR allows branching to the entry block"); // this has to be assumed, because the entry block does stack allocation etc., we don't want that to happen multiple times
             llvm::SmallVector<mlir::Block*, 4> worklist({entryBlock});
 
             // TODO this is wrong atm, because if we encounter a loop, we will never enter it
