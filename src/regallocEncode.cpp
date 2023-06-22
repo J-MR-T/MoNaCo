@@ -444,6 +444,9 @@ struct AbstractRegAllocerEncoder{
         static_cast<Derived*>(this)->allocateEncodeValueDefImpl(def);
     }
 
+    template<typename T, unsigned N>
+    using SmallPtrSetVector = llvm::SetVector<T*, llvm::SmallVector<T*, N>, llvm::SmallPtrSet<T*, 8>>;
+
     /// returns whether it failed
     bool run(){
         bool failed = false; // TODO |= this in the right places
@@ -457,9 +460,7 @@ struct AbstractRegAllocerEncoder{
             // this lambda is only for readability, to separate the traversal from the actual handling of a block
             auto encodeBlock = [&](mlir::Block* block){
                 // TODO this is an assertion, for the RPO thingy im trying, but we just stop, for the other algo
-                //assert(!encoder.blocksToBuffer.contains(block) && "Already encoded this block");
-                if(encoder.blocksToBuffer.contains(block))
-                    return;
+                assert(!encoder.blocksToBuffer.contains(block) && "Already encoded this block");
 
                 encoder.blocksToBuffer[block] = encoder.cur;
 
@@ -482,51 +483,67 @@ struct AbstractRegAllocerEncoder{
                 handleTerminator(endIt);
             };
 
-            // do a reverse post order traversal (RPOT) of the CFG, to make sure we encounter all definitions of uses before their uses.
-            // except for the entry block, blocks with block args, should have a terminator that jumps to that block visited before the block arg is ever used. So we can allocate a slot at that point
-            // a reverse post order traversal, is effectively a topological sorting, by lowest number of *incoming* edges/predecessors.
-            // we will make this a DAG, by ignoring back- and self-edges
-            // the blocksToBuffer map can already be used as a 'visited' set, because we only add to it, when we will certainly encode the block, so at any point we find a block from it in this traversal, the block is certainly encoded.
-            
-            // TODO just do a post order traversal, and save it, instead
+            // do a reverse post order traversal (RPOT) of the CFG, to make sure we encounter all definitions of uses before their uses, and that we see as many predecessors as possible before a block, and loops stay together
+            // we will make this a DAG, by ignoring back-(including self-)edges
 
             auto* entryBlock = &func.getBlocks().front();
             assert(entryBlock->hasNoPredecessors() && "Apparently MLIR allows branching to the entry block"); // this has to be assumed, because the entry block does stack allocation etc., we don't want that to happen multiple times
-            llvm::SmallVector<mlir::Block*, 4> worklist({entryBlock});
 
-            // TODO this is wrong atm, because if we encounter a loop, we will never enter it
-            while(!worklist.empty()){
-                auto* currentBlock = worklist.pop_back_val();
-                // when we enter this loop with the current block, we *will encode it for certain*
-                encodeBlock(currentBlock);
+            // TODO probably yeet this if constexpr at some point, this is just for performance testing. Or maybe make it dependent on the optimization level, if there is a significant difference
+            constexpr bool useRPO = true;
 
-                // TODO reevaluate this code in the loop below, I'm almost sure a DFS pre-order works too, so this is what comes before the continue;
-                for(auto* possibleNextBlock : currentBlock->getSuccessors()){
-                    if(!encoder.blocksToBuffer.contains(possibleNextBlock))
-                        worklist.push_back(possibleNextBlock);
+            // TODO set vector might be quite expensive
+            if constexpr(useRPO){
+                SmallPtrSetVector<mlir::Block, 8> worklist;
+                worklist.insert(entryBlock);
+                SmallPtrSetVector<mlir::Block, 32> postOrder;
+
+                while(!worklist.empty()){
+                    auto* currentBlock = worklist.back();
+
+                    bool allSuccessorsInPO = true;
+                    for(auto* succ: currentBlock->getSuccessors()){
+                        if(!postOrder.contains(succ)){
+                            if(!worklist.insert(succ)){ // `insert` returns true if an element was inserted
+                                // -> found a back edge if this returns false, back edges are fine to ignore, we can still handle the current block
+                            }else{
+                                // if we inserted something, handle it immediately
+                                allSuccessorsInPO = false;
+                                break; // because allSuccessorsInPO is now false, this block won't be removed from the worklist, i.e. we will come back to handle the other successors
+                            }
+                        }
+                    }
+
+                    if(allSuccessorsInPO){
+                        postOrder.insert(currentBlock);
+                        worklist.pop_back();
+                    }
                 }
 
-                continue;
+                assert(postOrder.back() == entryBlock && "Entry block is not last in post order traversal");
 
-                // decide which blocks to encode next
-                for(auto* possibleNextBlock : currentBlock->getSuccessors()){
-                    // skip self edges *from* the current block, to itself
-                    if(currentBlock == possibleNextBlock)
+                for(auto block : llvm::reverse(postOrder)){
+                    // TODO pass the next block, for encoding the minimum number of jumps
+                    encodeBlock(block);
+                }
+            }else{
+                // do a DFS pre-order instead, which has enough guarantees, but is simpler
+
+                llvm::SmallVector<mlir::Block*, 8> worklist{entryBlock};
+                while(!worklist.empty()){
+                    auto* currentBlock = worklist.pop_back_val();
+
+                    if(encoder.blocksToBuffer.contains(currentBlock)) // skip doubly added blocks
                         continue;
 
-                    // if all predecessors are already encoded , we can encode it
-                    bool allPredecessorsEncoded = true;
-                    for(auto* pred : possibleNextBlock->getPredecessors())
-                    if(pred != possibleNextBlock /* self edges are alright, we can still handle that block, even if we havent seen it*/ && !encoder.blocksToBuffer.contains(pred))
-                        allPredecessorsEncoded = false; // TODO could do this with an elaborate &=, see if it makes a performance difference
+                    encodeBlock(currentBlock);
 
-                    // if we have encoded all predecessors (or the possible next block has only itself as predecessor), we can visit the block now
-                    if(allPredecessorsEncoded)
-                        worklist.push_back(possibleNextBlock);
-
-                    // if we haven't, then by definition we will see the block again later, when we encode it's last unencoded predecessor, so handle it then
+                    for(auto* succ: currentBlock->getSuccessors()){
+                        worklist.push_back(succ);
+                    }
                 }
             }
+
 
             // TODO resolving unresolvedBranches after every function might give better cache locality, and be better if we don't exceed the in-place-allocated limit, consider doing that
 
