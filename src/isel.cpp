@@ -5,6 +5,7 @@
 #include <mlir/Dialect/ControlFlow/IR/ControlFlow.h>
 #include <mlir/Dialect/ControlFlow/IR/ControlFlowOps.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
+#include <mlir/Pass/PassManager.h>
 
 #include <mlir/Rewrite/PatternApplicator.h>
 #include <mlir/Transforms/GreedyPatternRewriteDriver.h>
@@ -373,6 +374,7 @@ struct CondBrPat : public mlir::OpConversionPattern<mlir::cf::CondBranchOp> {
                 case BE: rewriter.replaceOpWithNewOp<amd64::JBE>(op, ops1, ops2, block1, block2); break;
                 case A:  rewriter.replaceOpWithNewOp<amd64::JA>(op,  ops1, ops2, block1, block2); break;
                 case NC: rewriter.replaceOpWithNewOp<amd64::JAE>(op, ops1, ops2, block1, block2); break;
+                default: llvm_unreachable("unknown predicate");
             }
 
             //if(setccPredicate->use_empty())
@@ -492,7 +494,7 @@ bool prototypeIsel(mlir::Operation* regionOp){
             case 32: return amd64::gpr32Type::get(type.getContext());
             case 64: return amd64::gpr64Type::get(type.getContext());
 
-            default: assert(false && "unhandled bitwidth in typeConverter");
+            default: llvm_unreachable("unhandled bitwidth in typeConverter");
         }
     });
 

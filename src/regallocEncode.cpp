@@ -35,6 +35,9 @@ struct Encoder{
 
     // Has to use an actual map instead of a vector, because a jump/call doesn't know the index of the target block
     mlir::DenseMap<mlir::Block*, uint8_t*> blocksToBuffer; // TODO might make sense to make this a reference, and have the regallocer own it, because it needs it too
+    // TODO the destructor for this dense map errors for large input files with 'corrupted linked list' when used with -b and 20 iterations, and 'double free or corruption (!prev)' when used without -b (both perf build)
+    //      this is most likely due to the vector not being expanded yet
+
     llvm::DenseMap<mlir::SymbolRefAttr, mlir::Operation*> symbolrefToFuncCache;
 
     struct UnresolvedBranchInfo{
@@ -209,7 +212,7 @@ public:
                 }else if(auto encodeInterface = dyn_cast<amd64::EncodeOpInterface>(operandValue.getDefiningOp())){
                     operands[machineOperandsCovered] = encodeInterface.encode();
                 }else{
-                    assert(false && "Operand is neither block argument, nor op result, nor memory op");
+                    llvm_unreachable("Operand is neither block argument, nor op result, nor memory op");
                 }
             }
 
@@ -254,7 +257,7 @@ public:
                 case 16: failed |= encodeRaw(FE_C_SEP16); break;
                 case 32: failed |= encodeRaw(FE_C_SEP32); break;
                 case 64: failed |= encodeRaw(FE_C_SEP64); break;
-                default: assert(false && "Result of div like instruction is not a register type"); // TODO generally think about llvm_unreachable vs assert(false)
+                default: llvm_unreachable("Result of div like instruction is not a register type");
             }
 
             failed |= encodeNormally();
@@ -622,12 +625,12 @@ struct AbstractRegAllocerEncoder{
                     // little endian, so we can just copy the bytes
                     memcpy(start, &value, 4); // TODO can i do this in a more C++-y way?
                 }else{
-                    static_assert(std::endian::native == std::endian::big && "endianness is neither big nor little, what is it then?");
+                    static_assert(std::endian::native == std::endian::big, "endianness is neither big nor little, what is it then?");
 
                     // big endian, so we have to reverse the bytes
                     // TODO this is wrong, seems that std::copy/reverse copy access the memory at +4, which is UB
                     //std::reverse_copy(&value, &value+4, start);
-                    static_assert(false && "TODO");
+                    static_assert(false, "TODO");
                 }
             };
             // allocation
@@ -690,7 +693,7 @@ protected:
                 case 16: mnem = FE_MOV16rr; break;
                 case 32: mnem = FE_MOV32rr; break;
                 case 64: mnem = FE_MOV64rr; break;
-                default: fromVal.dump(); DEBUGLOG("reg: " << toSlot.reg << "\t bw: " << toSlot.bitwidth); assert(false && "invalid bitwidth");
+                default: llvm_unreachable("invalid bitwidth");
             }
             bool failed = encoder.encodeRaw(mnem, toSlot.reg, fromValReg);
 
@@ -708,7 +711,7 @@ protected:
                 case 16: mnem = FE_MOV16mr; break;
                 case 32: mnem = FE_MOV32mr; break;
                 case 64: mnem = FE_MOV64mr; break;
-                default: assert(false && "invalid bitwidth");
+                default: llvm_unreachable("invalid bitwidth");
             }
             return encoder.encodeRaw(mnem, toSlot.mem, fromValReg);
         }
@@ -726,7 +729,7 @@ protected:
                 case 16: mnem = FE_MOV16rr; break;
                 case 32: mnem = FE_MOV32rr; break;
                 case 64: mnem = FE_MOV64rr; break;
-                default: assert(false && "invalid bitwidth");
+                default: llvm_unreachable("invalid bitwidth");
             }
             failed = encoder.encodeRaw(mnem, reg, slot.reg);
         }else{
@@ -737,7 +740,7 @@ protected:
                 case 16: mnem = FE_MOV16rm; break;
                 case 32: mnem = FE_MOV32rm; break;
                 case 64: mnem = FE_MOV64rm; break;
-                default: assert(false && "invalid bitwidth");
+                default: llvm_unreachable("invalid bitwidth");
             }
             failed = encoder.encodeRaw(mnem, reg, slot.mem);
         }
@@ -800,7 +803,7 @@ protected:
             case NC: mnem = isRegister ? FE_CMOVNC64rr : FE_CMOVNC64rm; break;
             case BE: mnem = isRegister ? FE_CMOVBE64rr : FE_CMOVBE64rm; break;
             case A:  mnem = isRegister ? FE_CMOVA64rr  : FE_CMOVA64rm;  break;
-            default: assert(false && "invalid condition code");
+            default: llvm_unreachable("invalid condition code");
         }
         encoder.encodeRaw(mnem, memMemMoveReg, isRegister ? (FeOp) fromSlot.reg : (FeOp) fromSlot.mem);
 
@@ -995,7 +998,7 @@ public:
             else if (useOperandNumber == 1)
                 whichReg = FE_CX;
             else
-                assert(false && "more than 2 operands not supported yet");
+                llvm_unreachable("more than 2 operands not supported yet");
         }
 
         moveFromSlotToOperandReg(val, slot, whichReg);
@@ -1033,7 +1036,7 @@ public:
                 assert((!resConst2.constrainsReg() || resConst2.which != 1 || resConst2.reg == FE_DX) && "constraint doesn't match result");
             }else{
                 // TODO this doesn't need to be a proper failure for now, right? Because we only define instrs with at most 2 results
-                assert(false && "more than 2 results not supported yet");
+                llvm_unreachable("more than 2 results not supported yet");
             }
 
             // spill store after the instruction
