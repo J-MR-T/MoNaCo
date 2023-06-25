@@ -23,8 +23,13 @@ enum predicate{
     C,     // B
     NC,    // AE
     BE,
-    A
+    A,
+    NONE = 0xFF
 };
+
+inline predicate invert(predicate pred){
+    return static_cast<predicate>(pred ^ 0x1);
+}
 }
 
 // TODO template this and only have one of the two

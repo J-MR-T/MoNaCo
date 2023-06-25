@@ -55,7 +55,7 @@ def ConditionalJumpInterface : OpInterface<"ConditionalJumpInterface", [Instruct
   }];
 
   let methods = [
-    StaticInterfaceMethod<"TODO", "FeMnem",                           "invert">, // technically mnemonic inversion could be done with just xoring with 1 (the lowest bit is the condition code), but that's not very API-stable...
+    StaticInterfaceMethod<"TODO", "FeMnem",                           "getInvertedMnem">, // technically mnemonic inversion could be done with just xoring with 1 (the lowest bit is the condition code), but that's not very API-stable...
     InterfaceMethod<"TODO",       "::mlir::Operation::operand_range", "getTrueDestOperands">,
     InterfaceMethod<"TODO",       "::mlir::Operation::operand_range", "getFalseDestOperands">,
     InterfaceMethod<"TODO",       "::mlir::MutableOperandRange",      "getTrueDestOperandsMutable">,

@@ -114,33 +114,35 @@ public:
         auto falseIsCritical = falseBB->getSinglePredecessor() == nullptr;
 
         /// TODO also check that this gets compiled into something efficient
-        auto setupFalse = [&](){
-            if(falseIsCritical)
-                (regallocer.*destSetupCrit)(jcc.getFalseDest()->getArguments(), jcc.getFalseDestOperands(), jcc);
+        auto setupFalse = [&](bool crit, amd64::conditional::predicate cmovPredicate = amd64::conditional::NONE){
+            if(crit)
+                (regallocer.*destSetupCrit)(jcc.getFalseDest()->getArguments(), jcc.getFalseDestOperands(), cmovPredicate);
             else
-                (regallocer.*destSetupNoCrit)(jcc.getFalseDest()->getArguments(), jcc.getFalseDestOperands(), jcc);
+                (regallocer.*destSetupNoCrit)(jcc.getFalseDest()->getArguments(), jcc.getFalseDestOperands(), cmovPredicate);
         };
 
-        auto setupTrue = [&](){
-            if(trueIsCritical)
-                (regallocer.*destSetupCrit)(jcc.getTrueDest()->getArguments(), jcc.getTrueDestOperands(), jcc);
+        auto setupTrue = [&](bool crit, amd64::conditional::predicate cmovPredicate = amd64::conditional::NONE){
+            if(crit)
+                (regallocer.*destSetupCrit)(jcc.getTrueDest()->getArguments(), jcc.getTrueDestOperands(), cmovPredicate);
             else
-                (regallocer.*destSetupNoCrit)(jcc.getTrueDest()->getArguments(), jcc.getTrueDestOperands(), jcc);
+                (regallocer.*destSetupNoCrit)(jcc.getTrueDest()->getArguments(), jcc.getTrueDestOperands(), cmovPredicate);
         };
 
         // try to generate minimal jumps (it will always be at least one though)
         bool failed = false;
         if(trueBB == nextBB){
             // if we branch to the subsequent block on true, invert the condition, then encode the conditional branch to the false block, don't do anything else
-            setupFalse();
-            failed |= encodeJump(falseBB, jcc.invert());
-            setupTrue();
+            setupFalse(falseIsCritical, amd64::conditional::invert(jcc.getPredicate()));
+            failed |= encodeJump(falseBB, jcc.getInvertedMnem());
+            // if we reach here, this branch always gets taken, so we we don't need to encode conditional movs
+            setupTrue(false);
         }else{
             // in this case we can let `maybeEncodeJump` take care of generating minimal jumps
-            setupTrue();
+            setupTrue(trueIsCritical, jcc.getPredicate());
             failed |= maybeEncodeJump(trueBB,  jcc.getFeMnemonic(), nextBB);
-            setupFalse();
-            failed |= maybeEncodeJump(falseBB, FE_JMP,   nextBB);
+            // if we reach here, this branch always gets taken, so we we don't need to encode conditional movs
+            setupFalse(false);
+            failed |= maybeEncodeJump(falseBB, FE_JMP, nextBB);
         }
         return failed;
     }
@@ -335,6 +337,14 @@ public:
 
         llvm::outs() << termcolor::make(termcolor::red, "Decoded assembly:\n");
 
+        // this is a not-very-performant way to get the block boundaries, but it serves its purpose, no need for optimization in dump output
+        llvm::SmallVector<uint8_t*, 64> blockStartsSorted;
+        for(auto [block, buf] : blocksToBuffer){
+            blockStartsSorted.push_back(buf);
+        }
+        std::sort(blockStartsSorted.begin(), blockStartsSorted.end());
+
+        uint32_t blockNum = 0;
         for(uint8_t* cur = buf.data(); cur < max;){
             FdInstr instr; 
             auto numBytesEncoded = fd_decode(cur, max - cur, 64, 0, &instr);
@@ -342,9 +352,37 @@ public:
                 llvm::errs() << "Encoding resulted in non-decodable instruction :(. Trying to find next decodable instruction...\n";
                 cur++;
             }else{
-                char fmtbuf[64];
+                if(blockNum < blockStartsSorted.size() &&  blockStartsSorted[blockNum] == cur){
+                    llvm::outs() << termcolor::red << "BB" << blockNum << ":" << termcolor::reset << "\n";
+                    blockNum++;
+                }
+
+                static char fmtbuf[64];
                 fd_format(&instr, fmtbuf, sizeof(fmtbuf));
-                llvm::outs() <<  fmtbuf << "\n";
+                llvm::outs() <<  fmtbuf;
+                auto fdType = FD_TYPE(&instr);
+                // if its a jump, try to print which block it's to
+                if(fdType == FDI_JMP  ||
+                    fdType == FDI_JC  ||
+                    fdType == FDI_JNC ||
+                    fdType == FDI_JZ  ||
+                    fdType == FDI_JNZ ||
+                    fdType == FDI_JA  ||
+                    fdType == FDI_JBE ||
+                    fdType == FDI_JL  ||
+                    fdType == FDI_JGE ||
+                    fdType == FDI_JLE ||
+                    fdType == FDI_JG  ||
+                    fdType == FDI_JMPF){
+
+                    auto target = cur + numBytesEncoded + FD_OP_IMM(&instr, 0);
+                    auto it = std::lower_bound(blockStartsSorted.begin(), blockStartsSorted.end(), target);
+                    if(it != blockStartsSorted.end() && *it == target){
+                        llvm::outs() << termcolor::red << " -> BB" << (it - blockStartsSorted.begin()) << termcolor::reset;
+                    }
+                }
+
+                llvm::outs() << "\n";
                 cur += numBytesEncoded;
             }
         }
@@ -458,8 +496,7 @@ struct AbstractRegAllocerEncoder{
             emitPrologue(func);
 
             // this lambda is only for readability, to separate the traversal from the actual handling of a block
-            auto encodeBlock = [&](mlir::Block* block){
-                // TODO this is an assertion, for the RPO thingy im trying, but we just stop, for the other algo
+            auto encodeBlock = [&](mlir::Block* block, mlir::Block* nextBlock = nullptr){
                 assert(!encoder.blocksToBuffer.contains(block) && "Already encoded this block");
 
                 encoder.blocksToBuffer[block] = encoder.cur;
@@ -480,7 +517,7 @@ struct AbstractRegAllocerEncoder{
                         allocateEncodeValueDef(instr);
                     }
                 }
-                handleTerminator(endIt);
+                handleTerminator(endIt, nextBlock);
             };
 
             // do a reverse post order traversal (RPOT) of the CFG, to make sure we encounter all definitions of uses before their uses, and that we see as many predecessors as possible before a block, and loops stay together
@@ -494,6 +531,7 @@ struct AbstractRegAllocerEncoder{
 
             // TODO set vector might be quite expensive
             if constexpr(useRPO){
+                // build post order
                 SmallPtrSetVector<mlir::Block, 8> worklist;
                 worklist.insert(entryBlock);
                 SmallPtrSetVector<mlir::Block, 32> postOrder;
@@ -522,9 +560,19 @@ struct AbstractRegAllocerEncoder{
 
                 assert(postOrder.back() == entryBlock && "Entry block is not last in post order traversal");
 
-                for(auto block : llvm::reverse(postOrder)){
-                    // TODO pass the next block, for encoding the minimum number of jumps
-                    encodeBlock(block);
+                auto range = llvm::reverse(postOrder);
+                auto oneBeforeEnd = range.end();
+                --oneBeforeEnd;
+
+                // iterate over the first n minus one blocks while passing the next one
+                if(!range.empty()){
+                    for(auto blockIt = range.begin(); blockIt != oneBeforeEnd; ++blockIt){
+                        // pass the next block, for encoding the minimum number of jumps
+                        encodeBlock(*blockIt, *std::next(blockIt));
+                    }
+
+                    // just encode the last block, can't pass the next block
+                    encodeBlock(*oneBeforeEnd);
                 }
             }else{
                 // do a DFS pre-order instead, which has enough guarantees, but is simpler
@@ -721,7 +769,7 @@ protected:
 
     /// only use: conditionally moving phis
     // TODO failure etc.
-    inline void condMoveFromSlotToSlot(ValueSlot fromSlot, mlir::Value conditionallyMoveTo, FeReg memMemMoveReg, amd64::ConditionalJumpInterface terminator){
+    inline void condMoveFromSlotToSlot(ValueSlot fromSlot, mlir::Value conditionallyMoveTo, FeReg memMemMoveReg, amd64::conditional::predicate cmovPredicate){
         // this is not the most efficient way in terms of result code, but to keep complexity down at the start, this is fine
         // TODO -> improve this later
 
@@ -739,17 +787,19 @@ protected:
         // just always use a 64 bit cmov for simplicity, the upper bits don't matter, because the move back to the slot will only use the lower bits
         FeMnem mnem;
         bool isRegister = fromSlot.kind == ValueSlot::Register;
-        switch(terminator.getPredicate()){
-            case amd64::conditional::Z:  mnem = isRegister ? FE_CMOVZ64rr  : FE_CMOVZ64rm;  break;
-            case amd64::conditional::NZ: mnem = isRegister ? FE_CMOVNZ64rr : FE_CMOVNZ64rm; break;
-            case amd64::conditional::L:  mnem = isRegister ? FE_CMOVL64rr  : FE_CMOVL64rm;  break;
-            case amd64::conditional::GE: mnem = isRegister ? FE_CMOVGE64rr : FE_CMOVGE64rm; break;
-            case amd64::conditional::LE: mnem = isRegister ? FE_CMOVLE64rr : FE_CMOVLE64rm; break;
-            case amd64::conditional::G:  mnem = isRegister ? FE_CMOVG64rr  : FE_CMOVG64rm;  break;
-            case amd64::conditional::C:  mnem = isRegister ? FE_CMOVC64rr  : FE_CMOVC64rm;  break;
-            case amd64::conditional::NC: mnem = isRegister ? FE_CMOVNC64rr : FE_CMOVNC64rm; break;
-            case amd64::conditional::BE: mnem = isRegister ? FE_CMOVBE64rr : FE_CMOVBE64rm; break;
-            case amd64::conditional::A:  mnem = isRegister ? FE_CMOVA64rr  : FE_CMOVA64rm;  break;
+
+        using namespace amd64::conditional;
+        switch(cmovPredicate){
+            case Z:  mnem = isRegister ? FE_CMOVZ64rr  : FE_CMOVZ64rm;  break;
+            case NZ: mnem = isRegister ? FE_CMOVNZ64rr : FE_CMOVNZ64rm; break;
+            case L:  mnem = isRegister ? FE_CMOVL64rr  : FE_CMOVL64rm;  break;
+            case GE: mnem = isRegister ? FE_CMOVGE64rr : FE_CMOVGE64rm; break;
+            case LE: mnem = isRegister ? FE_CMOVLE64rr : FE_CMOVLE64rm; break;
+            case G:  mnem = isRegister ? FE_CMOVG64rr  : FE_CMOVG64rm;  break;
+            case C:  mnem = isRegister ? FE_CMOVC64rr  : FE_CMOVC64rm;  break;
+            case NC: mnem = isRegister ? FE_CMOVNC64rr : FE_CMOVNC64rm; break;
+            case BE: mnem = isRegister ? FE_CMOVBE64rr : FE_CMOVBE64rm; break;
+            case A:  mnem = isRegister ? FE_CMOVA64rr  : FE_CMOVA64rm;  break;
             default: assert(false && "invalid condition code");
         }
         encoder.encodeRaw(mnem, memMemMoveReg, isRegister ? (FeOp) fromSlot.reg : (FeOp) fromSlot.mem);
@@ -759,26 +809,21 @@ protected:
     }
 
     template<bool isCriticalEdge>
-    inline void handleCFGEdgeHelper(mlir::Block::BlockArgListType blockArgs, mlir::Operation::operand_range blockArgOperands, mlir::Operation* terminator){
+    inline void handleCFGEdgeHelper(mlir::Block::BlockArgListType blockArgs, mlir::Operation::operand_range blockArgOperands, amd64::conditional::predicate cmovPredicateIfCriticalJcc = amd64::conditional::predicate::NONE){
         // TODO return if something went wrong
 
         // need to break memory memory moves with a temp register
         FeReg memMemMoveReg = FE_AX;
 
-        /// only guaranteed to be valid if isCriticalEdge is true
-        auto condJump = mlir::dyn_cast<amd64::ConditionalJumpInterface>(terminator);
-        if constexpr(isCriticalEdge){
-            assert(condJump && "critical edges can only be on conditional jumps");
+        if constexpr(isCriticalEdge)
+            assert(cmovPredicateIfCriticalJcc != amd64::conditional::predicate::NONE);
 
-            assert((condJump.getTrueDest()->getSinglePredecessor() == nullptr || condJump.getFalseDest()->getSinglePredecessor() == nullptr) && "neither of the successors of a supposed critical edge has multiple predecessors");
-        }
-
-        auto handleChainElement = [this, memMemMoveReg, condJump](mlir::Value from, mlir::Value to){
+        auto handleChainElement = [this, memMemMoveReg, cmovPredicateIfCriticalJcc](mlir::Value from, mlir::Value to){
             if constexpr(!isCriticalEdge)
-                (void) condJump,
+                (void) cmovPredicateIfCriticalJcc,
                 moveFromSlotToSlot(from, to, memMemMoveReg);
             else
-                condMoveFromSlotToSlot(valueToSlot[from], to, memMemMoveReg, condJump);
+                condMoveFromSlotToSlot(valueToSlot[from], to, memMemMoveReg, cmovPredicateIfCriticalJcc);
         };
 
         // TODO do the pointers make sense here?
@@ -864,18 +909,16 @@ protected:
             }else{
                 ValueSlot cycleBreakPsuedoSlot = {.kind = ValueSlot::Register, .reg = phiCycleBreakReg, .bitwidth = valueToSlot[*argThatItReads].bitwidth};
 
-                condMoveFromSlotToSlot(cycleBreakPsuedoSlot, *arg, FE_AX, condJump);
+                condMoveFromSlotToSlot(cycleBreakPsuedoSlot, *arg, FE_AX, cmovPredicateIfCriticalJcc);
             }
 
             break;
         }
     }
 
-    inline void handleTerminator(mlir::Block::iterator it){
+    inline void handleTerminator(mlir::Block::iterator instrIt, mlir::Block* nextBlock){
         // We need to deal with PHIs/block args here.
         // Because we're traversing in RPO, we know that the block args are already allocated.
-        // Because this is an unconditional branch, we cannot be on a critical edge, so we can just use normal MOVs to load the values
-        // We still have to take care of PHI cycles/chains here, i.e. do a kind of topological sort, which handles a cycle by copying one of the values in the cycle to a temporary register
         auto tryAllocateSlotsForBlockArgsOfSuccessor = [this](mlir::Block::BlockArgListType blockArgs){
             for(auto arg : blockArgs){
                 // allocate a slot for the block arg
@@ -886,7 +929,7 @@ protected:
             }
         };
 
-        if(auto ret = mlir::dyn_cast<amd64::RET>(*it)){
+        if(auto ret = mlir::dyn_cast<amd64::RET>(*instrIt)){
             // first load the operand, because it is very probably on the stack, and it will get moved into AX (return reg), which we don't touch in the epilogue
             // TODO our RET always has exactly one operand, but it might be a good idea to support no operand return in RET, instead of converting a no operand cf.ret to a RET with a dummy operand
             loadValueForUse(ret.getOperand(), 0, ret.getOperandRegisterConstraints().first);
@@ -894,16 +937,15 @@ protected:
 
             // TODO could also do this directly (simply encode RET), see if it makes a performance difference
             encoder.encodeIntraBlockOp(mod, ret);
-        }else if (auto jmp = mlir::dyn_cast<amd64::JMP>(*it)){
+        }else if (auto jmp = mlir::dyn_cast<amd64::JMP>(*instrIt)){
             auto blockArgs = jmp.getDest()->getArguments();
             tryAllocateSlotsForBlockArgsOfSuccessor(blockArgs);
 
             auto blockArgOperands = jmp.getDestOperands();
 
-            handleCFGEdgeHelper<false>(blockArgs, blockArgOperands, jmp.getOperation());
-            // TODO next is currently, because the nextBB is being set linearly at the callsites, but the traversal is not linear anymore, so this needs to be passed correctly
-            encoder.encodeJMP(jmp, nullptr);
-        }else if(auto jcc = mlir::dyn_cast<amd64::ConditionalJumpInterface>(*it)){
+            handleCFGEdgeHelper<false>(blockArgs, blockArgOperands);
+            encoder.encodeJMP(jmp, nextBlock);
+        }else if(auto jcc = mlir::dyn_cast<amd64::ConditionalJumpInterface>(*instrIt)){
             for(auto dst: {jcc.getTrueDest(), jcc.getFalseDest()}){
                 auto blockArgs = dst->getArguments();
                 tryAllocateSlotsForBlockArgsOfSuccessor(blockArgs);
@@ -912,7 +954,7 @@ protected:
             // this is a problem, because we only have a single jump here, which gets encoded into 2 (max) later on, but we need to place the MOVs in between those two
             // so we pass the handleCFGEdge helper as an argument (parameterized depending on whether or not this is a critical edge), to be called by the encoder function
             // TODO next is currently, because the nextBB is being set linearly at the callsites, but the traversal is not linear anymore, so this needs to be passed correctly
-            encoder.encodeJcc<&AbstractRegAllocerEncoder<Derived>::handleCFGEdgeHelper<false>, &AbstractRegAllocerEncoder<Derived>::handleCFGEdgeHelper<true>>(*this, jcc, nullptr);
+            encoder.encodeJcc<&AbstractRegAllocerEncoder<Derived>::handleCFGEdgeHelper<false>, &AbstractRegAllocerEncoder<Derived>::handleCFGEdgeHelper<true>>(*this, jcc, nextBlock);
         }
     }
 

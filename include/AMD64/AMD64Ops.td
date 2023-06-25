@@ -489,7 +489,7 @@ class Jcc<string mnemonic, string invertedJumpMnemonic> : Instruction<mnemonic, 
 
   let extraExtraClassDeclarations = [
     // We only need it in encoding -> don't construct a whole different op for it, just return the inverted mnemonic
-    "static constexpr FeMnem invert(){ return FE_" # invertedJumpMnemonic # "; }",
+    "static constexpr FeMnem getInvertedMnem(){ return FE_" # invertedJumpMnemonic # "; }",
     "static constexpr conditional::predicate getPredicate(){ return conditional::" # !substr(mnemonic, 1) /* remove the J */ # "; }",
   ];
 }
