@@ -19,6 +19,7 @@
 #include "AMD64/AMD64Ops.h"
 
 // TODO very small test indicates, that the cache doesn't work (i.e. performs worse), if there aren't many calls to a function
+// TODO a simple string map would probably be better anyways, DenseMaps waste a lot of key space too
 mlir::Operation* getFuncForCall(mlir::ModuleOp mod, auto call, llvm::DenseMap<mlir::SymbolRefAttr, mlir::Operation*>& cache){
     // get function back from call
     mlir::CallInterfaceCallable callee = call.getCallableForCallee();
@@ -26,6 +27,7 @@ mlir::Operation* getFuncForCall(mlir::ModuleOp mod, auto call, llvm::DenseMap<ml
     return it->second;
 }
 
+// TODO maybe merge this with the AbstractRegAllocerEncoder
 struct Encoder{
     // TODO test mmap against this later
     // actually not, don't measure writing to a file at all, just write it to mem, compare that against llvm
@@ -58,7 +60,8 @@ struct Encoder{
     // placing this here, because it's related to `encodeOp`
 private:
 
-    // TODO these are using absolute jumps at the moment, right? Relative makes more sense
+    // NOTE: Fadec uses relative jumps by default, which is what we want
+
     /// if we already know the target block is in the blocksToBuffer map, use that, otherwise, register an unresolved branch, and encode a placeholder
     inline auto encodeJump(mlir::Block* targetBB, FeMnem mnemonic) -> int {
         if(auto it = blocksToBuffer.find(targetBB); it != blocksToBuffer.end()){
@@ -153,8 +156,8 @@ public:
     // TODO look through all the callsites of this, if it still makes sense to use this
     /// can only be called with instructions that can actually be encoded
     /// assumes that there is enough space in the buffer, don't use this is you don't know what you're doing
-    /// cannot encode terminators except for return, use encodeTerminatorOp instead
-    /// returns if the encoding failed
+    /// cannot encode terminators except for return, use encodeJMP/encodeJcc instead
+    /// returns whether the encoding failed
 	bool encodeIntraBlockOp(mlir::ModuleOp mod, amd64::InstructionOpInterface instrOp){
 
         // there will be many case distinctions here, the alternative would be a general 'encode' interface, where every instruction defines its own encoding.
@@ -228,40 +231,13 @@ public:
         };
 
         bool failed = false;
-        // TODO optimize the ordering of this, probably jmp>call>div
-        // TODO special cases
+        // special cases
         // - calls
         // - DIV/IDIV because rdx needs to be zeroed/sign extended (2 separate cases)
         //
         // jumps are handled separately
         
-        if(instrOp->hasTrait<SpecialCase<Special::DIV>::Impl>()) [[unlikely]] {
-            assert(cur + 30 <= buf.data() + buf.capacity() && "Buffer is too small to encode div like instruction");
-
-            // in this case we need to simply XOR edx, edx, which also zeroes the upper 32 bits of rdx
-            failed |= encodeRaw(FE_XOR32rr, FE_DX, FE_DX);
-
-            // then encode the div normally
-            encodeNormally();
-        }else if(instrOp->hasTrait<SpecialCase<Special::IDIV>::Impl>()) [[unlikely]] {
-            assert(cur + 30 <= buf.data() + buf.capacity() && "Buffer is too small to encode div like instruction");
-
-            auto resultType = instrOp->getResult(0).getType().cast<amd64::RegisterTypeInterface>();
-            assert(resultType && "Result of div like instruction is not a register type");
-
-            // the CQO family is FE_C_SEPxx, CBW (which we need for 8 bit div) is FE_C_EX16
-
-            // sign extend ax into dx:ax (for different sizes), for 8 bit sign extend al into ax
-            switch(resultType.getBitwidth()){
-                case 8:  failed |= encodeRaw(FE_C_EX16);  break;
-                case 16: failed |= encodeRaw(FE_C_SEP16); break;
-                case 32: failed |= encodeRaw(FE_C_SEP32); break;
-                case 64: failed |= encodeRaw(FE_C_SEP64); break;
-                default: llvm_unreachable("Result of div like instruction is not a register type");
-            }
-
-            failed |= encodeNormally();
-        }else if(auto call = mlir::dyn_cast<amd64::CALL>(instrOp.getOperation())) [[unlikely]] {
+        if(auto call = mlir::dyn_cast<amd64::CALL>(instrOp.getOperation())) [[unlikely]] {
             // get the entry block of the corresponding function, jump there
             auto maybeFunc = getFuncForCall(mod, call, symbolrefToFuncCache);
             if(!maybeFunc){
@@ -282,7 +258,33 @@ public:
 
             // can't use maybeEncodeJump here, because a call always needs to be encoded
             failed |= encodeJump(entryBB, mnemonic);
-        }else{
+        }else if(instrOp->hasTrait<SpecialCase<Special::DIV>::Impl>()) [[unlikely]] {
+            assert(cur + 30 <= buf.data() + buf.capacity() && "Buffer is too small to encode div like instruction");
+
+            // in this case we need to simply XOR edx, edx, which also zeroes the upper 32 bits of rdx
+            failed |= encodeRaw(FE_XOR32rr, FE_DX, FE_DX);
+
+            // then encode the div normally
+            failed |= encodeNormally();
+        }else if(instrOp->hasTrait<SpecialCase<Special::IDIV>::Impl>()) [[unlikely]] {
+            assert(cur + 30 <= buf.data() + buf.capacity() && "Buffer is too small to encode div like instruction");
+
+            auto resultType = instrOp->getResult(0).getType().cast<amd64::RegisterTypeInterface>();
+            assert(resultType && "Result of div like instruction is not a register type");
+
+            // the CQO family is FE_C_SEPxx, CBW (which we need for 8 bit div) is FE_C_EX16
+
+            // sign extend ax into dx:ax (for different sizes), for 8 bit sign extend al into ax
+            switch(resultType.getBitwidth()){
+                case 8:  failed |= encodeRaw(FE_C_EX16);  break;
+                case 16: failed |= encodeRaw(FE_C_SEP16); break;
+                case 32: failed |= encodeRaw(FE_C_SEP32); break;
+                case 64: failed |= encodeRaw(FE_C_SEP64); break;
+                default: llvm_unreachable("Result of div like instruction is not a register type");
+            }
+
+            failed |= encodeNormally();
+        }else {
             failed |= encodeNormally();
         }
 
