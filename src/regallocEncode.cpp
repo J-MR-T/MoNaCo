@@ -830,7 +830,7 @@ protected:
         };
 
         // TODO do the pointers make sense here?
-        llvm::SmallVector<std::pair<mlir::BlockArgument*, mlir::BlockArgument*>, 8> mapArgNumberToArgAndArgItReads(blockArgs.size(), {nullptr, nullptr});
+        llvm::SmallVector<std::pair<mlir::BlockArgument, mlir::BlockArgument>, 8> mapArgNumberToArgAndArgItReads(blockArgs.size(), {nullptr, nullptr});
         llvm::SmallVector<int16_t, 8> numReaders(blockArgs.size(), 0); // indexed by the block arg number, i.e. the slots for the dependent args are empty/0 in here
 
         // find the args which are independent, and those which need a topological sorting
@@ -839,7 +839,7 @@ protected:
                 if(operandArg == arg) { // if its a self-reference/edge, we can simply ignore it, because its SSA: the value only gets defined once, and a ValueSlot only ever holds exactly one value during that value's liveness. In this case this value is this phi, and it is obviously still live, by being used as a block arg, so we can just leave it where it is, don't need to emit any code for it
                     continue;
                 } else /* otherwise we've found a dependant phi */ {
-                    mapArgNumberToArgAndArgItReads[arg.getArgNumber()] = {&arg, &operandArg};
+                    mapArgNumberToArgAndArgItReads[arg.getArgNumber()] = {arg, operandArg};
 
                     assert(numReaders.size()> operandArg.getArgNumber());
                     numReaders[operandArg.getArgNumber()] += 1;
@@ -861,20 +861,20 @@ protected:
             assert(arg != argThatItReads && "self-reference in phi, should have been handled earlier");
 
             // this handles the arg, if it has no dependencies anymore. It's a loop, because it might unblock new args, which then need to be handled
-            while(numReaders[arg->getArgNumber()] == 0){
+            while(numReaders[arg.getArgNumber()] == 0){
                 // found the start of a chain
 
-                handleChainElement(*argThatItReads, *arg); // need to move the value being read *from* its slot *to* the slot of the phi
+                handleChainElement(argThatItReads, arg); // need to move the value being read *from* its slot *to* the slot of the phi
 
                 // to ensure that this arg is never handled again (it might be visited again by the for loop, if it has been handled because a reader has unblocked it), set it's reader number to -1
-                numReaders[arg->getArgNumber()] = -1;
+                numReaders[arg.getArgNumber()] = -1;
 
                 // we've removed a reader from this, might have unblocked it
-                numReaders[argThatItReads->getArgNumber()] -= 1;
+                numReaders[argThatItReads.getArgNumber()] -= 1;
 
                 // -> try if it's unblocked, by re-setting the arg and argThatItReads
                 arg = argThatItReads; // we're looking at the phi we just read now
-                argThatItReads = mapArgNumberToArgAndArgItReads[arg->getArgNumber()].second; // get what it reads from the map
+                argThatItReads = mapArgNumberToArgAndArgItReads[arg.getArgNumber()].second; // get what it reads from the map
             }
         }
 
@@ -885,34 +885,34 @@ protected:
 
         // find the first of the cycle
         for(auto [arg, argThatItReads] : mapArgNumberToArgAndArgItReads){
-            if(arg == nullptr || numReaders[arg->getArgNumber()] == -1)
+            if(arg == nullptr || numReaders[arg.getArgNumber()] == -1)
                 continue;
 
-            assert(numReaders[arg->getArgNumber()] == 1 && "cycle in phi dependencies, but some of the cycle's members have more than one reader, something is wrong here");
+            assert(numReaders[arg.getArgNumber()] == 1 && "cycle in phi dependencies, but some of the cycle's members have more than one reader, something is wrong here");
 
             // save temporarily
-            moveFromSlotToOperandReg(*arg, phiCycleBreakReg);
-            numReaders[arg->getArgNumber()] = 0;
+            moveFromSlotToOperandReg(arg, phiCycleBreakReg);
+            numReaders[arg.getArgNumber()] = 0;
 
             // we're iterating until what we're reading doesn't have 1 reader -> it has to be the first, so we do the special copy from the cycle break register, after the loop
-            while(numReaders[argThatItReads->getArgNumber()] == 1){
-                handleChainElement(*argThatItReads, *arg); // need to move the value being read *from* its slot *to* the slot of the phi
+            while(numReaders[argThatItReads.getArgNumber()] == 1){
+                handleChainElement(argThatItReads, arg); // need to move the value being read *from* its slot *to* the slot of the phi
 
                 // we've removed a reader from this
-                numReaders[argThatItReads->getArgNumber()] = 0;
+                numReaders[argThatItReads.getArgNumber()] = 0;
 
                 arg = argThatItReads; // we're looking at the phi we just read now
-                argThatItReads = mapArgNumberToArgAndArgItReads[arg->getArgNumber()].second; // get what it reads from the map
+                argThatItReads = mapArgNumberToArgAndArgItReads[arg.getArgNumber()].second; // get what it reads from the map
             }
 
             // need to move from the cycle break to this last arg, to complete the loop
             // and we need to do that conditionally, if this is a critical edge
             if constexpr(!isCriticalEdge){
-                moveFromOperandRegToSlot(*arg, valueToSlot[*arg], phiCycleBreakReg); // the problem here is we to move from FE_CX/phiCycleBreakReg, to the slot of the arg, not from the register that the value is currently in, so we have to override it
+                moveFromOperandRegToSlot(arg, valueToSlot[arg], phiCycleBreakReg); // the problem here is we to move from FE_CX/phiCycleBreakReg, to the slot of the arg, not from the register that the value is currently in, so we have to override it
             }else{
-                ValueSlot cycleBreakPsuedoSlot = {.kind = ValueSlot::Register, .reg = phiCycleBreakReg, .bitwidth = valueToSlot[*argThatItReads].bitwidth};
+                ValueSlot cycleBreakPsuedoSlot = {.kind = ValueSlot::Register, .reg = phiCycleBreakReg, .bitwidth = valueToSlot[argThatItReads].bitwidth};
 
-                condMoveFromSlotToSlot(cycleBreakPsuedoSlot, *arg, FE_AX, cmovPredicateIfCriticalJcc);
+                condMoveFromSlotToSlot(cycleBreakPsuedoSlot, arg, FE_AX, cmovPredicateIfCriticalJcc);
             }
 
             break;
