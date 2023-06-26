@@ -577,5 +577,6 @@ bool prototypeIsel(mlir::Operation* regionOp){
     //llvm::setCurrentDebugType("dialect-conversion");
 
     //auto result = mlir::applyPatternsAndFoldGreedily(patternMatchingTestFn, std::move(patterns)); // TODO I think this only applies normal rewrite patterns, not conversion patterns...
+    // TODO try to do this concurrently, for function regions
     return mlir::failed(mlir::applyFullConversion(regionOp, target, std::move(patterns)));
 }
