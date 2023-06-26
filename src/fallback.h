@@ -70,7 +70,7 @@ inline bool lowerToLLVMDialect(mlir::ModuleOp mod) noexcept{
 
 /// returns whether it failed
 template<llvm::CodeGenOpt::Level OptLevel = llvm::CodeGenOpt::None>
-bool llvmCompileMod(llvm::Module& mod, llvm::SmallVector<char, 0>& outputVec){
+bool llvmCompileMod(llvm::Module& mod, llvm::SmallVector<char, 0>& outputVec, llvm::TargetOptions opt = {}){
     // adapted from https://www.llvm.org/docs/tutorial/MyFirstLanguageFrontend/LangImpl08.html
     llvm::InitializeAllTargetInfos();
     //llvm::InitializeAllTargets();
@@ -100,8 +100,6 @@ bool llvmCompileMod(llvm::Module& mod, llvm::SmallVector<char, 0>& outputVec){
     auto CPU         = "generic";
     auto features    = "";
 
-    llvm::TargetOptions opt;
-    opt.EnableFastISel = true; // TODO parameter for this
     auto RM = std::optional<llvm::Reloc::Model>();
 
     // For some reason, the targetMachine needs to be deleted manually, so encapsulate it in a unique_ptr
@@ -139,7 +137,7 @@ bool llvmCompileMod(llvm::Module& mod, llvm::SmallVector<char, 0>& outputVec){
 
 /// returns whether compilation failed
 template<llvm::CodeGenOpt::Level OptLevel = llvm::CodeGenOpt::None>
-bool fallbackToLLVMCompilation(mlir::ModuleOp mlirMod, llvm::SmallVector<char, 0>& obj){
+bool fallbackToLLVMCompilation(mlir::ModuleOp mlirMod, llvm::SmallVector<char, 0>& obj, llvm::TargetOptions opt = {}){
     // mlir mod -> llvm dialect mod
     if(lowerToLLVMDialect(mlirMod)){
         llvm::errs() << "Could not lower to LLVM dialect\n";
@@ -158,7 +156,7 @@ bool fallbackToLLVMCompilation(mlir::ModuleOp mlirMod, llvm::SmallVector<char, 0
         llvm::errs() << "Could not translate MLIR module to LLVM IR\n";
     }
 
-    if(llvmCompileMod<OptLevel>(*llvmModUP, obj) != 0){
+    if(llvmCompileMod<OptLevel>(*llvmModUP, obj, opt) != 0){
         llvm::errs() << "Could not compile LLVM module\n";
         return true;
     }

@@ -105,11 +105,13 @@ int main(int argc, char *argv[]) {
         }
 
         if(args.fallback()){
-            MEASURE_TIME_START(totalLLVM);
+            llvm::TargetOptions opt;
+            opt.EnableFastISel = true;
 
+            MEASURE_TIME_START(totalLLVM);
             for(auto i = 0u; i < iterations; i++){
                 auto obj = llvm::SmallVector<char, 0>();
-                fallbackToLLVMCompilation(*modClones[i], obj);
+                fallbackToLLVMCompilation(*modClones[i], obj, opt);
             }
 
             MEASURE_TIME_END(totalLLVM);
