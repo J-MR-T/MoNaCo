@@ -226,6 +226,9 @@ struct ExtUII1Pat : mlir::OpConversionPattern<mlir::arith::ExtUIOp> {
             return rewriter.notifyMatchFailure(zextOp, "this pattern only extends i1s");
 
         // to be precise, we're only matching cmps for the moment, although this might change later
+        if(!zextOp.getIn().isa<mlir::OpResult>())
+            return rewriter.notifyMatchFailure(zextOp, "i1 zext pattern only matches cmps, this seems to be a block arg");
+
         auto cmpi = mlir::dyn_cast<mlir::arith::CmpIOp>(zextOp.getIn().getDefiningOp());
         if(!cmpi)
             return rewriter.notifyMatchFailure(zextOp, "only cmps are supported for i1 extension for now");
@@ -267,17 +270,34 @@ auto truncExtUiSiBitwidthMatcher = []<unsigned outBitwidth, typename thisType, t
     return mlir::success();
 };
 
+template<unsigned inBitwidth>
 auto truncExtUiSiMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename MOVZX, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE
 >(auto szextOp, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
+    // we need to take care to truncate an i1 to 0/1, before we 'actually' use it, i.e. do real computations with it on the other side of the MOVZX
+    // i1's are represented as 8 bits currently, so we only need to check this in patterns which extend 8 bit
+    if constexpr (inBitwidth == 8){
+        if(szextOp.getIn().getType().isInteger(1)){
+            // assert the 8 bits for the i1
+            assert(mlir::dyn_cast<amd64::RegisterTypeInterface>(adaptor.getIn().getType()).getBitwidth() == 8);
+
+            // and it with 1, to truncate it
+            auto AND = rewriter.create<amd64::AND8ri>(szextOp.getLoc(), adaptor.getIn());
+            AND.instructionInfo().imm = 0x1;
+            rewriter.replaceOpWithNewOp<MOVZX>(szextOp, AND);
+            return mlir::success();
+        }
+    }
+        
+
     rewriter.replaceOpWithNewOp<MOVZX>(szextOp, adaptor.getIn());
     return mlir::success();
 };
 
 /// only for 16-64 bits outBitwidth, for 8 we have a special pattern. There are more exceptions: Because not all versions of MOVZX exist, MOVZXr8r8 wouldn't make sense (also invalid in MLIR), MOVZXr64r32 is just a MOV, etc.
 #define EXT_UI_SI_PAT(outBitwidth, inBitwidth) \
-    using ExtUIPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::ExtUIOp, outBitwidth, truncExtUiSiMatchReplace, amd64::MOVZX ## r ## outBitwidth ## r ## inBitwidth, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<inBitwidth>>; \
-    using ExtSIPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::ExtSIOp, outBitwidth, truncExtUiSiMatchReplace, amd64::MOVSX ## r ## outBitwidth ## r ## inBitwidth, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<inBitwidth>>;
+    using ExtUIPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::ExtUIOp, outBitwidth, truncExtUiSiMatchReplace<inBitwidth>, amd64::MOVZX ## r ## outBitwidth ## r ## inBitwidth, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<inBitwidth>>; \
+    using ExtSIPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::ExtSIOp, outBitwidth, truncExtUiSiMatchReplace<inBitwidth>, amd64::MOVSX ## r ## outBitwidth ## r ## inBitwidth, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<inBitwidth>>;
 
 // generalizable cases:
 EXT_UI_SI_PAT(16, 8);
@@ -287,13 +307,13 @@ EXT_UI_SI_PAT(64, 8); EXT_UI_SI_PAT(64, 16);
 // cases that are still valid in mlir, but not covered here:
 // - 32 -> 64 (just a MOV)
 // - any weird integer types, but we ignore those anyway
-using ExtUIPat64_32 = MatchRMI<mlir::arith::ExtUIOp, 64, truncExtUiSiMatchReplace, amd64::MOV32rr, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<32>>;
+using ExtUIPat64_32 = MatchRMI<mlir::arith::ExtUIOp, 64, truncExtUiSiMatchReplace<32>, amd64::MOV32rr, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<32>>;
 // for sign extend, the pattern above would work, but for simplicity, just do it manually here:
-using ExtSIPat64_32 = MatchRMI<mlir::arith::ExtSIOp, 64, truncExtUiSiMatchReplace, amd64::MOVSXr64r32, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<32>>;
+using ExtSIPat64_32 = MatchRMI<mlir::arith::ExtSIOp, 64, truncExtUiSiMatchReplace<32>, amd64::MOVSXr64r32, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<32>>;
 
 // trunc
 #define TRUNC_PAT(outBitwidth, inBitwidth) \
-    using TruncPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::TruncIOp, outBitwidth, truncExtUiSiMatchReplace, amd64::MOV ## outBitwidth ## rr, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<inBitwidth>>;
+    using TruncPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::TruncIOp, outBitwidth, truncExtUiSiMatchReplace<inBitwidth>, amd64::MOV ## outBitwidth ## rr, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<inBitwidth>>;
 TRUNC_PAT(8, 16); TRUNC_PAT(8, 32); TRUNC_PAT(8, 64);
 TRUNC_PAT(16, 32); TRUNC_PAT(16, 64);
 TRUNC_PAT(32, 64);
