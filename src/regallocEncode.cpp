@@ -498,13 +498,20 @@ struct AbstractRegAllocerEncoder{
             if(func.isExternal())
                 continue;
 
+            auto* entryBlock = &func.getBlocks().front();
+            assert(entryBlock->hasNoPredecessors() && "MLIR should disallow branching to the entry block -> MLIR bug!"); // this has to be assumed, because the entry block does stack allocation etc., we don't want that to happen multiple times
+            // The only things that can target entry blocks are function calls, and they need to include the prologue, so we have to set this here. The rest of the map is filled in the encode routine below
+            encoder.blocksToBuffer[entryBlock] = encoder.cur;
+
             emitPrologue(func);
 
             // this lambda is only for readability, to separate the traversal from the actual handling of a block
-            auto encodeBlock = [&](mlir::Block* block, mlir::Block* nextBlock = nullptr){
-                assert(!encoder.blocksToBuffer.contains(block) && "Already encoded this block");
-
-                encoder.blocksToBuffer[block] = encoder.cur;
+            auto encodeBlock = [&]<bool writeToBlockBufferMap = true>(mlir::Block* block, mlir::Block* nextBlock = nullptr){
+                // currently, all blocks except the entry block have writeToBlockBufferMap = true
+                if constexpr(writeToBlockBufferMap){
+                    assert(!encoder.blocksToBuffer.contains(block) && "Already encoded this block");
+                    encoder.blocksToBuffer[block] = encoder.cur;
+                }
 
                 // map block to start of block in buffer
 
@@ -528,13 +535,11 @@ struct AbstractRegAllocerEncoder{
             // do a reverse post order traversal (RPOT) of the CFG, to make sure we encounter all definitions of uses before their uses, and that we see as many predecessors as possible before a block, and loops stay together
             // we will make this a DAG, by ignoring back-(including self-)edges
 
-            auto* entryBlock = &func.getBlocks().front();
-            assert(entryBlock->hasNoPredecessors() && "Apparently MLIR allows branching to the entry block"); // this has to be assumed, because the entry block does stack allocation etc., we don't want that to happen multiple times
 
             // TODO probably yeet this if constexpr at some point, this is just for performance testing. Or maybe make it dependent on the optimization level, if there is a significant difference
             constexpr bool useRPO = true;
 
-            // TODO set vector might be quite expensive
+            // set vector might be quite expensive, but it seems alright
             if constexpr(useRPO){
                 // build post order
                 SmallPtrSetVector<mlir::Block, 8> worklist;
@@ -565,13 +570,26 @@ struct AbstractRegAllocerEncoder{
 
                 assert(postOrder.back() == entryBlock && "Entry block is not last in post order traversal");
 
+                // apparently, I could just reuse llvm::ReversePostOrderTraversal here, see ModuleTranslation.cpp:565 getTopologicallySortedBlocks :
+                //auto range = llvm::ReversePostOrderTraversal<mlir::Block*>(entryBlock);
+
                 auto range = llvm::reverse(postOrder);
+                auto beginPlusOne = range.begin();
+                ++beginPlusOne;
                 auto oneBeforeEnd = range.end();
                 --oneBeforeEnd;
 
-                // iterate over the first n minus one blocks while passing the next one
-                if(!range.empty()){
-                    for(auto blockIt = range.begin(); blockIt != oneBeforeEnd; ++blockIt){
+                // range can't be empty, always contains at least the entry block
+                assert(!range.empty() && "function RPO without entry block");
+
+                bool atLeast2Blocks = beginPlusOne != range.end();
+
+                // special case for the entry block: don't fill the blocksToBuffer for it, this was done before the prologue was emitted.
+                encodeBlock.template operator()<false>(*range.begin(), atLeast2Blocks ? *beginPlusOne : nullptr);
+
+                if(atLeast2Blocks){
+                    // iterate over the first n minus one blocks while passing the next one
+                    for(auto blockIt = beginPlusOne; blockIt != oneBeforeEnd; ++blockIt){
                         // pass the next block, for encoding the minimum number of jumps
                         encodeBlock(*blockIt, *std::next(blockIt));
                     }
