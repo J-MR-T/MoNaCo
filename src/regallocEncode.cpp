@@ -519,6 +519,13 @@ struct AbstractRegAllocerEncoder{
                 auto endIt = block->end();
                 for(auto& op: llvm::make_range(block->begin(), --endIt)){
                     if(auto instr = mlir::dyn_cast<amd64::InstructionOpInterface>(&op)) [[likely]]{
+                        // ignore the instruction, if it's pure and it's uses are empty
+                        // TODO might cost performance, maybe remove
+                        // TODO and it doesn't work (iselfull reports unallocated values being loaded)
+                        // NOTE: mlir::isOpTriviallyDead doesn't work either
+                        //if(mlir::isPure(&op) && instr->use_empty())
+                        //    return;
+
                         // two operands max for now
                         // TODO make this nicer
                         assert(instr->getNumOperands() <= 2);
@@ -739,8 +746,9 @@ protected:
 
     // TODO the case distinction depending on the slot kind can be avoided for allocateEncodeValueDef, by using a template and if constexpr, but see if that actually makes the code faster first
     inline bool moveFromSlotToOperandReg(mlir::Value val, ValueSlot slot, FeReg reg){
-        // TODO can probably avoid removing the same value to the same operand register, if it's already there, can probably be checked using registerOf(val) == reg
+        // TODO can probably avoid re-moving the same value to the same operand register, but we need more information for this, registerOf(val) == reg is not enough, because the register of a value does not get overwritten, when another value gets moved there. So we need a register -> value map (vector) to do this
         bool failed;
+
         if (slot.kind == ValueSlot::Register){
             FeMnem mnem;
             switch(slot.bitwidth){

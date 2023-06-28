@@ -99,8 +99,8 @@ int main(int argc, char *argv[]) {
             iterations = static_cast<unsigned>(iterationsI);
         }
 
-        std::vector<mlir::OwningOpRef<mlir::ModuleOp>> modClones(iterations);
-        for(unsigned i = 0; i < iterations; i++){
+        std::vector<mlir::OwningOpRef<mlir::ModuleOp>> modClones(2*iterations);
+        for(unsigned i = 0; i < modClones.size(); i++){
             modClones[i] = mlir::OwningOpRef<mlir::ModuleOp>(owningModRef->clone());
         }
 
@@ -132,7 +132,22 @@ int main(int argc, char *argv[]) {
 
             MEASURE_TIME_END(totalMLIR);
 
-            llvm::outs() << "ISel + RegAlloc + encoding took " << MEASURED_TIME_AS_SECONDS(totalMLIR, iterations) << " seconds on average over " << iterations << " iterations\n";
+            MEASURE_TIME_START(iselMLIR);
+            for(unsigned i = iterations; i < 2*iterations; i++){
+                prototypeIsel(*modClones[i]);
+            }
+            MEASURE_TIME_END(iselMLIR);
+
+            MEASURE_TIME_START(regallocMLIR);
+            for(unsigned i = iterations; i < 2*iterations; i++){
+                regallocEncodeRepeated(encoded, *modClones[i]);
+            }
+            MEASURE_TIME_END(regallocMLIR);
+
+            llvm::outs() << "ISel + RegAlloc + encoding took " << MEASURED_TIME_AS_SECONDS(totalMLIR, iterations) << " seconds on average over "     << iterations                                         << " iterations\n";
+            llvm::outs() << "ISel repeated "                   << iterations                                      << " times without RegAlloc took " << MEASURED_TIME_AS_SECONDS(iselMLIR,     iterations) << " seconds on average\n";
+            llvm::outs() << "RegAlloc repeated "               << iterations                                      << " times without ISel took "     << MEASURED_TIME_AS_SECONDS(regallocMLIR, iterations) << " seconds on average\n";
+            llvm::outs() << "Combining these two times gives " << MEASURED_TIME_AS_SECONDS(iselMLIR, iterations) + MEASURED_TIME_AS_SECONDS(regallocMLIR, iterations) << " seconds on average, be aware that the last three measurements do not represent realistic use-case of these functions!\n";
         }
     }else if(args.fallback()){
         auto obj = llvm::SmallVector<char, 0>();

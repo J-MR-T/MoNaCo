@@ -76,7 +76,7 @@ struct Constraints{
         else if(i == 1)
             return first.which == 1 ? first : (second.which == 1 ? second : T());
         else
-            assert(false && "invalid index");
+            llvm_unreachable("invalid index");
     }
 };
 using OperandRegisterConstraints = Constraints<OperandRegisterConstraint>;
