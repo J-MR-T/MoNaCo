@@ -8,10 +8,6 @@
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 
-// `ForwardIterator` for use with `walk` is defined here ...
-#include <mlir/IR/Visitors.h>
-// ... but `ReverseIterator`, also for use with `walk`, is defined here:
-#include <mlir/IR/Iterators.h>
 #include <type_traits>
 
 #include "util.h"
@@ -33,7 +29,7 @@ struct Encoder{
     // actually not, don't measure writing to a file at all, just write it to mem, compare that against llvm
     std::vector<uint8_t>& buf;
     uint8_t* cur;
-    mlir::DenseMap<mlir::BlockArgument, FeReg>& blockArgToRegs;
+    mlir::DenseMap<mlir::BlockArgument, FeReg>& blockArgToReg;
 
     // Has to use an actual map instead of a vector, because a jump/call doesn't know the index of the target block
     mlir::DenseMap<mlir::Block*, uint8_t*> blocksToBuffer; // TODO might make sense to make this a reference, and have the regallocer own it, because it needs it too
@@ -50,7 +46,7 @@ struct Encoder{
     };
     mlir::SmallVector<UnresolvedBranchInfo, 64> unresolvedBranches;
 
-	Encoder(std::vector<uint8_t>& buf, mlir::DenseMap<mlir::BlockArgument, FeReg>& blockArgToRegs) : buf(buf), cur(), blockArgToRegs(blockArgToRegs){
+	Encoder(std::vector<uint8_t>& buf, mlir::DenseMap<mlir::BlockArgument, FeReg>& blockArgToReg) : buf(buf), cur(), blockArgToReg(blockArgToReg){
         // reserve 1MiB for now
         buf.reserve(1 << 20); // TODO expand it when necessary
         // TODO oh god i just realized, what if the vector needs to be reallocated, that would invalidate all points like in unresolvedBranches or blocksToBuffer
@@ -153,7 +149,6 @@ public:
         return failed;
     }
 
-    // TODO look through all the callsites of this, if it still makes sense to use this
     /// can only be called with instructions that can actually be encoded
     /// assumes that there is enough space in the buffer, don't use this is you don't know what you're doing
     /// cannot encode terminators except for return, use encodeJMP/encodeJcc instead
@@ -164,7 +159,7 @@ public:
         // that would be more extensible, but probably even more code, and slower
         using namespace mlir::OpTrait;
         using mlir::dyn_cast;
-        using Special = amd64::Special; // TODO unnecessary, as soon as this is properly in the namespace
+        using Special = amd64::Special;
 
         assert(cur + 15 <= buf.data() + buf.capacity() && "Buffer is too small to encode instruction");
         assert(!mlir::isa<amd64::JMP>(instrOp.getOperation()) && !mlir::isa<amd64::ConditionalJumpInterface>(instrOp.getOperation()) && "Use encodeJMP or encodeJcc instead");
@@ -226,7 +221,6 @@ public:
                 operands[machineOperandsCovered] = instrOp.instructionInfo().imm;
             }
 
-            // TODO performance test this version, which just passes all operands, against a version which only passes the operands which are actually used, through some hiddeous case distinctions
             // TODO also maybe make the operands smaller once all instructions are defined, and we know that there are no more than x
             return encodeRaw(mnemonic, operands[0], operands[1], operands[2], operands[3]);
         };
@@ -264,6 +258,8 @@ public:
 
             // in this case we need to simply XOR edx, edx, which also zeroes the upper 32 bits of rdx
             failed |= encodeRaw(FE_XOR32rr, FE_DX, FE_DX);
+            
+            // TODO if the mapping of operand reg to value gets used, need to set the mapping for DX to nullptr here
 
             // then encode the div normally
             failed |= encodeNormally();
@@ -458,7 +454,7 @@ struct AbstractRegAllocerEncoder{
     // We're doing single pass register allocation and encoding. But it is not entirely possible to do this, without any coupling between the two components, just using the IR. This is because the instruction-selected IR is still too high-level at some points (conditional branches in particular), and we need to generate a lot of new instructions during regalloc. Some of these can be represented as IR, but for many of them it is easier to simply encode them directly
     // We try to minimize coupling by only having the register allocator know about the encoder, and not also the other way around.
     Encoder encoder;
-    
+
     mlir::ModuleOp mod;
 
     /// size of the stack of the current function, measured in bytes from the base pointer. Includes saving of callee-saved registers. This is for easy access to the current top of stack
@@ -474,6 +470,19 @@ struct AbstractRegAllocerEncoder{
 
     /// the number of bytes we need to allocate at the end doesn't include the preallocated stack bytes (specialStackBytes + what is needed for saving callee saved regs), because they are already allocated, so these need to be saved, to be subtracted from the total
     uint8_t preAllocatedStackBytes = 0;
+
+    // TODO currently not in use
+#if 0
+    mlir::Value operandRegToValue[3] = {/* AX */nullptr, /* CX */ nullptr, /* DX */ nullptr};
+
+    static consteval unsigned operandRegValueIndex(FeReg reg){
+        // AX, CX, DX are operand registers
+        if (reg == FE_AX)      return 0;
+        else if (reg == FE_CX) return 1;
+        else if (reg == FE_DX) return 2;
+        else static_assert(false, "invalid register");
+    }
+#endif
 
     AbstractRegAllocerEncoder(mlir::ModuleOp mod, std::vector<uint8_t>& buf) : encoder(buf, blockArgToReg), mod(mod) {}
 
