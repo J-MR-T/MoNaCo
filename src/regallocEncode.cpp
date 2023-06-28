@@ -363,7 +363,7 @@ public:
                 fd_format(&instr, fmtbuf, sizeof(fmtbuf));
                 llvm::outs() <<  fmtbuf;
                 auto fdType = FD_TYPE(&instr);
-                // if its a jump, try to print which block it's to
+                // if its a jump/call, try to print which block it's to
                 if(fdType == FDI_JMP  ||
                     fdType == FDI_JC  ||
                     fdType == FDI_JNC ||
@@ -375,7 +375,7 @@ public:
                     fdType == FDI_JGE ||
                     fdType == FDI_JLE ||
                     fdType == FDI_JG  ||
-                    fdType == FDI_JMPF){
+                    fdType == FDI_JMPF || fdType == FDI_CALL){
 
                     auto target = cur + numBytesEncoded + FD_OP_IMM(&instr, 0);
                     auto it = std::lower_bound(blockStartsSorted.begin(), blockStartsSorted.end(), target);
