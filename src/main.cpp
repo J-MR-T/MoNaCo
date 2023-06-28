@@ -5,6 +5,7 @@
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
+#include <mlir/Analysis/Liveness.h>
 
 #include "AMD64/AMD64Dialect.h"
 #include "AMD64/AMD64Ops.h"
@@ -138,6 +139,13 @@ int main(int argc, char *argv[]) {
             }
             MEASURE_TIME_END(iselMLIR);
 
+            // TODO this is experimental
+            MEASURE_TIME_START(liveness);
+            for(unsigned i = 0; i < iterations; i++){
+                mlir::Liveness liveness(*modClones[i]);
+            }
+            MEASURE_TIME_END(liveness);
+
             MEASURE_TIME_START(regallocMLIR);
             for(unsigned i = iterations; i < 2*iterations; i++){
                 regallocEncodeRepeated(encoded, *modClones[i]);
@@ -148,6 +156,7 @@ int main(int argc, char *argv[]) {
             llvm::outs() << "ISel repeated "                   << iterations                                      << " times without RegAlloc took " << MEASURED_TIME_AS_SECONDS(iselMLIR,     iterations) << " seconds on average\n";
             llvm::outs() << "RegAlloc repeated "               << iterations                                      << " times without ISel took "     << MEASURED_TIME_AS_SECONDS(regallocMLIR, iterations) << " seconds on average\n";
             llvm::outs() << "Combining these two times gives " << MEASURED_TIME_AS_SECONDS(iselMLIR, iterations) + MEASURED_TIME_AS_SECONDS(regallocMLIR, iterations) << " seconds on average, be aware that the last three measurements do not represent realistic use-case of these functions!\n";
+            llvm::outs() << "Experimental: Liveness analysis took " << MEASURED_TIME_AS_SECONDS(liveness, iterations) << " seconds on average over " << iterations << " iterations\n";
         }
     }else if(args.fallback()){
         auto obj = llvm::SmallVector<char, 0>();

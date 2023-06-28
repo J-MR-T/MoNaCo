@@ -1142,7 +1142,7 @@ public:
         //      - mov rsp, rbp
         //      - pop rbp
 
-        // needs to be rewritten later
+        // this instruction needs to be rewritten later
         stackDeallocationInstructions.push_back(encoder.saveCur());
         encoder.encodeRaw(FE_ADD64ri, FE_SP, 0x01000000); // 0x01000000 isn't the final value, just a placeholder that ensures that the operand size byte is it's maximum possible value -> we have space to encode a big allocation
 
