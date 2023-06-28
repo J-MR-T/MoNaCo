@@ -9,6 +9,7 @@ out
 # clangd is crashing so much now, that I need to use CLion *next to nvim* to get decent completion
 .idea/**
 build*/**
+moreBuilds/**
 tests/Output/**
 perf.data*
 

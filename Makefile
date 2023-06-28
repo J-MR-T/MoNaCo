@@ -3,8 +3,6 @@ LLVM_BUILD_DIR=~/programming/Libs/Cpp/llvm-project/build
 LLVM_RELEASE_BUILD_DIR=$(shell dirname $(LLVM_BUILD_DIR))/buildRelease
 MONACO_BUILD_DIR=build
 
-# TODO currently you can't just build once, fadec is built at too late a point
-
 # just to jot it down somewhere: current llvm commit used: 583d492c6
 
 .phony: release debug makeCMakeBearable clean setup test relWithDebug
@@ -43,8 +41,9 @@ relWithDebug: setup
 
 makeCMakeBearable: setup
 	# the - makes it continue, even if the build fails, so that the sed is executed
-	-cd $(MONACO_BUILD_DIR)                                                                                                                    && \
-	cmake .. -DCMAKE_BUILD_TYPE=$(cmake_build_type) -DLLVM_DIR=$(LLVM_BUILD_DIR)/lib/cmake/llvm -DMLIR_DIR=$(LLVM_BUILD_DIR)/lib/cmake/mlir && \
-	cmake --build . -j$(shell nproc)                                                                                                        && \
-	cd ..
+	-cwd=$(shell pwd)                                                                                                                           && \
+	cd $(MONACO_BUILD_DIR)                                                                                                                      && \
+	cmake "$$cwd" -DCMAKE_BUILD_TYPE=$(cmake_build_type) -DLLVM_DIR=$(LLVM_BUILD_DIR)/lib/cmake/llvm -DMLIR_DIR=$(LLVM_BUILD_DIR)/lib/cmake/mlir && \
+	cmake --build . -j$(shell nproc)                                                                                                            && \
+	cd "$$cwd"
 	sed -i 's/-std=gnu++23/-std=c++2b/g' $(MONACO_BUILD_DIR)/compile_commands.json # to make it work for clangd, can't be bothered to try with cmake
