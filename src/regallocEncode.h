@@ -4,5 +4,7 @@
 #include "AMD64/AMD64Types.h"
 
 bool debugEncodeOp(mlir::ModuleOp mod, amd64::InstructionOpInterface op);
-bool regallocEncode(std::vector<uint8_t>& buf, mlir::ModuleOp mod, bool dumpAsm = false);
-bool regallocEncodeRepeated(std::vector<uint8_t>& buf, mlir::ModuleOp mod);
+/// on error: returns nullptr
+/// otherwise: returns the address at which to start executing, if JIT is enabled, otherwise returns buf
+uint8_t* regallocEncode(uint8_t* buf, uint8_t* bufEnd, mlir::ModuleOp mod, bool dumpAsm = false, bool jit = false, llvm::StringRef startSymbolIfJIT = llvm::StringRef());
+bool regallocEncodeRepeated(uint8_t* buf, uint8_t* bufEnd, mlir::ModuleOp mod);

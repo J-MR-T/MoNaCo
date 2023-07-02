@@ -1,4 +1,5 @@
 #include <chrono>
+#include <llvm/Support/CommandLine.h>
 #include <string>
 
 #include <mlir/Dialect/ControlFlow/IR/ControlFlow.h>
@@ -6,6 +7,7 @@
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 #include <mlir/Analysis/Liveness.h>
+#include <regex>
 
 #include "AMD64/AMD64Dialect.h"
 #include "AMD64/AMD64Ops.h"
@@ -40,6 +42,10 @@ int main(int argc, char *argv[]) {
         errx(EXIT_FAILURE, "Output file cannot be empty");
     }else if(args.iterations() && (*args.iterations).empty()){
         errx(EXIT_FAILURE, "Iterations cannot be empty");
+    }else if(args.jit() && args.benchmark()){
+        errx(EXIT_FAILURE, "Benchmarking the JIT execution time is not yet supported");
+    }else if(args.jit() && *args.jit == ""){
+        errx(EXIT_FAILURE, "Cannot JIT without arguments");
     }
 
     if(args.print()){
@@ -74,16 +80,21 @@ int main(int argc, char *argv[]) {
         owningModRef->print(llvm::outs());
     }
 
-    auto maybeWriteToFile = [](auto encoded){
+    auto maybeWriteToFile = [](auto* buf, size_t size){
         if(args.output()){
             std::error_code ec;
             llvm::raw_fd_ostream out(*args.output, ec);
             if(ec){
                 err(EXIT_FAILURE, "Could not open output file %s", std::string{*args.output}.c_str());
             }
-            out.write(reinterpret_cast<const char*>(encoded.data()), encoded.size());
+            out.write(reinterpret_cast<const char*>(buf), size);
         }
     };
+
+    int prot = PROT_READ|PROT_WRITE;
+    if(args.jit())
+        prot |= PROT_EXEC;
+
 
     if(args.benchmark()){
         // TODO what happens if this throws an exception? Is that fine?
@@ -109,6 +120,9 @@ int main(int argc, char *argv[]) {
             llvm::TargetOptions opt;
             opt.EnableFastISel = true;
 
+            const char* myopt = "-pass-remarks-missed=sdagisel";
+            llvm::cl::ParseCommandLineOptions(1, &myopt, "");
+
             MEASURE_TIME_START(totalLLVM);
             for(auto i = 0u; i < iterations; i++){
                 auto obj = llvm::SmallVector<char, 0>();
@@ -119,16 +133,21 @@ int main(int argc, char *argv[]) {
 
             llvm::outs() << "LLVM Fallback compilation took " << MEASURED_TIME_AS_SECONDS(totalLLVM, iterations) << " seconds on average over " << iterations << " iterations\n";
         }else{
+            // allocate 2 GiB (small code model)
+            auto [start, end] = mmapSpace(2ll*1024ll*1024ll*1024ll, prot);
+
+            if(!start || !end)
+                err(EXIT_FAILURE, "mmap");
+
             MEASURE_TIME_START(totalMLIR);
 
-            std::vector<uint8_t> encoded;
             for(unsigned i = 0; i < iterations; i++){
                 // first pass: ISel
                 prototypeIsel(*modClones[i]);
 
                 // second pass: RegAlloc + encoding
                 // - will need a third pass in between to do liveness analysis later
-                regallocEncodeRepeated(encoded, *modClones[i]);
+                regallocEncodeRepeated(start, end, *modClones[i]);
             }
 
             MEASURE_TIME_END(totalMLIR);
@@ -148,7 +167,7 @@ int main(int argc, char *argv[]) {
 
             MEASURE_TIME_START(regallocMLIR);
             for(unsigned i = iterations; i < 2*iterations; i++){
-                regallocEncodeRepeated(encoded, *modClones[i]);
+                regallocEncodeRepeated(start, end, *modClones[i]);
             }
             MEASURE_TIME_END(regallocMLIR);
 
@@ -163,8 +182,13 @@ int main(int argc, char *argv[]) {
         if(fallbackToLLVMCompilation(*owningModRef, obj))
             return EXIT_FAILURE;
 
-        maybeWriteToFile(obj);
+        maybeWriteToFile(obj.data(), obj.size());
     }else{ // "normal" case
+        // allocate 2 GiB (small code model)
+        auto [start, end] = mmapSpace(2ll*1024ll*1024ll*1024ll, prot);
+
+        if(!start || !end)
+            err(EXIT_FAILURE, "mmap");
 
         // first pass: ISel
         prototypeIsel(*owningModRef);
@@ -174,12 +198,31 @@ int main(int argc, char *argv[]) {
             owningModRef->print(llvm::outs());
         }
 
-        std::vector<uint8_t> encoded;
         // second pass: RegAlloc + encoding
         // - will need a third pass in between to do liveness analysis later
-        regallocEncode(encoded, *owningModRef, printOpts & PRINT_ASM);
+        auto* execStart = regallocEncode(start, end, *owningModRef, printOpts & PRINT_ASM, args.jit(), "main");
 
-        maybeWriteToFile(encoded);
+        if(args.jit()){
+            // TODO this is totally ugly, but thats what Cpp gets for not including a proper string split function
+            // split jit argv with spaces
+            const auto jitArgvStr = std::string{*args.jit};
+            std::regex regexz("[ ]+");
+            std::vector<std::string> split(std::sregex_token_iterator(jitArgvStr.begin(), jitArgvStr.end(), regexz, -1), std::sregex_token_iterator());
+            const char** jitArgv = new const char*[split.size() + 1];
+            for(unsigned i = 0; i < split.size(); i++){
+                jitArgv[i] = split[i].c_str();
+            }
+            jitArgv[split.size()] = nullptr;
+
+            using main_t = int(*)(int, const char**);
+            auto main = reinterpret_cast<main_t>(execStart);
+
+            auto ret =  main(split.size(), jitArgv);
+            delete[] jitArgv;
+            return ret;
+        }
+
+        maybeWriteToFile(start, end - start);
     }
 
     return EXIT_SUCCESS;

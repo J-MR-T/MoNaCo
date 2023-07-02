@@ -15,7 +15,10 @@ config.test_exec_root = os.path.join(config.test_source_root, 'tests')
 
 config.substitutions.append(("%monaco", os.path.join(config.test_source_root, "monaco")))
 config.substitutions.append(("%FileCheckAsm", r"%monaco -p asm %s | FileCheck"))
-config.substitutions.append(("%FileCheckExecReturnStatus", r"""outfileName=$(basename -z %basename_t .mlir); %monaco %s $outfileName && objcopy --input-target=binary --output-target=elf64-x86-64 --rename-section '.data=.text' $outfileName %t_2 && gcc -c -x c <(echo "int main(int argc, char** argv){ return _binary_"$outfileName"_start(argc, argv); } ") -o %t_3 && gcc %t_2 %t_3 -o %t_4 && %t_4; echo $? | FileCheck"""))
+# doesn't work anymore with the mmapping stuff, but we don't need it, just use the jit execution engine
+# config.substitutions.append(("%FileCheckExecReturnStatus", r"""outfileName=$(basename -z %basename_t .mlir); %monaco %s $outfileName && objcopy --input-target=binary --output-target=elf64-x86-64 --rename-section '.data=.text' $outfileName %t_2 && gcc -c -x c <(echo "int main(int argc, char** argv){ return _binary_"$outfileName"_start(argc, argv); } ") -o %t_3 && gcc %t_2 %t_3 -o %t_4 && %t_4; echo $? | FileCheck"""))
+config.substitutions.append(("%FileCheckExecReturnStatus", r"""%monaco --jit "main" %s; echo $? | FileCheck"""))
+config.substitutions.append(("%FileCheckExecOutput", r"""%monaco --jit "main" %s | FileCheck"""))
 
 config.recursiveExpansionLimit = 3
 

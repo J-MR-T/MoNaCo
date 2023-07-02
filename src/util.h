@@ -4,6 +4,7 @@
 #include <map>
 #include <string>
 #include <err.h>
+#include <sys/mman.h>
 
 #pragma GCC diagnostic push 
 #pragma GCC diagnostic ignored "-Wunused-parameter"
@@ -247,10 +248,11 @@ namespace ArgParse{
         const Arg debug{     "d", "debug",          0, "Print maximum debug information (set llvm::DebugFlag and all -p options)",                 FLAG};
         const Arg benchmark{ "b", "benchmark",      0, "Benchmark the compiler",                                                                   FLAG};
         const Arg iterations{"",  "iterations",     0, "Number of iterations for benchmarking (default: 1)"};
+        const Arg jit{       "j", "jit",            0, "JIT compile, i.e. JIT link and immediately execute the compiled code, with the given (space separated) argvs"};
 
         const Arg sentinel{"", "", 0, ""};
 
-        const Arg* const all[10] = {&help, &input, &output, &fallback, &noFallback, &print, &debug, &benchmark, &iterations, &sentinel};
+        const Arg* const all[11] = {&help, &input, &output, &fallback, &noFallback, &print, &debug, &benchmark, &iterations, &jit, &sentinel};
 
         // iterator over all
         const Arg* begin() const{
@@ -282,3 +284,19 @@ namespace ArgParse{
 
 /// read an mlir module from a file
 mlir::OwningOpRef<mlir::ModuleOp> readMLIRMod(const llvm::StringRef filename, mlir::MLIRContext& ctx);
+
+inline std::pair<uint8_t* /* buf */, uint8_t* /* bufEnd */> mmapSpace(size_t size, int finalProt){
+    auto pageSize = getpagesize();
+    if(size % pageSize != 0)
+        return {nullptr, nullptr};
+
+    // to not get a SIGBUS, but a normal error, use PROT_NONE and then mprotect
+    uint8_t* start =  static_cast<uint8_t*>(mmap(NULL, size, PROT_NONE, MAP_PRIVATE|MAP_ANON|MAP_NORESERVE, -1, 0));
+    if(start == MAP_FAILED)
+        return {nullptr, nullptr};
+
+    if(mprotect(start, size, finalProt) != 0)
+        return {nullptr, nullptr};
+
+    return {start, start + size};
+}

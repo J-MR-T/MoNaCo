@@ -7,12 +7,16 @@
 #include <mlir/Dialect/ControlFlow/IR/ControlFlowOps.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
+#include <mlir/Analysis/Liveness.h>
+#include <dlfcn.h>
 
 #include <type_traits>
 
 #include "util.h"
 #include "AMD64/AMD64Dialect.h"
 #include "AMD64/AMD64Ops.h"
+
+// TODO reconsider this whole returning failed, doesn't make much sense here, it should never do that.
 
 // TODO very small test indicates, that the cache doesn't work (i.e. performs worse), if there aren't many calls to a function
 // TODO a simple string map would probably be better anyways, DenseMaps waste a lot of key space too
@@ -25,11 +29,10 @@ mlir::Operation* getFuncForCall(mlir::ModuleOp mod, auto call, llvm::DenseMap<ml
 
 // TODO maybe merge this with the AbstractRegAllocerEncoder
 struct Encoder{
-    // TODO test mmap against this later
-    // actually not, don't measure writing to a file at all, just write it to mem, compare that against llvm
-    std::vector<uint8_t>& buf;
     uint8_t* cur;
-    mlir::DenseMap<mlir::BlockArgument, FeReg>& blockArgToReg;
+    uint8_t* bufStart;
+    uint8_t* bufEnd;
+    mlir::DenseMap<mlir::BlockArgument, FeReg>& blockArgToReg; // TODO get rid of this
 
     // Has to use an actual map instead of a vector, because a jump/call doesn't know the index of the target block
     mlir::DenseMap<mlir::Block*, uint8_t*> blocksToBuffer; // TODO might make sense to make this a reference, and have the regallocer own it, because it needs it too
@@ -42,16 +45,14 @@ struct Encoder{
         uint8_t* whereToEncode;
         mlir::Block* target;
         FeMnem kind; // this always already contains all the info, for example FE_JMPL, so the resolving routine needs to just pass the value of this to the encoder
-        // TODO probably assert FE_JMPL in the resolver
     };
     mlir::SmallVector<UnresolvedBranchInfo, 64> unresolvedBranches;
 
-	Encoder(std::vector<uint8_t>& buf, mlir::DenseMap<mlir::BlockArgument, FeReg>& blockArgToReg) : buf(buf), cur(), blockArgToReg(blockArgToReg){
-        // reserve 1MiB for now
-        buf.reserve(1 << 20); // TODO expand it when necessary
-        // TODO oh god i just realized, what if the vector needs to be reallocated, that would invalidate all points like in unresolvedBranches or blocksToBuffer
-        cur = buf.data();
-    }
+    // TODO could also be a template argument, try performance testing that.
+    bool jit;
+
+    /// bufEnd works just like an end iterator, it points one *after* the last real byte of the buffer
+	Encoder(uint8_t* buf, uint8_t* bufEnd, mlir::DenseMap<mlir::BlockArgument, FeReg>& blockArgToReg, bool jit) : cur(buf), bufStart(buf), bufEnd(bufEnd), blockArgToReg(blockArgToReg), jit(jit){}
 
     // placing this here, because it's related to `encodeOp`
 private:
@@ -82,6 +83,10 @@ public:
     /// returns whether or not this failed
     template<typename... args_t>
     bool encodeRaw(FeMnem mnem, args_t... args){
+        // TODO performance test if this slows it down
+        if (cur >= bufEnd)
+            errx(EXIT_FAILURE, "Critical: Out of memory");
+
         // this looks very ugly, but is a result of having to interface with the C API. It's not actually slow, so this is annoying, but not a big problem
         if constexpr(sizeof...(args) == 0)
             return fe_enc64(&cur, mnem);
@@ -161,7 +166,6 @@ public:
         using mlir::dyn_cast;
         using Special = amd64::Special;
 
-        assert(cur + 15 <= buf.data() + buf.capacity() && "Buffer is too small to encode instruction");
         assert(!mlir::isa<amd64::JMP>(instrOp.getOperation()) && !mlir::isa<amd64::ConditionalJumpInterface>(instrOp.getOperation()) && "Use encodeJMP or encodeJcc instead");
 
 #ifndef NDEBUG
@@ -194,8 +198,25 @@ public:
                     /* first operand is register operand: */
                     instrOp->getNumOperands() > 0 &&
                     instrOp->getOperand(0).getType().isa<amd64::RegisterTypeInterface>()
-            )
+            ){
                 mlirOpOperandsCovered++;
+
+#ifndef NDEBUG
+                // check that the operand register and the result register match
+                FeReg regOfOperand;
+                if(auto blockArg = dyn_cast<mlir::BlockArgument>(instrOp->getOperand(0))) [[unlikely]]{
+                    // this seems overcomplicated, but it makes the most sense to put all of this functionality into the registerOf method, such that ideally no other code has to ever touch the way registers are stored.
+                    regOfOperand = amd64::registerOf(blockArg, blockArgToReg);
+                }else if(auto asOpResult = dyn_cast<mlir::OpResult>(instrOp->getOperand(0))){
+                    // as long as there are no 'op-result' interfaces in mlir, this is probably the only way to do it
+                    regOfOperand = amd64::registerOf(asOpResult);
+                }else{
+                    assert(false && "Operand 0 is neither a block argument nor an op result");
+                }
+                // TODO comment this back in, as soon as there is a solution for the problem of x times the same operand
+                //assert(regOfOperand == instrOp.instructionInfo().regs.reg1 && "Operand 0 is constrained to the destination register, but operand 0 register and destination register differ");
+#endif
+            }
 
             for(; mlirOpOperandsCovered < instrOp->getNumOperands(); mlirOpOperandsCovered++, machineOperandsCovered++){
                 assert(machineOperandsCovered < 4 && "Something went deeply wrong, there are more than 4 operands");
@@ -243,9 +264,34 @@ public:
             auto func = mlir::dyn_cast<mlir::func::FuncOp>(maybeFunc);
             assert(func);
 
+            // emit args
+            static constexpr FeReg argRegs[] = {FE_DI, FE_SI, FE_DX, FE_CX, FE_R8, FE_R9};
+            for(auto [index, arg]: llvm::enumerate(call.getOperands())){
+                assert(index < 6 && "Too many arguments for call");
+
+                encodeRaw(FE_MOV64rr, argRegs[index], amd64::registerOf(arg));
+            }
+
             if(func.isExternal()){
-                llvm::errs() << "Call to external function, relocations not implemented yet\n";
-                return failed = true; // readability
+                if(jit){
+                    auto name = func.getName();
+
+                    // resolve symbol
+                    // TODO this is a very stupid way of getting a null terminated string from this
+                    // TODO try if caching dlsym results improves performance
+                    intptr_t symbolPtr = (intptr_t) dlsym(0, std::string{name.data(), name.size()}.c_str());
+
+                    assert(symbolPtr && "Symbol not found");
+
+                    // TODO make this a direct call
+                    failed |= encodeRaw(FE_MOV64ri, FE_AX, symbolPtr);
+                    return failed |= encodeRaw(FE_CALLr, FE_AX);
+                }else{
+                    llvm::errs() << "Call to external function, relocations not implemented yet\n";
+                    return failed = true; // readability
+                }
+
+                llvm_unreachable("External functions shouldn't be encoded normally");
             }
 
             auto entryBB = &func.getBlocks().front();
@@ -254,8 +300,6 @@ public:
             // can't use maybeEncodeJump here, because a call always needs to be encoded
             failed |= encodeJump(entryBB, mnemonic);
         }else if(instrOp->hasTrait<SpecialCase<Special::DIV>::Impl>()) [[unlikely]] {
-            assert(cur + 30 <= buf.data() + buf.capacity() && "Buffer is too small to encode div like instruction");
-
             // in this case we need to simply XOR edx, edx, which also zeroes the upper 32 bits of rdx
             failed |= encodeRaw(FE_XOR32rr, FE_DX, FE_DX);
             
@@ -264,8 +308,6 @@ public:
             // then encode the div normally
             failed |= encodeNormally();
         }else if(instrOp->hasTrait<SpecialCase<Special::IDIV>::Impl>()) [[unlikely]] {
-            assert(cur + 30 <= buf.data() + buf.capacity() && "Buffer is too small to encode div like instruction");
-
             auto resultType = instrOp->getResult(0).getType().cast<amd64::RegisterTypeInterface>();
             assert(resultType && "Result of div like instruction is not a register type");
 
@@ -302,6 +344,7 @@ public:
         for(auto [whereToEncode, target, kind] : unresolvedBranches){
             assert(target);
             //assert(target->getParent()->getParentOp()->getParentOp() == mod.getOperation() && "Unresolved branch target is not in the module");
+            assert((kind & FE_JMPL) && "wrong encoding for branch target");
 
             auto it = blocksToBuffer.find(target);
             // TODO think about it again, but I'm pretty sure this can never occur, because we already fail at the call site, if a call target is not a block in the module, but if it can occur normally, make this assertion an actual failure
@@ -311,25 +354,6 @@ public:
             fe_enc64(&whereToEncode, kind, (uintptr_t) whereToJump);
         }
         return true;
-    }
-
-	bool debugEncodeOp(mlir::ModuleOp mod, amd64::InstructionOpInterface op){
-        auto curBefore = cur;
-        auto failed = encodeIntraBlockOp(mod, op);
-        if(failed)
-            llvm::errs() << "Encoding went wrong :(. Still trying to decode:\n";
-
-        // decode & print to test if it works
-        FdInstr instr; 
-        failed = fd_decode(curBefore, buf.capacity() - (curBefore - buf.data()), 64, 0, &instr) < 0;
-        if(failed){
-            llvm::errs() << "encoding resulted in non-decodable instruction :(\n";
-        }else{
-            char fmtbuf[64];
-            fd_format(&instr, fmtbuf, sizeof(fmtbuf));
-            llvm::errs() << fmtbuf << "\n";
-        }
-        return failed;
     }
 
     void dumpAfterEncodingDone(){
@@ -347,7 +371,7 @@ public:
         std::sort(blockStartsSorted.begin(), blockStartsSorted.end());
 
         uint32_t blockNum = 0;
-        for(uint8_t* cur = buf.data(); cur < max;){
+        for(uint8_t* cur = bufStart; cur < max;){
             FdInstr instr; 
             auto numBytesEncoded = fd_decode(cur, max - cur, 64, 0, &instr);
             if(numBytesEncoded < 0){
@@ -390,25 +414,7 @@ public:
         }
     }
 
-	template<auto encodeImpl = &Encoder::encodeIntraBlockOp>
-	static bool encodeOpStateless(mlir::ModuleOp mod, amd64::InstructionOpInterface op){
-		std::vector<uint8_t> buf;
-        mlir::DenseMap<mlir::BlockArgument, FeReg> empty;
-		Encoder encoder(buf, empty);
-		return (encoder.*encodeImpl)(mod, op);
-	}
-
-	void reset(){
-		cur = buf.data();
-		blocksToBuffer.clear();
-		unresolvedBranches.clear();
-		symbolrefToFuncCache.clear();
-	}
 };
-
-bool debugEncodeOp(mlir::ModuleOp mod, amd64::InstructionOpInterface op){
-	return Encoder::encodeOpStateless<&Encoder::debugEncodeOp>(mod, op);
-}
 
 /// represents a ***permanent*** storage slot/location for a value. i.e. if a value gets moved there, it will always be there, as long as it's live
 struct ValueSlot{
@@ -455,6 +461,8 @@ struct AbstractRegAllocerEncoder{
     // We try to minimize coupling by only having the register allocator know about the encoder, and not also the other way around.
     Encoder encoder;
 
+    std::pair<llvm::StringRef /* start symbol */, uint8_t* /*address*/> startSymbolInfo;
+
     mlir::ModuleOp mod;
 
     /// size of the stack of the current function, measured in bytes from the base pointer. Includes saving of callee-saved registers. This is for easy access to the current top of stack
@@ -484,7 +492,8 @@ struct AbstractRegAllocerEncoder{
     }
 #endif
 
-    AbstractRegAllocerEncoder(mlir::ModuleOp mod, std::vector<uint8_t>& buf) : encoder(buf, blockArgToReg), mod(mod) {}
+    /// bufEnd works just like an end iterator, it points one *after* the last real byte of the buffer
+    AbstractRegAllocerEncoder(mlir::ModuleOp mod, uint8_t* buf, uint8_t* bufEnd, bool jit, llvm::StringRef startSymbolIfJIT) : encoder(buf, bufEnd, blockArgToReg, jit), startSymbolInfo({startSymbolIfJIT, nullptr}), mod(mod) {}
 
     // TODO also check this for blc, i think i forgot it there
 
@@ -503,10 +512,13 @@ struct AbstractRegAllocerEncoder{
     /// returns whether it failed
     bool run(){
         bool failed = false; // TODO |= this in the right places
-        // TODO this is not right, doesn't expand the vector yet
         for(auto func : mod.getOps<mlir::func::FuncOp>()){
             if(func.isExternal())
                 continue;
+
+            // try to save start symbol
+            if(encoder.jit && func.getName() == startSymbolInfo.first)
+                    startSymbolInfo.second = encoder.cur;
 
             auto* entryBlock = &func.getBlocks().front();
             assert(entryBlock->hasNoPredecessors() && "MLIR should disallow branching to the entry block -> MLIR bug!"); // this has to be assumed, because the entry block does stack allocation etc., we don't want that to happen multiple times
@@ -540,6 +552,7 @@ struct AbstractRegAllocerEncoder{
                         // TODO make this nicer
                         assert(instr->getNumOperands() <= 2);
                         for(auto [i, operand] : llvm::enumerate(instr->getOperands())){
+                            // TODO BIIIIG problem: We're setting the register of the value (via registerOf) to be the one it's moved to, which makes sense for the most part, we can overwrite it because it's only needed once, but not if the operation has the same SSA value as input multiple times. The encoder will then get the idea that all operands are in the same register. This is correct for their values, but as that register might get overwritten in the result, we have a huge mess on our hands in that case.
                             loadValueForUse(operand, i, instr.getOperandRegisterConstraints()[i]);
                         }
 
@@ -971,9 +984,10 @@ protected:
         };
 
         if(auto ret = mlir::dyn_cast<amd64::RET>(*instrIt)){
-            // first load the operand, because it is very probably on the stack, and it will get moved into AX (return reg), which we don't touch in the epilogue
+            // first load the operand into AX
             // TODO our RET always has exactly one operand, but it might be a good idea to support no operand return in RET, instead of converting a no operand cf.ret to a RET with a dummy operand
-            loadValueForUse(ret.getOperand(), 0, ret.getOperandRegisterConstraints().first);
+            assert(ret->getNumOperands() == 1 && "RET with != 1 operand, someone forgot to change this line!");
+            moveFromSlotToOperandReg(ret.getOperand(), FE_AX);
             emitEpilogue();
 
             // TODO could also do this directly (simply encode RET), see if it makes a performance difference
@@ -1160,6 +1174,159 @@ private:
     }
 };
 
+// TODO not currently being worked on
+#if 0
+struct ImprovedRegAllocer : public AbstractRegAllocerEncoder<ImprovedRegAllocer>{
+public:
+    mlir::Liveness& liveness;
+
+    FeReg freeStorageRegisters[11] = {FE_DI, FE_SI, FE_BX, FE_R8, FE_R9, FE_R10, FE_R11, FE_R12, FE_R13, FE_R14, FE_R15};
+    uint8_t numFreeStorageRegisters = sizeof(freeStorageRegisters)/sizeof(freeStorageRegisters[0]);
+
+    /// returns a free storage register, or nullptr if none are left. Removes the returned register from the list of free registers
+    FeReg* claimFreeStorageRegister(){
+        if(numFreeStorageRegisters == 0)
+            return nullptr;
+
+        freeStorageRegisters[numFreeStorageRegisters--] = (FeReg) FE_NOREG;
+        return &freeStorageRegisters[numFreeStorageRegisters];
+    }
+
+    void freeStorageRegister(FeReg reg){
+        assert(numFreeStorageRegisters < sizeof(freeStorageRegisters)/sizeof(freeStorageRegisters[0]) && "too many registers freed, this should never happen");
+        freeStorageRegisters[numFreeStorageRegisters++] = reg;
+    }
+
+    ImprovedRegAllocer(mlir::ModuleOp mod, std::vector<uint8_t>& buf, mlir::Liveness& liveness) : AbstractRegAllocerEncoder<ImprovedRegAllocer>(mod, buf), liveness(liveness) {}
+
+    void loadValueForUseImpl(mlir::Value val, uint8_t useOperandNumber, amd64::OperandRegisterConstraint constraint){
+        assert(valueToSlot.contains(val) && "value not allocated");
+
+        auto slot = valueToSlot[val];
+
+        /* OLD, from stack regallocer, will get deleted
+        assert(slot.kind == ValueSlot::Kind::Stack && "stack register allocator encountered a register slot");
+
+        FeReg whichReg;
+        if(constraint.constrainsReg()) [[unlikely]] {
+            assert(constraint.which == useOperandNumber && "constraint doesn't match use");
+            whichReg = constraint.reg;
+        }else{
+            // TODO allocating the registers in this fixed way has the advantage of compile speed and simplicity, but it is quite error prone...
+            // strategy: the first op can always have AX, because it isn't needed as the constraint for any second op
+            //           the second operand can always have CX
+            if(useOperandNumber == 0)
+                whichReg = FE_AX;
+            else if (useOperandNumber == 1)
+                whichReg = FE_CX;
+            else
+                llvm_unreachable("more than 2 operands not supported yet");
+        }
+
+        moveFromSlotToOperandReg(val, slot, whichReg);
+        */
+    }
+
+    // TODO actually call this, change the code structure to only need this function, ...
+    void allocateEncodeInstructionImpl(amd64::InstructionOpInterface instr){
+#ifndef NDEBUG
+        for(auto results: instr->getResults()){
+            assert(!isAllocated(results) && "value already allocated");
+        }
+#endif
+
+        // idea: check if any of the slots of the operands is dead after this instruction. if so, use that slot for the result. This way we also take advantage of dest 0 == src 0 operations, because if their source 0 slot is dead, we can simply leave the new value in there, and declare it as the new slot
+        llvm::SmallVector<ValueSlot, 2> slotsForResults;
+        for(auto operand : instr->getOperands())
+            if(liveness.isDeadAfter(operand, instr))
+                slotsForResults.push_back(valueToSlot[operand]);
+
+        // fill up the rest of the slots with new slots
+        uint8_t resultIndex = slotsForResults.size();
+        while(slotsForResults.size() < instr->getNumResults()){
+            FeReg* storageReg = claimFreeStorageRegister();
+
+            uint8_t bitwidth = mlir::dyn_cast<amd64::RegisterTypeInterface>(instr->getResult(resultIndex).getType()).getBitwidth();
+            if(storageReg == nullptr){
+                // no free storage registers -> use a stack slot
+                auto mem = allocateNewStackslot(bitwidth);
+                slotsForResults.push_back({.kind = ValueSlot::Kind::Stack, .mem = mem, .bitwidth = bitwidth});
+            }else{
+                // use a storage register
+                slotsForResults.push_back({.kind = ValueSlot::Kind::Register, .reg = *storageReg, .bitwidth = bitwidth});
+            }
+
+            resultIndex++;
+        }
+
+        auto operandRegisterConstraints =  instr.getOperandRegisterConstraints();
+
+        // load the operands of the instruction
+        for(auto [i, operand] : llvm::enumerate(instr->getOperands())){
+            auto slot = valueToSlot[operand];
+            auto constraint = operandRegisterConstraints[i];
+
+            if(constraint.constrainsReg()){
+
+            }
+        }
+    }
+
+    // TODO return failure
+    void allocateEncodeValueDefImpl(amd64::InstructionOpInterface def){
+
+        /* OLD, from stack regallocer, will get deleted
+        auto [resConstr1, resConst2] = def.getResultRegisterConstraints();
+        auto& instructionInfo = def.instructionInfo();
+
+        // TODO try if an array is more efficient
+        llvm::SmallVector<std::tuple<mlir::OpResult, ValueSlot, FeReg>, 2> resultInfoForSpilling(def->getNumResults());
+
+        for(auto [i, result] : llvm::enumerate(def->getResults())){
+            std::get<0>(resultInfoForSpilling[i]) = result;
+
+            uint8_t bitwidth = mlir::dyn_cast<amd64::RegisterTypeInterface>(result.getType()).getBitwidth();
+            FeOp memLoc = allocateNewStackslot(bitwidth);
+            std::get<1>(resultInfoForSpilling[i]) = valueToSlot[result] = ValueSlot{.kind = ValueSlot::Kind::Stack, .mem = memLoc, .bitwidth = bitwidth};
+
+            // allocate registers for the result
+            if(i == 0){
+                // always assign AX to the first result
+                std::get<2>(resultInfoForSpilling[i]) = instructionInfo.regs.reg1 = FE_AX;
+                assert((!resConstr1.constrainsReg() || resConstr1.which != 0 || resConstr1.reg == FE_AX) && "constraint doesn't match result");
+            }else if(i == 1){
+                // always assign DX to the second result
+                std::get<2>(resultInfoForSpilling[i]) = instructionInfo.regs.reg2 = FE_DX;
+                assert((!resConst2.constrainsReg() || resConst2.which != 1 || resConst2.reg == FE_DX) && "constraint doesn't match result");
+            }else{
+                // TODO this doesn't need to be a proper failure for now, right? Because we only define instrs with at most 2 results
+                llvm_unreachable("more than 2 results not supported yet");
+            }
+
+            // spill store after the instruction
+            // problem: as this is only supposed to happen after the instruction is encoded, and the information we just attached above is needed for encoding, -> we can't do this here, have to do it in a loop after it's encoded
+        }
+
+        // encode the instruction, now that it has all the information it needs
+        encoder.encodeIntraBlockOp(mod, def);
+
+
+
+        // now do the spilling
+        for(auto [result, slot, reg] : resultInfoForSpilling){
+            moveFromOperandRegToSlot(result, slot, reg);
+        }
+        */
+    }
+
+
+private:
+    bool isAllocated(mlir::Value val){
+        return valueToSlot.contains(val);
+    }
+};
+#endif
+
 /// gives every value in this op's region it's constraint, or rbx as first result register, r8 as second
 /// does not recurse into nested regions. i.e. call this on function ops, not on the module op
 /// doesn't handle block args at all atm
@@ -1209,20 +1376,17 @@ void dummyRegalloc(mlir::Operation* op){
 
 
 // TODO parameters for optimization level (-> which regallocer to use)
-bool regallocEncode(std::vector<uint8_t>& buf, mlir::ModuleOp mod, bool dumpAsm){
-    StackRegAllocer regallocer(mod, buf);
-    bool failed = regallocer.run();
+uint8_t* regallocEncode(uint8_t* buf, uint8_t* bufEnd, mlir::ModuleOp mod, bool dumpAsm, bool jit, llvm::StringRef startSymbolIfJIT){
+    StackRegAllocer regallocer(mod, buf, bufEnd, jit, startSymbolIfJIT);
+    regallocer.run();
     if(dumpAsm)
         regallocer.encoder.dumpAfterEncodingDone();
 
-    // TODO this is a super ugly solution which needs to get fixed later, but since I'm not sure if the vector is even going to stay, i dont want to waste time on a better solution yet
-    std::vector copy(buf.begin(), buf.begin() + (regallocer.encoder.cur - regallocer.encoder.buf.data()));
-    buf = std::move(copy);
-    return failed;
+    return regallocer.startSymbolInfo.second;
 }
 
 // TODO test if this is actually any faster
-bool regallocEncodeRepeated(std::vector<uint8_t>& buf, mlir::ModuleOp mod){
-    StackRegAllocer regallocer(mod, buf);
+bool regallocEncodeRepeated(uint8_t* buf, uint8_t* bufEnd, mlir::ModuleOp mod){
+    StackRegAllocer regallocer(mod, buf, bufEnd, false, "");
     return regallocer.run();
 }
