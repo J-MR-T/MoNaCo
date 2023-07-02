@@ -59,7 +59,7 @@ private:
     // NOTE: Fadec uses relative jumps by default, which is what we want
 
     /// if we already know the target block is in the blocksToBuffer map, use that, otherwise, register an unresolved branch, and encode a placeholder
-    inline auto encodeJump(mlir::Block* targetBB, FeMnem mnemonic) -> int {
+    auto encodeJump(mlir::Block* targetBB, FeMnem mnemonic) -> int {
         if(auto it = blocksToBuffer.find(targetBB); it != blocksToBuffer.end()){
             // TODO no FE_JMPL needed, right? the encoding can be as small as possible
             return encodeRaw(mnemonic, (intptr_t) it->second);
@@ -71,7 +71,7 @@ private:
         }
     };
     /// if the jump is to the next instruction/block, don't encode it
-    inline auto maybeEncodeJump(mlir::Block* targetBB, FeMnem mnemonic, mlir::Block* nextBB) -> int {
+    auto maybeEncodeJump(mlir::Block* targetBB, FeMnem mnemonic, mlir::Block* nextBB) -> int {
         if (targetBB == nextBB)
             return 0;
 
@@ -81,7 +81,7 @@ private:
 public:
     /// returns whether or not this failed
     template<typename... args_t>
-    inline bool encodeRaw(FeMnem mnem, args_t... args){
+    bool encodeRaw(FeMnem mnem, args_t... args){
         // this looks very ugly, but is a result of having to interface with the C API. It's not actually slow, so this is annoying, but not a big problem
         if constexpr(sizeof...(args) == 0)
             return fe_enc64(&cur, mnem);
@@ -489,11 +489,11 @@ struct AbstractRegAllocerEncoder{
     // TODO also check this for blc, i think i forgot it there
 
     // repeatedly overwrites the register of the value itself, as it's older values are no longer needed, because they are already encoded, the encoder always uses the current register
-    inline void loadValueForUse(mlir::Value val, uint8_t useOperandNumber, amd64::OperandRegisterConstraint constraint){
+    void loadValueForUse(mlir::Value val, uint8_t useOperandNumber, amd64::OperandRegisterConstraint constraint){
         static_cast<Derived*>(this)->loadValueForUseImpl(val, useOperandNumber, constraint);
     }
 
-    inline void allocateEncodeValueDef(amd64::InstructionOpInterface def){
+    void allocateEncodeValueDef(amd64::InstructionOpInterface def){
         static_cast<Derived*>(this)->allocateEncodeValueDefImpl(def);
     }
 
@@ -700,7 +700,7 @@ struct AbstractRegAllocerEncoder{
     }
 
 protected:
-    inline FeReg& registerOf(mlir::Value val){
+    FeReg& registerOf(mlir::Value val){
         if(auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(val)){
             return amd64::registerOf(blockArg, blockArgToReg);
         }else{
@@ -709,13 +709,13 @@ protected:
     }
 
     /// overload to save a map lookup, if the slot is already known
-    inline bool moveFromOperandRegToSlot(mlir::Value val){
+    bool moveFromOperandRegToSlot(mlir::Value val){
         return moveFromOperandRegToSlot(val, valueToSlot[val]);
     }
 
     // TODO the case distinction depending on the slot kind can be avoided for allocateEncodeValueDef, by using a template and if constexpr, but see if that actually makes the code faster first
     /// move from the register the value is currently in, to the slot, or from the operand register override, if it is set
-    inline bool moveFromOperandRegToSlot(mlir::Value fromVal, ValueSlot toSlot, FeReg operandRegOverride = (FeReg) FE_NOREG){
+    bool moveFromOperandRegToSlot(mlir::Value fromVal, ValueSlot toSlot, FeReg operandRegOverride = (FeReg) FE_NOREG){
         /// the register the value is currently in
         FeReg& fromValReg = registerOf(fromVal);
 
@@ -755,7 +755,7 @@ protected:
     }
 
     // TODO the case distinction depending on the slot kind can be avoided for allocateEncodeValueDef, by using a template and if constexpr, but see if that actually makes the code faster first
-    inline bool moveFromSlotToOperandReg(mlir::Value val, ValueSlot slot, FeReg reg){
+    bool moveFromSlotToOperandReg(mlir::Value val, ValueSlot slot, FeReg reg){
         // TODO can probably avoid re-moving the same value to the same operand register, but we need more information for this, registerOf(val) == reg is not enough, because the register of a value does not get overwritten, when another value gets moved there. So we need a register -> value map (vector) to do this
         bool failed;
 
@@ -789,14 +789,14 @@ protected:
         return failed;
     }
 
-    inline bool moveFromSlotToOperandReg(mlir::Value val, FeReg reg){
+    bool moveFromSlotToOperandReg(mlir::Value val, FeReg reg){
         assert(valueToSlot.contains(val));
         return moveFromSlotToOperandReg(val, valueToSlot[val], reg);
     }
 
     /// only use: moving phis
     /// returns whether it failed
-    inline bool moveFromSlotToSlot(mlir::Value from, mlir::Value to, FeReg memMemMoveReg){
+    bool moveFromSlotToSlot(mlir::Value from, mlir::Value to, FeReg memMemMoveReg){
         assert(valueToSlot.contains(to));
         // TODO maybe do a case for when the slot is the same
 
@@ -810,7 +810,7 @@ protected:
 
     /// only use: conditionally moving phis
     // TODO failure etc.
-    inline void condMoveFromSlotToSlot(ValueSlot fromSlot, mlir::Value conditionallyMoveTo, FeReg memMemMoveReg, amd64::conditional::predicate cmovPredicate){
+    void condMoveFromSlotToSlot(ValueSlot fromSlot, mlir::Value conditionallyMoveTo, FeReg memMemMoveReg, amd64::conditional::predicate cmovPredicate){
         // this is not the most efficient way in terms of result code, but to keep complexity down at the start, this is fine
         // TODO -> improve this later
 
@@ -850,7 +850,7 @@ protected:
     }
 
     template<bool isCriticalEdge>
-    inline void handleCFGEdgeHelper(mlir::Block::BlockArgListType blockArgs, mlir::Operation::operand_range blockArgOperands, amd64::conditional::predicate cmovPredicateIfCriticalJcc = amd64::conditional::predicate::NONE){
+    void handleCFGEdgeHelper(mlir::Block::BlockArgListType blockArgs, mlir::Operation::operand_range blockArgOperands, amd64::conditional::predicate cmovPredicateIfCriticalJcc = amd64::conditional::predicate::NONE){
         // TODO return if something went wrong
 
         // need to break memory memory moves with a temp register
@@ -957,7 +957,7 @@ protected:
         }
     }
 
-    inline void handleTerminator(mlir::Block::iterator instrIt, mlir::Block* nextBlock){
+    void handleTerminator(mlir::Block::iterator instrIt, mlir::Block* nextBlock){
         // We need to deal with PHIs/block args here.
         // Because we're traversing in RPO, we know that the block args are already allocated.
         auto tryAllocateSlotsForBlockArgsOfSuccessor = [this](mlir::Block::BlockArgListType blockArgs){
@@ -999,16 +999,16 @@ protected:
         }
     }
 
-    inline void emitPrologue(mlir::func::FuncOp func){
+    void emitPrologue(mlir::func::FuncOp func){
         static_cast<Derived*>(this)->emitPrologueImpl(func);
     }
 
-    inline void emitEpilogue(){
+    void emitEpilogue(){
         static_cast<Derived*>(this)->emitEpilogueImpl();
     }
 
     /// allocates a new stackslot and returns an FeOp that can be used to access it
-    inline FeOp allocateNewStackslot(uint8_t bitwidth){ // TODO are there alignment problems here? I think not, but it might be worth aligning every slot to 8 bytes or smth anyway?
+    FeOp allocateNewStackslot(uint8_t bitwidth){ // TODO are there alignment problems here? I think not, but it might be worth aligning every slot to 8 bytes or smth anyway?
         return FE_MEM(FE_BP, 0,0, -(stackSizeFromBP += bitwidth / 8));
     }
 };
@@ -1155,7 +1155,7 @@ public:
     }
 
 private:
-    inline bool isAllocated(mlir::Value val){
+    bool isAllocated(mlir::Value val){
         return valueToSlot.contains(val);
     }
 };
