@@ -244,12 +244,6 @@ class Instruction<string mnemonic, list<Trait> traits = []> :
   let arguments = !con(operands, (ins InstructionInfoProp:$instructionInfoImpl));
 }
 
-// Test Op without properties, for DRR
-def TestOp64 : AMD64_Op<"test64", []>{
-  let arguments = (ins gpr64:$src1, gpr64:$src2);
-  let results = (outs gpr64:$dst);
-}
-
 // immediate instruction multiclass
 multiclass Instr_i<string mnemonic, list<Trait> traits = []> {
   // TODO probably needs custom builder or declaration to initialize the immediate I don't think this is possible generically, as we would have to repeat all possible arguments. Let's hope there is in-tree support for this soon
