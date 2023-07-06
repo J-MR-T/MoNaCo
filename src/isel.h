@@ -1,7 +1,14 @@
 #pragma once
-#include <mlir/IR/Operation.h>
 
-/// TODO
-/// takes an operation and does isel on its regions
-/// returns whether doing isel failed
-bool prototypeIsel(mlir::Operation* regionOp);
+#include <cstdint>
+#include "AMD64/AMD64Types.h"
+#include <llvm/ADT/SmallVector.h>
+
+namespace mlir{
+struct Operation;
+struct TypeConverter;
+struct RewritePatternSet;
+}
+
+bool isel(mlir::Operation* regionOp, mlir::TypeConverter& typeConverter, mlir::RewritePatternSet& patterns);
+bool maximalIsel(mlir::Operation* regionOp, amd64::GlobalsInfo& globals);

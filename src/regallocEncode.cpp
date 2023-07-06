@@ -1,6 +1,7 @@
 #include <fadec-enc.h>
 #include <fadec.h>
 
+#include <llvm/Support/Format.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/ControlFlow/IR/ControlFlow.h>
@@ -12,9 +13,12 @@
 
 #include <type_traits>
 
+#include "isel.h"
 #include "util.h"
 #include "AMD64/AMD64Dialect.h"
 #include "AMD64/AMD64Ops.h"
+
+using namespace amd64;
 
 // TODO reconsider this whole returning failed, doesn't make much sense here, it should never do that.
 
@@ -154,17 +158,58 @@ public:
         return failed;
     }
 
+
+    bool encodeCall(mlir::ModuleOp mod, amd64::CALL call){
+        // get the entry block of the corresponding function, jump there
+        auto maybeFunc = getFuncForCall(mod, call, symbolrefToFuncCache);
+        if(!maybeFunc){
+            llvm::errs() << "Call to unknown function, relocations not implemented yet\n";
+            return true; // readability
+        }
+
+        auto func = mlir::dyn_cast<mlir::func::FuncOp>(maybeFunc);
+        assert(func);
+
+        // emit args
+        if(func.isExternal()){
+            if(jit){
+                auto name = func.getName();
+
+                // resolve symbol
+                // TODO this is a very stupid way of getting a null terminated string from this
+                // TODO try if caching dlsym results improves performance
+                intptr_t symbolPtr = (intptr_t) checked_dlsym(name);
+
+                assert(symbolPtr && "Symbol not found");
+
+                // TODO make this a direct call
+                encodeRaw(FE_MOV64ri, FE_AX, symbolPtr);
+                return encodeRaw(FE_CALLr, FE_AX);
+            }else{
+                llvm::errs() << "Call to external function, relocations not implemented yet\n";
+                return true; // readability
+            }
+
+            llvm_unreachable("External functions shouldn't be encoded normally");
+        }
+
+        auto entryBB = &func.getBlocks().front();
+        assert(entryBB && "Function has no entry block");
+
+        // can't use maybeEncodeJump here, because a call always needs to be encoded
+        return encodeJump(entryBB, FE_CALL);
+    }
+
     /// can only be called with instructions that can actually be encoded
     /// assumes that there is enough space in the buffer, don't use this is you don't know what you're doing
     /// cannot encode terminators except for return, use encodeJMP/encodeJcc instead
     /// returns whether the encoding failed
-	bool encodeIntraBlockOp(mlir::ModuleOp mod, amd64::InstructionOpInterface instrOp){
+	bool encodeIntraBlockOp(amd64::InstructionOpInterface instrOp){
 
         // there will be many case distinctions here, the alternative would be a general 'encode' interface, where every instruction defines its own encoding.
         // that would be more extensible, but probably even more code, and slower
         using namespace mlir::OpTrait;
         using mlir::dyn_cast;
-        using Special = amd64::Special;
 
         assert(!mlir::isa<amd64::JMP>(instrOp.getOperation()) && !mlir::isa<amd64::ConditionalJumpInterface>(instrOp.getOperation()) && "Use encodeJMP or encodeJcc instead");
 
@@ -248,58 +293,14 @@ public:
 
         bool failed = false;
         // special cases
-        // - calls
+        // - calls: not handled here, see encodeCall
         // - DIV/IDIV because rdx needs to be zeroed/sign extended (2 separate cases)
-        //
-        // jumps are handled separately
+        // - jumps: not handled here, see encodeJMP/encodeJcc
+        assert(mnemonic != FE_CALL && "Calls are handled by encodeCall");
+        assert(mnemonic != FE_JMP && "Unconditional jumps are handled by encodeJMP");
+        assert(!mlir::isa<amd64::ConditionalJumpInterface>(instrOp.getOperation()) && "Conditional jumps are handled by encodeJcc");
         
-        if(auto call = mlir::dyn_cast<amd64::CALL>(instrOp.getOperation())) [[unlikely]] {
-            // get the entry block of the corresponding function, jump there
-            auto maybeFunc = getFuncForCall(mod, call, symbolrefToFuncCache);
-            if(!maybeFunc){
-                llvm::errs() << "Call to unknown function, relocations not implemented yet\n";
-                return failed = true; // readability
-            }
-
-            auto func = mlir::dyn_cast<mlir::func::FuncOp>(maybeFunc);
-            assert(func);
-
-            // emit args
-            static constexpr FeReg argRegs[] = {FE_DI, FE_SI, FE_DX, FE_CX, FE_R8, FE_R9};
-            for(auto [index, arg]: llvm::enumerate(call.getOperands())){
-                assert(index < 6 && "Too many arguments for call");
-
-                encodeRaw(FE_MOV64rr, argRegs[index], amd64::registerOf(arg));
-            }
-
-            if(func.isExternal()){
-                if(jit){
-                    auto name = func.getName();
-
-                    // resolve symbol
-                    // TODO this is a very stupid way of getting a null terminated string from this
-                    // TODO try if caching dlsym results improves performance
-                    intptr_t symbolPtr = (intptr_t) dlsym(0, std::string{name.data(), name.size()}.c_str());
-
-                    assert(symbolPtr && "Symbol not found");
-
-                    // TODO make this a direct call
-                    failed |= encodeRaw(FE_MOV64ri, FE_AX, symbolPtr);
-                    return failed |= encodeRaw(FE_CALLr, FE_AX);
-                }else{
-                    llvm::errs() << "Call to external function, relocations not implemented yet\n";
-                    return failed = true; // readability
-                }
-
-                llvm_unreachable("External functions shouldn't be encoded normally");
-            }
-
-            auto entryBB = &func.getBlocks().front();
-            assert(entryBB && "Function has no entry block");
-
-            // can't use maybeEncodeJump here, because a call always needs to be encoded
-            failed |= encodeJump(entryBB, mnemonic);
-        }else if(instrOp->hasTrait<SpecialCase<Special::DIV>::Impl>()) [[unlikely]] {
+        if(instrOp->hasTrait<SpecialCase<Special::DIV>::Impl>()) [[unlikely]] {
             // in this case we need to simply XOR edx, edx, which also zeroes the upper 32 bits of rdx
             failed |= encodeRaw(FE_XOR32rr, FE_DX, FE_DX);
             
@@ -356,7 +357,7 @@ public:
         return true;
     }
 
-    void dumpAfterEncodingDone(){
+    void dumpAfterEncodingDone(GlobalsInfo& globals){
         // dump the entire buffer
         // decode & print to test if it works
         auto max = cur;
@@ -370,8 +371,45 @@ public:
         }
         std::sort(blockStartsSorted.begin(), blockStartsSorted.end());
 
+        // .data section
+        llvm::outs() << termcolor::make(termcolor::red, ".data") << "\n";
+
+        uint8_t* cur = bufStart;
+        for(auto& [sym, global] : globals){
+            if(global.addrInDataSection != (intptr_t) cur){
+                llvm::errs() << termcolor::red << "Error: Global " << sym << " is not at the expected address in the data section\n" << termcolor::reset;
+            }
+            auto* start = cur;
+            auto len = global.bytes.size();
+
+            // hexdump the bytes:
+            llvm::outs() << termcolor::make(termcolor::magenta, sym) << ": ";
+            for(uint8_t* cur = start; cur < start + len; cur++){
+                llvm::outs() << llvm::format_hex_no_prefix(*cur, 4) << " ";
+            }
+            // as string:
+            llvm::outs() << "(\"";
+            for(uint8_t* cur = start; cur < start + len; cur++){
+                if(*cur >= ' ' && *cur <= '~'){
+                    llvm::outs() << *cur;
+                }else if(*cur == '\n'){
+                    llvm::outs() << "\\n";
+                }else if(*cur == '\t'){
+                    llvm::outs() << "\\t";
+                }else{
+                    llvm::outs() << ".";
+                }
+            }
+            llvm::outs() << "\")\n";
+
+            cur += global.bytes.size();
+        }
+
+        // .text section
+        llvm::outs() << termcolor::make(termcolor::red, ".text") << "\n";
+
         uint32_t blockNum = 0;
-        for(uint8_t* cur = bufStart; cur < max;){
+        for(; cur < max;){
             FdInstr instr; 
             auto numBytesEncoded = fd_decode(cur, max - cur, 64, 0, &instr);
             if(numBytesEncoded < 0){
@@ -388,17 +426,17 @@ public:
                 llvm::outs() <<  fmtbuf;
                 auto fdType = FD_TYPE(&instr);
                 // if its a jump/call, try to print which block it's to
-                if(fdType == FDI_JMP  ||
-                    fdType == FDI_JC  ||
-                    fdType == FDI_JNC ||
-                    fdType == FDI_JZ  ||
-                    fdType == FDI_JNZ ||
-                    fdType == FDI_JA  ||
-                    fdType == FDI_JBE ||
-                    fdType == FDI_JL  ||
-                    fdType == FDI_JGE ||
-                    fdType == FDI_JLE ||
-                    fdType == FDI_JG  ||
+                if(fdType == FDI_JMP   ||
+                    fdType == FDI_JC   ||
+                    fdType == FDI_JNC  ||
+                    fdType == FDI_JZ   ||
+                    fdType == FDI_JNZ  ||
+                    fdType == FDI_JA   ||
+                    fdType == FDI_JBE  ||
+                    fdType == FDI_JL   ||
+                    fdType == FDI_JGE  ||
+                    fdType == FDI_JLE  ||
+                    fdType == FDI_JG   ||
                     fdType == FDI_JMPF || fdType == FDI_CALL){
 
                     auto target = cur + numBytesEncoded + FD_OP_IMM(&instr, 0);
@@ -406,6 +444,9 @@ public:
                     if(it != blockStartsSorted.end() && *it == target){
                         llvm::outs() << termcolor::red << " -> BB" << (it - blockStartsSorted.begin()) << termcolor::reset;
                     }
+                }
+                if(ArgParse::args.debug()){
+                    llvm::outs() << "\t\t" << "#byte " << llvm::format_hex((cur - bufStart), 0);
                 }
 
                 llvm::outs() << "\n";
@@ -463,6 +504,8 @@ struct AbstractRegAllocerEncoder{
 
     std::pair<llvm::StringRef /* start symbol */, uint8_t* /*address*/> startSymbolInfo;
 
+    GlobalsInfo globals;
+
     mlir::ModuleOp mod;
 
     /// size of the stack of the current function, measured in bytes from the base pointer. Includes saving of callee-saved registers. This is for easy access to the current top of stack
@@ -493,7 +536,7 @@ struct AbstractRegAllocerEncoder{
 #endif
 
     /// bufEnd works just like an end iterator, it points one *after* the last real byte of the buffer
-    AbstractRegAllocerEncoder(mlir::ModuleOp mod, uint8_t* buf, uint8_t* bufEnd, bool jit, llvm::StringRef startSymbolIfJIT) : encoder(buf, bufEnd, blockArgToReg, jit), startSymbolInfo({startSymbolIfJIT, nullptr}), mod(mod) {}
+    AbstractRegAllocerEncoder(mlir::ModuleOp mod, uint8_t* buf, uint8_t* bufEnd, GlobalsInfo&& globals, bool jit, llvm::StringRef startSymbolIfJIT) : encoder(buf, bufEnd, blockArgToReg, jit), startSymbolInfo({startSymbolIfJIT, nullptr}), globals(std::move(globals)), mod(mod) {}
 
     // TODO also check this for blc, i think i forgot it there
 
@@ -511,14 +554,34 @@ struct AbstractRegAllocerEncoder{
 
     /// returns whether it failed
     bool run(){
+        // write globals to sort of .data section
+        for(auto sym : globals.keys()){
+            DEBUGLOG("Writing global " << sym << " to data section");
+            auto& cur = encoder.cur;
+
+            auto it = globals.find(sym);
+            assert(it != globals.end() && "global not found in globals map");
+
+            auto& global = it->second;
+            memcpy(cur, global.bytes.data(), global.bytes.size());
+            global.addrInDataSection = (intptr_t) cur;
+            assert(globals[sym].addrInDataSection == (intptr_t) cur && "global address wasn't written correctly");
+            assert(memcmp(cur, global.bytes.data(), global.bytes.size()) == 0 && "global wasn't written correctly");
+
+            cur += global.bytes.size();
+        }
+
+        // .text section
         bool failed = false; // TODO |= this in the right places
         for(auto func : mod.getOps<mlir::func::FuncOp>()){
             if(func.isExternal())
                 continue;
 
             // try to save start symbol
-            if(encoder.jit && func.getName() == startSymbolInfo.first)
-                    startSymbolInfo.second = encoder.cur;
+            if(encoder.jit && func.getName() == startSymbolInfo.first){
+                startSymbolInfo.second = encoder.cur;
+                DEBUGLOG("Found start symbol!");
+            }
 
             auto* entryBlock = &func.getBlocks().front();
             assert(entryBlock->hasNoPredecessors() && "MLIR should disallow branching to the entry block -> MLIR bug!"); // this has to be assumed, because the entry block does stack allocation etc., we don't want that to happen multiple times
@@ -528,9 +591,9 @@ struct AbstractRegAllocerEncoder{
             emitPrologue(func);
 
             // this lambda is only for readability, to separate the traversal from the actual handling of a block
-            auto encodeBlock = [&]<bool writeToBlockBufferMap = true>(mlir::Block* block, mlir::Block* nextBlock = nullptr){
+            auto encodeBlock = [&]<bool isEntryBlock = false>(mlir::Block* block, mlir::Block* nextBlock = nullptr){
                 // currently, all blocks except the entry block have writeToBlockBufferMap = true
-                if constexpr(writeToBlockBufferMap){
+                if constexpr(!isEntryBlock){
                     assert(!encoder.blocksToBuffer.contains(block) && "Already encoded this block");
                     encoder.blocksToBuffer[block] = encoder.cur;
                 }
@@ -540,23 +603,70 @@ struct AbstractRegAllocerEncoder{
                 // iterate over all but the last instruction
                 auto endIt = block->end();
                 for(auto& op: llvm::make_range(block->begin(), --endIt)){
+                    if constexpr(!isEntryBlock)
+                        assert(!mlir::isa<amd64::AllocaOp>(&op) && "found alloca outside entry block");
+
                     if(auto instr = mlir::dyn_cast<amd64::InstructionOpInterface>(&op)) [[likely]]{
+                        // for a call: handle things differently, load all operands directly into the correct registers
+                        if(instr.getFeMnemonic() == FE_CALL) [[unlikely]]{
+                            auto call = mlir::cast<amd64::CALL>(instr);
+                            static constexpr FeReg argRegs[] = {FE_DI, FE_SI, FE_DX, FE_CX, FE_R8, FE_R9};
+
+                            for(auto [i ,operand]: llvm::enumerate(instr->getOperands())){
+                                moveFromSlotToOperandReg(operand, valueToSlot[operand], argRegs[i]);
+                            }
+                            
+                            // TODO this needs to be factored out to a kind of "allocated but dont spill or encode" function. Alternatively template variants (either with boolean template arguments, or as specializations) of the allocateEncodeValueDef function that don't do that.
+                            encoder.encodeCall(mod, call);
+                            auto& slot = valueToSlot[call.getResult()] = ValueSlot{.kind = ValueSlot::Stack, .mem = allocateNewStackslot(8), .bitwidth = 8};
+                            moveFromOperandRegToSlot(call.getResult(), slot, FE_AX);
+                            continue;
+                        }
+
                         // ignore the instruction, if it's pure and it's uses are empty
-                        // TODO might cost performance, maybe remove
-                        // TODO and it doesn't work (iselfull reports unallocated values being loaded)
+                        // TODO might cost performance, maybe remove for quick allocer
                         // NOTE: mlir::isOpTriviallyDead doesn't work either
-                        //if(mlir::isPure(&op) && instr->use_empty())
-                        //    return;
+                        //if(mlir::isPure(&op) && instr->use_empty()) [[unlikely]]
+                        //    continue;
 
                         // two operands max for now
                         // TODO make this nicer
                         assert(instr->getNumOperands() <= 2);
                         for(auto [i, operand] : llvm::enumerate(instr->getOperands())){
                             // TODO BIIIIG problem: We're setting the register of the value (via registerOf) to be the one it's moved to, which makes sense for the most part, we can overwrite it because it's only needed once, but not if the operation has the same SSA value as input multiple times. The encoder will then get the idea that all operands are in the same register. This is correct for their values, but as that register might get overwritten in the result, we have a huge mess on our hands in that case.
+
+                            // don't load memory operands
+                            // TODO is this enough?
+                            assert((!operand.isa<mlir::OpResult>() || !mlir::isa<amd64::AddrOfGlobal>(operand.getDefiningOp())) && "AddrOfGlobal should have been replaced at the time of use");
+                            if(operand.getType().isa<amd64::memLocType>())
+                                continue;
+
                             loadValueForUse(operand, i, instr.getOperandRegisterConstraints()[i]);
                         }
 
                         allocateEncodeValueDef(instr);
+                    }else if(auto addrofGlobalOp = mlir::dyn_cast<amd64::AddrOfGlobal>(&op)) [[unlikely]]{
+                        // TODO this is not very nice
+                        auto it = globals.find(addrofGlobalOp.getName());
+                        assert(it != globals.end() && "unknown global");
+                        uint8_t* globalAddr = (uint8_t*) it->second.addrInDataSection;
+                        assert(globalAddr != nullptr && "global not in data section");
+
+                        mlir::OpBuilder builder(&op);
+
+                        // TODO maybe just MOV64ri? Problem: size
+                        auto rawMemForLea = builder.create<amd64::RawMemoryOp>(addrofGlobalOp.getLoc(), FE_MEM(FE_IP, 0, FE_NOREG, globalAddr-encoder.cur));
+                        auto lea = builder.create<amd64::LEA64rm>(addrofGlobalOp.getLoc(), rawMemForLea);
+                        addrofGlobalOp.replaceAllUsesWith(lea->getResult(0));
+
+                        allocateEncodeValueDef(lea);
+                    }
+
+                    if constexpr(isEntryBlock){
+                        if(auto alloca = mlir::dyn_cast<amd64::AllocaOp>(&op)){
+                            auto& prop = alloca.getProperties();
+                            prop.rbpOffset = -(stackSizeFromBP += prop.size);
+                        }
                     }
                 }
                 handleTerminator(endIt, nextBlock);
@@ -615,7 +725,7 @@ struct AbstractRegAllocerEncoder{
                 bool atLeast2Blocks = beginPlusOne != range.end();
 
                 // special case for the entry block: don't fill the blocksToBuffer for it, this was done before the prologue was emitted.
-                encodeBlock.template operator()<false>(*range.begin(), atLeast2Blocks ? *beginPlusOne : nullptr);
+                encodeBlock.template operator()<true>(*range.begin(), atLeast2Blocks ? *beginPlusOne : nullptr);
 
                 if(atLeast2Blocks){
                     // iterate over the first n minus one blocks while passing the next one
@@ -728,7 +838,7 @@ protected:
 
     // TODO the case distinction depending on the slot kind can be avoided for allocateEncodeValueDef, by using a template and if constexpr, but see if that actually makes the code faster first
     /// move from the register the value is currently in, to the slot, or from the operand register override, if it is set
-    bool moveFromOperandRegToSlot(mlir::Value fromVal, ValueSlot toSlot, FeReg operandRegOverride = (FeReg) FE_NOREG){
+    bool moveFromOperandRegToSlot(mlir::Value fromVal, const ValueSlot& toSlot, const FeReg operandRegOverride = (FeReg) FE_NOREG){
         /// the register the value is currently in
         FeReg& fromValReg = registerOf(fromVal);
 
@@ -991,7 +1101,7 @@ protected:
             emitEpilogue();
 
             // TODO could also do this directly (simply encode RET), see if it makes a performance difference
-            encoder.encodeIntraBlockOp(mod, ret);
+            encoder.encodeIntraBlockOp(ret);
         }else if (auto jmp = mlir::dyn_cast<amd64::JMP>(*instrIt)){
             auto blockArgs = jmp.getDest()->getArguments();
             tryAllocateSlotsForBlockArgsOfSuccessor(blockArgs);
@@ -1032,7 +1142,12 @@ public:
     using AbstractRegAllocerEncoder::AbstractRegAllocerEncoder;
 
     void loadValueForUseImpl(mlir::Value val, uint8_t useOperandNumber, amd64::OperandRegisterConstraint constraint){
+#ifndef NDEBUG
+        if(!valueToSlot.contains(val)){
+            llvm::errs() << "value not allocated: " << val << " (in use number #" << useOperandNumber<< ")\n";
+        }
         assert(valueToSlot.contains(val) && "value not allocated");
+#endif
 
         auto slot = valueToSlot[val];
         assert(slot.kind == ValueSlot::Kind::Stack && "stack register allocator encountered a register slot");
@@ -1096,7 +1211,7 @@ public:
         }
 
         // encode the instruction, now that it has all the information it needs
-        encoder.encodeIntraBlockOp(mod, def);
+        encoder.encodeIntraBlockOp(def);
 
 
 
@@ -1376,17 +1491,17 @@ void dummyRegalloc(mlir::Operation* op){
 
 
 // TODO parameters for optimization level (-> which regallocer to use)
-uint8_t* regallocEncode(uint8_t* buf, uint8_t* bufEnd, mlir::ModuleOp mod, bool dumpAsm, bool jit, llvm::StringRef startSymbolIfJIT){
-    StackRegAllocer regallocer(mod, buf, bufEnd, jit, startSymbolIfJIT);
+uint8_t* regallocEncode(uint8_t* buf, uint8_t* bufEnd, mlir::ModuleOp mod, GlobalsInfo&& globals, bool dumpAsm, bool jit, llvm::StringRef startSymbolIfJIT){
+    StackRegAllocer regallocer(mod, buf, bufEnd, std::move(globals), jit, startSymbolIfJIT);
     regallocer.run();
     if(dumpAsm)
-        regallocer.encoder.dumpAfterEncodingDone();
+        regallocer.encoder.dumpAfterEncodingDone(regallocer.globals);
 
     return regallocer.startSymbolInfo.second;
 }
 
 // TODO test if this is actually any faster
-bool regallocEncodeRepeated(uint8_t* buf, uint8_t* bufEnd, mlir::ModuleOp mod){
-    StackRegAllocer regallocer(mod, buf, bufEnd, false, "");
+bool regallocEncodeRepeated(uint8_t* buf, uint8_t* bufEnd, mlir::ModuleOp mod, GlobalsInfo&& globals){
+    StackRegAllocer regallocer(mod, buf, bufEnd, std::move(globals), false, "");
     return regallocer.run();
 }

@@ -70,6 +70,8 @@ int main(int argc, char *argv[]) {
     ctx.loadDialect<mlir::cf::ControlFlowDialect>();
     ctx.loadDialect<mlir::arith::ArithDialect>();
     ctx.loadDialect<mlir::LLVM::LLVMDialect>();
+    // TODO not sure about this
+    ctx.allowUnregisteredDialects();
 
     auto inputFile = ArgParse::args.input() ? *ArgParse::args.input : "-";
 
@@ -120,8 +122,8 @@ int main(int argc, char *argv[]) {
             llvm::TargetOptions opt;
             opt.EnableFastISel = true;
 
-            const char* myopt = "-pass-remarks-missed=sdagisel";
-            llvm::cl::ParseCommandLineOptions(1, &myopt, "");
+            // TODO:
+            // const char* myopt = "-pass-remarks-missed=sdagisel";
 
             MEASURE_TIME_START(totalLLVM);
             for(auto i = 0u; i < iterations; i++){
@@ -143,31 +145,36 @@ int main(int argc, char *argv[]) {
 
             for(unsigned i = 0; i < iterations; i++){
                 // first pass: ISel
-                prototypeIsel(*modClones[i]);
+                // TODO does this slow it down?
+                amd64::GlobalsInfo globals;
+                maximalIsel(*modClones[i], globals);
 
                 // second pass: RegAlloc + encoding
                 // - will need a third pass in between to do liveness analysis later
-                regallocEncodeRepeated(start, end, *modClones[i]);
+                regallocEncodeRepeated(start, end, *modClones[i], std::move(globals));
             }
 
             MEASURE_TIME_END(totalMLIR);
 
             MEASURE_TIME_START(iselMLIR);
+
+            // TODO does this slow it down?
+            std::vector<amd64::GlobalsInfo> globalsClones(iterations);
             for(unsigned i = iterations; i < 2*iterations; i++){
-                prototypeIsel(*modClones[i]);
+                maximalIsel(*modClones[i], globalsClones[i-iterations]);
             }
             MEASURE_TIME_END(iselMLIR);
 
             // TODO this is experimental
             MEASURE_TIME_START(liveness);
-            for(unsigned i = 0; i < iterations; i++){
+            for(unsigned i = iterations; i < 2*iterations; i++){
                 mlir::Liveness liveness(*modClones[i]);
             }
             MEASURE_TIME_END(liveness);
 
             MEASURE_TIME_START(regallocMLIR);
             for(unsigned i = iterations; i < 2*iterations; i++){
-                regallocEncodeRepeated(start, end, *modClones[i]);
+                regallocEncodeRepeated(start, end, *modClones[i], std::move(globalsClones[i-iterations]));
             }
             MEASURE_TIME_END(regallocMLIR);
 
@@ -191,32 +198,42 @@ int main(int argc, char *argv[]) {
             err(EXIT_FAILURE, "mmap");
 
         // first pass: ISel
-        prototypeIsel(*owningModRef);
+        amd64::GlobalsInfo globals;
+        auto iselFailed = maximalIsel(*owningModRef, globals);
 
         if(printOpts & PRINT_ISEL){
             llvm::outs() << termcolor::make(termcolor::red, "After ISel:\n");
             owningModRef->print(llvm::outs());
         }
 
+        if(iselFailed)
+            errx(EXIT_FAILURE, "ISel failed");
+
         // second pass: RegAlloc + encoding
         // - will need a third pass in between to do liveness analysis later
-        auto* execStart = regallocEncode(start, end, *owningModRef, printOpts & PRINT_ASM, args.jit(), "main");
+        auto* execStart = regallocEncode(start, end, *owningModRef, std::move(globals), printOpts & PRINT_ASM, args.jit(), "main");
 
         if(args.jit()){
+            if(execStart == nullptr || execStart == NULL)
+                errx(EXIT_FAILURE, "Could not find main function");
+
             // TODO this is totally ugly, but thats what Cpp gets for not including a proper string split function
             // split jit argv with spaces
             const auto jitArgvStr = std::string{*args.jit};
             std::regex regexz("[ ]+");
             std::vector<std::string> split(std::sregex_token_iterator(jitArgvStr.begin(), jitArgvStr.end(), regexz, -1), std::sregex_token_iterator());
+            // TODO vector
             const char** jitArgv = new const char*[split.size() + 1];
             for(unsigned i = 0; i < split.size(); i++){
                 jitArgv[i] = split[i].c_str();
             }
             jitArgv[split.size()] = nullptr;
 
+            // TODO technically have to be non-const
             using main_t = int(*)(int, const char**);
             auto main = reinterpret_cast<main_t>(execStart);
 
+            // TODO the miniStruct test program currently overwrites the stack slot of rbp, resulting in 0xa being popped to rbp instead of the original value, that's why it segfaults after returning
             auto ret =  main(split.size(), jitArgv);
             delete[] jitArgv;
             return ret;

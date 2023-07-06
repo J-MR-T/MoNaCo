@@ -4,6 +4,7 @@
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/ControlFlow/IR/ControlFlow.h>
 #include <mlir/Dialect/ControlFlow/IR/ControlFlowOps.h>
+#include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/Pass/PassManager.h>
 
@@ -14,8 +15,11 @@
 #include <mlir/IR/PatternMatch.h>
 
 #include "util.h"
+#include "isel.h"
 #include "AMD64/AMD64Dialect.h"
 #include "AMD64/AMD64Ops.h"
+
+using namespace amd64;
 
 // anonymous namespace to contain patterns
 namespace {
@@ -32,9 +36,15 @@ auto defaultBitwidthMatchLambda = []<unsigned bitwidth, typename thisType, typen
     else
         opType = op->getResult(0).getType();
 
-    auto typeToMatch= thiis->getTypeConverter()->convertType(opType).template dyn_cast<amd64::RegisterTypeInterface>();
-    // TODO might have to become actual match failure at some point, when we have more than just register types
-    assert(typeToMatch && "expected register type");
+    auto type = thiis->getTypeConverter()->convertType(opType);
+    // TODO might be slow
+    if(!type)
+        return rewriter.notifyMatchFailure(op, "type conversion failed");
+
+    auto typeToMatch= type.template dyn_cast<amd64::RegisterTypeInterface>();
+    //assert(typeToMatch && "expected register type");
+    if(!typeToMatch)
+        return rewriter.notifyMatchFailure(op, "expected register type");
     // TODO this assertion currently fails wrongly on a conditional branch
     //assert((op->getNumOperands() == 0 || typeToMatch == thiis->getTypeConverter()->convertType(op->getOperand(0).getType()).template dyn_cast<amd64::RegisterTypeInterface>()) && "this simple bitwidth matcher assumes that the type of the op and the type of the operands are the same");
 
@@ -59,7 +69,7 @@ template<
     auto bitwidthMatchLambda = defaultBitwidthMatchLambda<opClassToMatch>
 >
 struct MatchRMI : public mlir::OpConversionPattern<opClassToMatch>{
-    MatchRMI(mlir::TypeConverter& typeConverter, mlir::MLIRContext* context) : mlir::OpConversionPattern<opClassToMatch>(typeConverter, context, benefit){}
+    MatchRMI(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<opClassToMatch>(tc, ctx, benefit){}
     using OpAdaptor = typename mlir::OpConversionPattern<opClassToMatch>::OpAdaptor;
 
     mlir::LogicalResult matchAndRewrite(opClassToMatch op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
@@ -81,6 +91,8 @@ struct MatchRMI : public mlir::OpConversionPattern<opClassToMatch>{
     PATTERN_FOR_BITWIDTH(16, patternName, opClassToMatch, opPrefixToReplaceWith, lambda,## __VA_ARGS__ ) \
     PATTERN_FOR_BITWIDTH(32, patternName, opClassToMatch, opPrefixToReplaceWith, lambda,## __VA_ARGS__ ) \
     PATTERN_FOR_BITWIDTH(64, patternName, opClassToMatch, opPrefixToReplaceWith, lambda,## __VA_ARGS__ )
+
+// TODO technically I could replace the OpAdaptor template arg everywhere with a simple `auto adaptor` parameter
 
 // TODO an alternative would be to generate custom builders for the RR versions, which check if their argument is a movxxri and then fold it into the RR, resulting in an RI version. That probably wouldn't work because the returned thing would of course expect an RR version, not an RI version
 auto binOpMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
@@ -128,7 +140,7 @@ PATTERN(OrIPat,  mlir::arith::OrIOp,  amd64::OR,  binOpMatchReplace);
 PATTERN(XOrIPat, mlir::arith::XOrIOp, amd64::XOR, binOpMatchReplace);
 
 auto cmpIBitwidthMatcher =
-    []<unsigned innerBitwidth, typename thisType, typename OpAdaptor>(thisType thiis, mlir::arith::CmpIOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter){
+    []<unsigned innerBitwidth, typename thisType, typename OpAdaptor>(thisType thiis, auto op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter){
         // cmp always has i1 as a result type, so we need to match the arguments' bitwidths
         auto tc = thiis->getTypeConverter();
         auto lhsNewType = tc->convertType(op.getLhs().getType()).template dyn_cast<amd64::RegisterTypeInterface>(); // TODO maybe we can use the adaptor and just use .getType on that instead of bothering with the type converter. Not just here, but everywhere
@@ -140,33 +152,33 @@ auto cmpIBitwidthMatcher =
         return mlir::failure(!success);
     };
 // TODO specify using benefits, that this has to have lower priority than the version which matches a jump with a cmp as an argument (which doesn't exist yet).
+template<typename CmpPredicate>
 auto cmpIMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename CMPrr, typename CMPri, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE
-     >(mlir::arith::CmpIOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
+     >(auto op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
 
     auto loc = op->getLoc();
     rewriter.create<CMPrr>(loc, adaptor.getLhs(), adaptor.getRhs());
 
     if(!op->use_empty()){
-        using mlir::arith::CmpIPredicate;
         switch(op.getPredicate()){
-            case CmpIPredicate::eq:  rewriter.replaceOpWithNewOp<amd64::SETE8r>(op);  break;
-            case CmpIPredicate::ne:  rewriter.replaceOpWithNewOp<amd64::SETNE8r>(op); break;
-            case CmpIPredicate::slt: rewriter.replaceOpWithNewOp<amd64::SETL8r>(op);  break;
-            case CmpIPredicate::sle: rewriter.replaceOpWithNewOp<amd64::SETLE8r>(op); break;
-            case CmpIPredicate::sgt: rewriter.replaceOpWithNewOp<amd64::SETG8r>(op);  break;
-            case CmpIPredicate::sge: rewriter.replaceOpWithNewOp<amd64::SETGE8r>(op); break;
-            case CmpIPredicate::ult: rewriter.replaceOpWithNewOp<amd64::SETB8r>(op);  break;
-            case CmpIPredicate::ule: rewriter.replaceOpWithNewOp<amd64::SETBE8r>(op); break;
-            case CmpIPredicate::ugt: rewriter.replaceOpWithNewOp<amd64::SETA8r>(op);  break;
-            case CmpIPredicate::uge: rewriter.replaceOpWithNewOp<amd64::SETAE8r>(op); break;
+            case CmpPredicate::eq:  rewriter.replaceOpWithNewOp<amd64::SETE8r>(op);  break;
+            case CmpPredicate::ne:  rewriter.replaceOpWithNewOp<amd64::SETNE8r>(op); break;
+            case CmpPredicate::slt: rewriter.replaceOpWithNewOp<amd64::SETL8r>(op);  break;
+            case CmpPredicate::sle: rewriter.replaceOpWithNewOp<amd64::SETLE8r>(op); break;
+            case CmpPredicate::sgt: rewriter.replaceOpWithNewOp<amd64::SETG8r>(op);  break;
+            case CmpPredicate::sge: rewriter.replaceOpWithNewOp<amd64::SETGE8r>(op); break;
+            case CmpPredicate::ult: rewriter.replaceOpWithNewOp<amd64::SETB8r>(op);  break;
+            case CmpPredicate::ule: rewriter.replaceOpWithNewOp<amd64::SETBE8r>(op); break;
+            case CmpPredicate::ugt: rewriter.replaceOpWithNewOp<amd64::SETA8r>(op);  break;
+            case CmpPredicate::uge: rewriter.replaceOpWithNewOp<amd64::SETAE8r>(op); break;
         }
     }else{
         rewriter.eraseOp(op); // we need to replace the root op, the CMP doesn't have a result, so replace it with nothing
     }
     return mlir::success();
 };
-PATTERN(CmpIPat, mlir::arith::CmpIOp, amd64::CMP, cmpIMatchReplace, 1, cmpIBitwidthMatcher);
+PATTERN(CmpIPat, mlir::arith::CmpIOp, amd64::CMP, cmpIMatchReplace<mlir::arith::CmpIPredicate>, 1, cmpIBitwidthMatcher);
 
 template <bool isRem>
 auto matchDivRem = []<unsigned actualBitwidth, typename OpAdaptor,
@@ -216,9 +228,8 @@ PATTERN(ConstantIntPat, mlir::arith::ConstantIntOp, amd64::MOV, movMatchReplace)
 // sign/zero extensions
 
 /// ZExt from i1 pattern
-/// TODO maybe do this pattern for sign extend? But sign extending an i1 seems pretty useless
 struct ExtUII1Pat : mlir::OpConversionPattern<mlir::arith::ExtUIOp> {
-    ExtUII1Pat(mlir::TypeConverter& typeConverter, mlir::MLIRContext* context) : mlir::OpConversionPattern<mlir::arith::ExtUIOp>(typeConverter, context, 1){}
+    ExtUII1Pat(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<mlir::arith::ExtUIOp>(tc, ctx, 2){}
 
     mlir::LogicalResult matchAndRewrite(mlir::arith::ExtUIOp zextOp, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
         // we're only matching i1s here
@@ -249,18 +260,22 @@ struct ExtUII1Pat : mlir::OpConversionPattern<mlir::arith::ExtUIOp> {
     }
 };
 
+// TODO sign extension for i1
+
 
 /// the inBitwidth matches the bitwidth of the input operand to the extui, which needs to be different per pattern, because the corresponding instruction differs.
-template<unsigned inBitwidth>
+template<unsigned inBitwidth, auto getIn, auto getOut>
 /// the outBitwidth matches the bitwidth of the result of the extui, which also affects which instruction is used.
 auto truncExtUiSiBitwidthMatcher = []<unsigned outBitwidth, typename thisType, typename OpAdaptor>(thisType thiis, auto op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter){
+    // TODO check that this doesn't accidentally match gpr8 which have an i1 as source, that would be wrong, at least for sign extensions
+
     // out bitwidth
     auto failure = defaultBitwidthMatchLambda<decltype(op)>.template operator()<outBitwidth, thisType, OpAdaptor>(thiis, op, adaptor, rewriter);
     if(failure.failed())
         return rewriter.notifyMatchFailure(op, "out bitwidth mismatch");
 
     // in bitwidth
-    mlir::Type opType = adaptor.getIn().getType();
+    mlir::Type opType = getIn(adaptor).getType();
     auto typeToMatch= thiis->getTypeConverter()->convertType(opType).template dyn_cast<amd64::RegisterTypeInterface>();
     assert(typeToMatch && "expected register type");
 
@@ -270,19 +285,19 @@ auto truncExtUiSiBitwidthMatcher = []<unsigned outBitwidth, typename thisType, t
     return mlir::success();
 };
 
-template<unsigned inBitwidth>
+template<unsigned inBitwidth, auto getIn, auto getOut>
 auto truncExtUiSiMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename MOVZX, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE
 >(auto szextOp, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
     // we need to take care to truncate an i1 to 0/1, before we 'actually' use it, i.e. do real computations with it on the other side of the MOVZX
     // i1's are represented as 8 bits currently, so we only need to check this in patterns which extend 8 bit
     if constexpr (inBitwidth == 8){
-        if(szextOp.getIn().getType().isInteger(1)){
+        if(getIn(szextOp).getType().isInteger(1)){
             // assert the 8 bits for the i1
-            assert(mlir::dyn_cast<amd64::RegisterTypeInterface>(adaptor.getIn().getType()).getBitwidth() == 8);
+            assert(mlir::dyn_cast<amd64::RegisterTypeInterface>(getIn(adaptor).getType()).getBitwidth() == 8);
 
             // and it with 1, to truncate it
-            auto AND = rewriter.create<amd64::AND8ri>(szextOp.getLoc(), adaptor.getIn());
+            auto AND = rewriter.create<amd64::AND8ri>(szextOp.getLoc(), getIn(adaptor));
             AND.instructionInfo().imm = 0x1;
             rewriter.replaceOpWithNewOp<MOVZX>(szextOp, AND);
             return mlir::success();
@@ -290,54 +305,58 @@ auto truncExtUiSiMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
     }
         
 
-    rewriter.replaceOpWithNewOp<MOVZX>(szextOp, adaptor.getIn());
+    rewriter.replaceOpWithNewOp<MOVZX>(szextOp, getIn(adaptor));
     return mlir::success();
 };
 
+auto arithGetIn = [](auto adaptorOrOp){ return adaptorOrOp.getIn(); };
+auto arithGetOut = [](auto adaptorOrOp){ return adaptorOrOp.getOut(); };
 /// only for 16-64 bits outBitwidth, for 8 we have a special pattern. There are more exceptions: Because not all versions of MOVZX exist, MOVZXr8r8 wouldn't make sense (also invalid in MLIR), MOVZXr64r32 is just a MOV, etc.
 #define EXT_UI_SI_PAT(outBitwidth, inBitwidth) \
-    using ExtUIPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::ExtUIOp, outBitwidth, truncExtUiSiMatchReplace<inBitwidth>, amd64::MOVZX ## r ## outBitwidth ## r ## inBitwidth, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<inBitwidth>>; \
-    using ExtSIPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::ExtSIOp, outBitwidth, truncExtUiSiMatchReplace<inBitwidth>, amd64::MOVSX ## r ## outBitwidth ## r ## inBitwidth, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<inBitwidth>>;
+    using ExtUIPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::ExtUIOp, outBitwidth, truncExtUiSiMatchReplace<inBitwidth, arithGetIn, arithGetOut>, amd64::MOVZX ## r ## outBitwidth ## r ## inBitwidth, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<inBitwidth, arithGetIn, arithGetOut>>; \
+    using ExtSIPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::ExtSIOp, outBitwidth, truncExtUiSiMatchReplace<inBitwidth, arithGetIn, arithGetOut>, amd64::MOVSX ## r ## outBitwidth ## r ## inBitwidth, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<inBitwidth, arithGetIn, arithGetOut>>;
 
 // generalizable cases:
 EXT_UI_SI_PAT(16, 8);
 EXT_UI_SI_PAT(32, 8); EXT_UI_SI_PAT(32, 16);
 EXT_UI_SI_PAT(64, 8); EXT_UI_SI_PAT(64, 16);
 
+#undef EXT_UI_SI_PAT
+
 // cases that are still valid in mlir, but not covered here:
 // - 32 -> 64 (just a MOV)
 // - any weird integer types, but we ignore those anyway
-using ExtUIPat64_32 = MatchRMI<mlir::arith::ExtUIOp, 64, truncExtUiSiMatchReplace<32>, amd64::MOV32rr, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<32>>;
+using ExtUIPat64_32 = MatchRMI<mlir::arith::ExtUIOp, 64, truncExtUiSiMatchReplace<32, arithGetIn, arithGetOut>, amd64::MOV32rr, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<32, arithGetIn, arithGetOut>>;
 // for sign extend, the pattern above would work, but for simplicity, just do it manually here:
-using ExtSIPat64_32 = MatchRMI<mlir::arith::ExtSIOp, 64, truncExtUiSiMatchReplace<32>, amd64::MOVSXr64r32, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<32>>;
+using ExtSIPat64_32 = MatchRMI<mlir::arith::ExtSIOp, 64, truncExtUiSiMatchReplace<32, arithGetIn, arithGetOut>, amd64::MOVSXr64r32, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<32, arithGetIn, arithGetOut>>;
 
 // trunc
 #define TRUNC_PAT(outBitwidth, inBitwidth) \
-    using TruncPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::TruncIOp, outBitwidth, truncExtUiSiMatchReplace<inBitwidth>, amd64::MOV ## outBitwidth ## rr, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<inBitwidth>>;
+    using TruncPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::arith::TruncIOp, outBitwidth, truncExtUiSiMatchReplace<inBitwidth, arithGetIn, arithGetOut>, amd64::MOV ## outBitwidth ## rr, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<inBitwidth, arithGetIn, arithGetOut>>;
 TRUNC_PAT(8, 16); TRUNC_PAT(8, 32); TRUNC_PAT(8, 64);
 TRUNC_PAT(16, 32); TRUNC_PAT(16, 64);
 TRUNC_PAT(32, 64);
 
+#undef TRUNC_PAT
+
 // branches
 auto branchMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename JMP, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE
-     >(mlir::cf::BranchOp br, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
+     >(auto br, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
     rewriter.replaceOpWithNewOp<JMP>(br, adaptor.getDestOperands(), br.getDest());
     return mlir::success();
 };
 using BrPat = MatchRMI<mlir::cf::BranchOp, 64, branchMatchReplace, amd64::JMP, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, ignoreBitwidthMatchLambda>;
 
-struct CondBrPat : public mlir::OpConversionPattern<mlir::cf::CondBranchOp> {
-    CondBrPat(mlir::TypeConverter& typeConverter, mlir::MLIRContext* context) : mlir::OpConversionPattern<mlir::cf::CondBranchOp>(typeConverter, context, 3){}
-
-    mlir::LogicalResult matchAndRewrite(mlir::cf::CondBranchOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
+template<typename IntegerCmpOp, typename thisType, typename OpAdaptor>
+auto condBrMatchReplace = [](thisType thiis, auto /* some kind of cond branch, either cf or llvm */ op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
         auto ops1 = adaptor.getTrueDestOperands();
         auto ops2 = adaptor.getFalseDestOperands();
 
-        auto block1 = op.getTrueDest();
-        auto block2 = op.getFalseDest();
+        auto* block1 = op.getTrueDest();
+        auto* block2 = op.getFalseDest();
 
-        assert(getTypeConverter()->convertType(mlir::IntegerType::get(getContext(), 1)) == amd64::gpr8Type::get(getContext()));
+        assert(thiis->getTypeConverter()->convertType(mlir::IntegerType::get(thiis->getContext(), 1)) == amd64::gpr8Type::get(thiis->getContext()));
 
         auto generalI1Case = [&](){
             // and the condition i1 with 1, then do JNZ
@@ -349,7 +368,7 @@ struct CondBrPat : public mlir::OpConversionPattern<mlir::cf::CondBranchOp> {
         };
 
         // if its a block argument, emit a CMP and a conditional JMP
-        if(adaptor.getCondition().isa<mlir::BlockArgument>()) [[unlikely]]{
+        if(adaptor.getCondition().template isa<mlir::BlockArgument>()) [[unlikely]]{
             // need to do this in case of a block argument at the start, because otherwise calling getDefiningOp() will fail. This is also called if no other case matches
             return generalI1Case();
         } else if(auto constI1AsMov8 = mlir::dyn_cast<amd64::MOV8ri>(adaptor.getCondition().getDefiningOp())) [[unlikely]]{
@@ -366,7 +385,7 @@ struct CondBrPat : public mlir::OpConversionPattern<mlir::cf::CondBranchOp> {
         } else if(auto setccPredicate = mlir::dyn_cast<amd64::PredicateInterface>(adaptor.getCondition().getDefiningOp())){
             // conditional branch
 
-            auto cmpi = mlir::dyn_cast<mlir::arith::CmpIOp>(op.getCondition().getDefiningOp());
+            auto cmpi = mlir::dyn_cast<IntegerCmpOp>(op.getCondition().getDefiningOp());
             auto CMP = setccPredicate->getPrevNode();
             assert(cmpi && CMP && "Conditional branch with SETcc, but without cmpi and CMP");
 
@@ -405,12 +424,19 @@ struct CondBrPat : public mlir::OpConversionPattern<mlir::cf::CondBranchOp> {
             // general i1 arithmetic
             return generalI1Case();
         }
+};
+
+struct CondBrPat : public mlir::OpConversionPattern<mlir::cf::CondBranchOp> {
+    CondBrPat(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<mlir::cf::CondBranchOp>(tc, ctx, 3){}
+
+    mlir::LogicalResult matchAndRewrite(mlir::cf::CondBranchOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
+        return condBrMatchReplace<mlir::arith::CmpIOp,decltype(this), OpAdaptor>(this, op, adaptor, rewriter);
     }
 };
 
 auto callMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename CALL, typename MOVrr, typename gprType, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE
-     >(mlir::func::CallOp callOp, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
+     >(auto callOp, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
     if(callOp.getNumResults() > 1)
         return rewriter.notifyMatchFailure(callOp, "multiple return values not supported");
 
@@ -419,7 +445,6 @@ auto callMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
     return mlir::success();
 };
 
-// calls
 #define CALL_PAT(bitwidth) \
     using CallPat ## bitwidth = MatchRMI<mlir::func::CallOp, bitwidth, callMatchReplace, amd64::CALL, amd64::MOV ## bitwidth ## rr, amd64::gpr ## bitwidth ## Type>
 
@@ -451,7 +476,7 @@ using ReturnPat = MatchRMI<mlir::func::ReturnOp, 64, returnMatchReplace, amd64::
 /// similar to `RegionOpConversion` from OpenMPToLLVM.cpp
 // TODO i found this other way with `populateAnyFunctionOpInterfaceTypeConversionPattern`, performance test the two against one another
 //struct FuncPat : public mlir::OpConversionPattern<mlir::func::FuncOp>{
-//    FuncPat(mlir::TypeConverter& typeConverter, mlir::MLIRContext* context) : mlir::OpConversionPattern<mlir::func::FuncOp>(typeConverter, context, 1){}
+//    FuncPat(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<mlir::func::FuncOp>(tc, ctx, 1){}
 //
 //    mlir::LogicalResult matchAndRewrite(mlir::func::FuncOp func, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
 //        // TODO the whole signature conversion doesn't work, instead we use the typeconverter to convert the function type, which isn't pretty, but it works
@@ -480,7 +505,7 @@ using ReturnPat = MatchRMI<mlir::func::ReturnOp, 64, returnMatchReplace, amd64::
 
 // TODO remove this, this is a skeleton to show that the bare 'ConversionPattern' class also works
 struct TestConvPatternWOOp : public mlir::ConversionPattern{
-    TestConvPatternWOOp(mlir::TypeConverter& tc, mlir::MLIRContext* context) : mlir::ConversionPattern(tc, "test.conv.pat", 1, context){}
+    TestConvPatternWOOp(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::ConversionPattern(tc, "test.conv.pat", 1, ctx){}
 
     mlir::LogicalResult matchAndRewrite(mlir::Operation *op, mlir::ArrayRef<mlir::Value> operands, mlir::ConversionPatternRewriter &rewriter) const override {
         (void)op; (void)operands; (void)rewriter;
@@ -488,24 +513,302 @@ struct TestConvPatternWOOp : public mlir::ConversionPattern{
     }
 };
 
+// llvm test patterns
+struct LLVMGEPPattern : public mlir::OpConversionPattern<mlir::LLVM::GEPOp>{
+    LLVMGEPPattern(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<mlir::LLVM::GEPOp>(tc, ctx, 1){}
+
+    mlir::LogicalResult matchAndRewrite(mlir::LLVM::GEPOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
+        // there is no adaptor.getIndices(), the adaptor only gives access to the dynamic indices. so we iterate over all of the indices, and if we find a dynamic one, use the rewriter to remap it
+        auto indices = op.getIndices();
+        auto currentIndexComputationValue = adaptor.getBase();
+
+        auto  dl = mlir::DataLayout::closest(op);
+        assert(op.getElemType().has_value());
+        auto elemTypeSize = dl.getTypeSize(*op.getElemType());
+
+        for(auto indexPtr_u : indices){
+            assert(getTypeConverter()->convertType(currentIndexComputationValue.getType()) == amd64::gpr64Type::get(getContext()) && "only 64 bit pointers are supported");
+
+            if(mlir::Value val = indexPtr_u.dyn_cast<mlir::Value>()){
+                auto scaled = rewriter.create<amd64::IMUL64rri>(op.getLoc(), rewriter.getRemappedValue(val));
+                scaled.instructionInfo().imm = elemTypeSize;
+                currentIndexComputationValue = rewriter.create<amd64::ADD64rr>(op.getLoc(), currentIndexComputationValue, scaled);
+            }else{
+                // has to be integer attr otherwise
+                auto indexInt = indexPtr_u.get<mlir::IntegerAttr>().getValue().getSExtValue();
+                if(indexInt == 0)
+                    continue;
+
+                auto scaled = indexInt * elemTypeSize;
+                auto addri = rewriter.create<amd64::ADD64ri>(op.getLoc(), currentIndexComputationValue);
+                addri.instructionInfo().imm = scaled;
+                currentIndexComputationValue = addri;
+            }
+        }
+
+        rewriter.replaceOp(op, currentIndexComputationValue);
+        return mlir::success();
+    }
+};
+
+auto llvmLoadMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
+     typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr
+     >(mlir::LLVM::LoadOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
+    // TODO this is an ugly hack, because this op gets unrealized conversion casts as args (ptr in this case), because the ptr type gets converted to an i64, instead of a memloc, so the alloca returning a memloc doesn't work
+    auto ptr = adaptor.getAddr();
+    if(ptr.template isa<mlir::OpResult>() && mlir::isa<amd64::LEA64rm>(ptr.getDefiningOp()) && 
+        mlir::isa<mlir::OpResult>(ptr.getDefiningOp()->getOperand(0))) /* && */ if(auto allocaOp = mlir::dyn_cast<amd64::AllocaOp>(ptr.getDefiningOp()->getOperand(0).getDefiningOp())){
+            rewriter.replaceOpWithNewOp<INSTrm>(op, allocaOp);
+            return mlir::success();
+        }
+
+    auto mem = rewriter.create<amd64::MemB>(op.getLoc(), ptr);
+    rewriter.replaceOpWithNewOp<INSTrm>(op, mem);
+    return mlir::success();
+};
+
+PATTERN(LLVMLoadPat, mlir::LLVM::LoadOp, amd64::MOV, llvmLoadMatchReplace);
+
+auto llvmStoreMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
+     typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr
+     >(mlir::LLVM::StoreOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
+    // TODO this is an ugly hack, because this op gets unrealized conversion casts as args (ptr in this case), because the ptr type gets converted to an i64, instead of a memloc, so the alloca returning a memloc doesn't work
+    auto ptr = adaptor.getAddr();
+    auto val = adaptor.getValue();
+    if(ptr.template isa<mlir::OpResult>() && mlir::isa<amd64::LEA64rm>(ptr.getDefiningOp()) && 
+        mlir::isa<mlir::OpResult>(ptr.getDefiningOp()->getOperand(0))) /* && */ if(auto allocaOp = mlir::dyn_cast<amd64::AllocaOp>(ptr.getDefiningOp()->getOperand(0).getDefiningOp())){
+        rewriter.replaceOpWithNewOp<INSTmr>(op, allocaOp, val);
+        return mlir::success();
+    }
+
+    auto mem = rewriter.create<amd64::MemB>(op.getLoc(), ptr);
+    rewriter.replaceOpWithNewOp<INSTmr>(op, mem, val);
+    return mlir::success();
+};
+
+PATTERN(LLVMStorePat, mlir::LLVM::StoreOp, amd64::MOV, llvmStoreMatchReplace, 1, []<unsigned bitwidth, typename thisType, typename OpAdaptor>(thisType thiis, mlir::LLVM::StoreOp op, OpAdaptor, mlir::ConversionPatternRewriter& rewriter){ 
+    if(mlir::dyn_cast<amd64::RegisterTypeInterface>(thiis->getTypeConverter()->convertType(op.getValue().getType())).getBitwidth() == bitwidth)
+        return mlir::success();
+    return rewriter.notifyMatchFailure(op, "bitwidth mismatch");
+});
+
+struct LLVMAllocaPat : public mlir::OpConversionPattern<mlir::LLVM::AllocaOp>{
+    LLVMAllocaPat(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<mlir::LLVM::AllocaOp>(tc, ctx, 1){}
+
+    mlir::LogicalResult matchAndRewrite(mlir::LLVM::AllocaOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
+        auto numElemsVal = op.getArraySize();
+        auto numElems = mlir::cast<mlir::LLVM::ConstantOp>(numElemsVal.getDefiningOp()).getValue().cast<mlir::IntegerAttr>().getValue().getSExtValue();
+
+
+        auto  dl = mlir::DataLayout::closest(op);
+        assert(op.getElemType().has_value());
+        auto elemSize = dl.getTypeSize(*op.getElemType());
+
+        auto alloca = rewriter.create<amd64::AllocaOp>(op.getLoc(), elemSize*numElems);
+        // TODO technically this is garbage, because we already know the exact number, but we need to distinguish between memloc and i64 types, normal ptr are i64, to enable arithmetic, but allocas have to give a memloc. I need to get it done, and this should work
+        rewriter.replaceOpWithNewOp<amd64::LEA64rm>(op, alloca);
+
+        return mlir::success();
+    }
+};
+
+struct IntrinsicsPattern : public mlir::OpConversionPattern<mlir::LLVM::CallIntrinsicOp>{
+    // TODO
+
+};
+
+auto llvmMovMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
+     typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr
+     >(mlir::LLVM::ConstantOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
+    rewriter.replaceOpWithNewOp<INSTri>(op, adaptor.getValue().template cast<mlir::IntegerAttr>().getValue().getSExtValue());
+    return mlir::success();
+};
+PATTERN(LLVMConstantIntPat, mlir::LLVM::ConstantOp, amd64::MOV, llvmMovMatchReplace, 2);
+
+struct LLVMConstantStringPat : public mlir::OpConversionPattern<mlir::LLVM::ConstantOp>{
+    LLVMConstantStringPat(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<mlir::LLVM::ConstantOp>(tc, ctx, 1){}
+
+    mlir::LogicalResult matchAndRewrite(mlir::LLVM::ConstantOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
+        if(op.use_empty()){
+            rewriter.eraseOp(op);
+            DEBUGLOG("Hiiiii");
+            return mlir::success();
+        }
+
+        return mlir::failure();
+    }
+};
+
+struct LLVMAddrofPat : public mlir::OpConversionPattern<mlir::LLVM::AddressOfOp>{
+    LLVMAddrofPat(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<mlir::LLVM::AddressOfOp>(tc, ctx, 1){}
+
+    mlir::LogicalResult matchAndRewrite(mlir::LLVM::AddressOfOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
+        auto global = mlir::SymbolTable::lookupNearestSymbolFrom(op, adaptor.getGlobalNameAttr());
+        if(auto globalOp = mlir::dyn_cast<mlir::LLVM::GlobalOp>(global)){
+            // we don't necessarily know the offset of the global yet, might need to be resolved later
+            // TODO maybe pass globals and check if it's in there already to avoid making the extra op. Might also be slower, not sure
+            rewriter.replaceOpWithNewOp<amd64::AddrOfGlobal>(op, adaptor.getGlobalNameAttr());
+            return mlir::success();
+        }else if(auto func = mlir::dyn_cast<mlir::func::FuncOp>(global)){
+            EXIT_TODO_X("addrof func");
+        }
+        llvm_unreachable("");
+    }
+};
+
+auto llvmReturnMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
+     typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr
+     >(mlir::LLVM::ReturnOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
+    // TODO arg is optional, handle it not existing
+    rewriter.replaceOpWithNewOp<INSTrr>(op, adaptor.getArg());
+    return mlir::success();
+};
+
+// probably wrong
+using LLVMReturnPat = MatchRMI<mlir::LLVM::ReturnOp, 64, llvmReturnMatchReplace, amd64::RET, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, ignoreBitwidthMatchLambda>;
+
+struct LLVMFuncPat : public mlir::OpConversionPattern<mlir::LLVM::LLVMFuncOp>{
+    LLVMFuncPat(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<mlir::LLVM::LLVMFuncOp>(tc, ctx, 1){}
+
+    mlir::LogicalResult matchAndRewrite(mlir::LLVM::LLVMFuncOp func, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
+        auto llvmFnType = func.getFunctionType();
+
+        llvm::SmallVector<mlir::Type> convertedArgTypes;
+        auto res = getTypeConverter()->convertTypes(llvmFnType.getParams(), convertedArgTypes);
+        if(mlir::failed(res))
+            return mlir::failure();
+
+        auto convertedReturnType = getTypeConverter()->convertType(llvmFnType.getReturnType());
+        if(!convertedReturnType)
+            return mlir::failure();
+
+        auto newFunc = rewriter.create<mlir::func::FuncOp>(
+            func.getLoc(), func.getName(),
+            rewriter.getFunctionType(convertedArgTypes, convertedReturnType),
+            rewriter.getStringAttr(/* this is apparently a different kind of visibility: mlir::LLVM::stringifyVisibility(adaptor.getVisibility_()) */ "private"),
+            adaptor.getArgAttrsAttr(),
+            adaptor.getResAttrsAttr());
+        rewriter.inlineRegionBefore(func.getRegion(), newFunc.getRegion(), newFunc.getRegion().end());
+        if (failed(rewriter.convertRegionTypes(&newFunc.getRegion(), *getTypeConverter())))
+            return rewriter.notifyMatchFailure(func, "failed to convert region types");
+
+        rewriter.replaceOp(func, newFunc->getResults());
+        return mlir::success();
+    }
+};
+
+struct LLVMGlobalPat : public mlir::OpConversionPattern<mlir::LLVM::GlobalOp>{
+    // TODO instead of this, pass the buffer pointer and write there immediately, then make use a GlobalsInfo map that simply maps to that address
+    GlobalsInfo& globals;
+
+    LLVMGlobalPat(mlir::TypeConverter& tc, mlir::MLIRContext* ctx, GlobalsInfo& globals) : mlir::OpConversionPattern<mlir::LLVM::GlobalOp>(tc, ctx, 1), globals(globals){ }
+
+    mlir::LogicalResult matchAndRewrite(mlir::LLVM::GlobalOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
+        // if its a declaration: handle specially, we can already look up the address of the symbol and write it there, or fail immediately
+        GlobalSymbolInfo unfinishedGlobal;
+        intptr_t& addr = unfinishedGlobal.addrInDataSection = (intptr_t) nullptr;
+        auto symbol = op.getSymName();
+        if(op.isDeclaration()){
+            // this address is allowed to be 0, checked_dlsym handles an actual error through dlerror()
+            addr = (intptr_t) checked_dlsym(symbol);
+        }
+
+        // get raw bytes of the value of this global
+        // heavily inspired by ModuleTranslation::convertGlobals/LLVM::detail:getLLVMConstant
+        auto& bytes = unfinishedGlobal.bytes = {};
+        if(auto attr = op.getValueOrNull()){
+            // TODO maybe try to optimize the ordering?
+            if(auto denseElementsAttr = attr.dyn_cast<mlir::DenseElementsAttr>()){
+                auto rawData = denseElementsAttr.getRawData();
+                bytes.resize(rawData.size());
+                memcpy(bytes.data(), rawData.data(), rawData.size());
+            }else if(auto strAttr = attr.dyn_cast<mlir::StringAttr>()){
+                // TODO is this guaranteed to be null terminated, if it comes from a global?
+                bytes.resize(strAttr.getValue().size());
+                memcpy(bytes.data(), strAttr.getValue().data(), strAttr.getValue().size());
+                assert(unfinishedGlobal.bytes.back() == '\0');
+            }else if(auto intAttr = attr.dyn_cast<mlir::IntegerAttr>()){
+                // TODO factor out an endianness aware memcpy
+                EXIT_TODO;
+            }else if(auto floatAttr = attr.dyn_cast<mlir::FloatAttr>()){
+                EXIT_TODO;
+            }else if(auto funcAttr = attr.dyn_cast<mlir::FlatSymbolRefAttr>()){
+                EXIT_TODO;
+            }else{
+                llvm_unreachable("sad");
+            }
+        }else{
+            //
+        }
+
+        unfinishedGlobal.alignment = static_cast<unsigned>(adaptor.getAlignment().value_or(mlir::DataLayout::closest(op).getTypeSize(adaptor.getGlobalType())));
+
+        // TODO handle visibility
+        globals.insert({symbol, std::move(unfinishedGlobal)});
+        rewriter.eraseOp(op);
+        return mlir::success();
+    }
+};
+
+#define CALL_PAT(bitwidth) \
+    using LLVMCallPat ## bitwidth = MatchRMI<mlir::LLVM::CallOp, bitwidth, callMatchReplace, amd64::CALL, amd64::MOV ## bitwidth ## rr, amd64::gpr ## bitwidth ## Type>
+
+CALL_PAT(8); CALL_PAT(16); CALL_PAT(32); CALL_PAT(64);
+
+#undef CALL_PAT
+
+PATTERN(LLVMICmpPat, mlir::LLVM::ICmpOp, amd64::CMP, cmpIMatchReplace<mlir::LLVM::ICmpPredicate>, 1, cmpIBitwidthMatcher);
+
+// TODO order the LLVM patterns in a more structured way
+
+using LLVMBrPat = MatchRMI<mlir::LLVM::BrOp, 64, branchMatchReplace, amd64::JMP, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, ignoreBitwidthMatchLambda>;
+
+struct LLVMCondBrPat: public mlir::OpConversionPattern<mlir::LLVM::CondBrOp> {
+    LLVMCondBrPat(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<mlir::LLVM::CondBrOp>(tc, ctx, 3){}
+
+    mlir::LogicalResult matchAndRewrite(mlir::LLVM::CondBrOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
+        return condBrMatchReplace<mlir::LLVM::ICmpOp, decltype(this), OpAdaptor>(this, op, adaptor, rewriter);
+    }
+};
+
+auto llvmGetIn = [](auto adaptorOrOp){ return adaptorOrOp.getArg(); };
+auto llvmGetOut = [](auto adaptorOrOp){ return adaptorOrOp.getRes(); };
+
+// LLVM SExt/ZExt/Trunc patterns, same as MLIR above, read up there on why this is divided into these weird cases
+#define SZEXT_PAT(outBitwidth, inBitwidth) \
+    using LLVMZExtPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::LLVM::ZExtOp, outBitwidth, truncExtUiSiMatchReplace<inBitwidth, llvmGetIn, llvmGetOut>, amd64::MOVZX ## r ## outBitwidth ## r ## inBitwidth, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<inBitwidth, llvmGetIn, llvmGetOut>>; \
+    using LLVMSExtPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::LLVM::SExtOp, outBitwidth, truncExtUiSiMatchReplace<inBitwidth, llvmGetIn, llvmGetOut>, amd64::MOVSX ## r ## outBitwidth ## r ## inBitwidth, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<inBitwidth, llvmGetIn, llvmGetOut>>;
+
+// generalizable cases:
+SZEXT_PAT(16, 8);
+SZEXT_PAT(32, 8); SZEXT_PAT(32, 16);
+SZEXT_PAT(64, 8); SZEXT_PAT(64, 16);
+
+#undef SZEXT_PAT
+
+using LLVMZExtPat64_32 = MatchRMI<mlir::LLVM::ZExtOp, 64, truncExtUiSiMatchReplace<32, llvmGetIn, llvmGetOut>, amd64::MOV32rr, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<32, llvmGetIn, llvmGetOut>>;
+using LLVMSExtPat64_32 = MatchRMI<mlir::LLVM::SExtOp, 64, truncExtUiSiMatchReplace<32, llvmGetIn, llvmGetOut>, amd64::MOVSXr64r32, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<32, llvmGetIn, llvmGetOut>>;
+// trunc
+#define TRUNC_PAT(outBitwidth, inBitwidth) \
+    using LLVMTruncPat ## outBitwidth ## _ ## inBitwidth = MatchRMI<mlir::LLVM::TruncOp, outBitwidth, truncExtUiSiMatchReplace<inBitwidth, llvmGetIn, llvmGetOut>, amd64::MOV ## outBitwidth ## rr, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, truncExtUiSiBitwidthMatcher<inBitwidth, llvmGetIn, llvmGetOut>>;
+TRUNC_PAT(8, 16); TRUNC_PAT(8, 32); TRUNC_PAT(8, 64);
+TRUNC_PAT(16, 32); TRUNC_PAT(16, 64);
+TRUNC_PAT(32, 64);
+
+#undef TRUNC_PAT
+
 } // end anonymous namespace
 
 
-// TODO make it possible to
-// - select from different preexisting pattern sets based on optimization level (if there is a performance difference between the sets)
-//      (maybe 'populate with -Ox patterns' methods?)
-// - register custom type conversions
-// - register custom patterns to the pattern set
+void populateLLVMToAMD64TypeConversions(mlir::TypeConverter& tc){
+    tc.addConversion([](mlir::LLVM::LLVMPointerType type) -> std::optional<mlir::Type>{
+        return amd64::gpr64Type::get(type.getContext());
+    });
+    // TODO
+}
 
-/// takes an operation and does isel on its regions
-bool prototypeIsel(mlir::Operation* regionOp){
-    using namespace amd64;
-    using namespace mlir::arith;
-
-    auto ctx = regionOp->getContext();
-
-    mlir::TypeConverter typeConverter;
-    typeConverter.addConversion([](mlir::IntegerType type) -> std::optional<mlir::Type>{
+void populateDefaultTypesToAMD64TypeConversions(mlir::TypeConverter& tc){
+    tc.addConversion([](mlir::IntegerType type) -> std::optional<mlir::Type>{
         switch(type.getIntOrFloatBitWidth()) {
             // cmp is not matched using the result type (always i1), but with the operand type, so this doesn't apply there.
             case 1:  // TODO  Internally, MLIR seems to need to convert i1's though, so we will handle them as i8 for now, also because SETcc returns i8.
@@ -514,30 +817,119 @@ bool prototypeIsel(mlir::Operation* regionOp){
             case 32: return amd64::gpr32Type::get(type.getContext());
             case 64: return amd64::gpr64Type::get(type.getContext());
 
-            default: llvm_unreachable("unhandled bitwidth in typeConverter");
+            default: llvm_unreachable("unhandled bitwidth in tc");
         }
     });
 
     // all register and memloc types are already legal
     // TODO this is probably not needed in the end, because we shouldn't encounter them in the first place. But for now with manually created ops it is needed.
-    typeConverter.addConversion([](amd64::RegisterTypeInterface type) -> std::optional<mlir::Type>{
+    tc.addConversion([](amd64::RegisterTypeInterface type) -> std::optional<mlir::Type>{
         return type;
     });
-    typeConverter.addConversion([](amd64::memLocType type) -> std::optional<mlir::Type>{
+    tc.addConversion([](amd64::memLocType type) -> std::optional<mlir::Type>{
         return type;
     });
     // TODO this might be entirely stupid
-    typeConverter.addConversion([&typeConverter](mlir::FunctionType functionType) -> std::optional<mlir::Type>{
+    tc.addConversion([&tc](mlir::FunctionType functionType) -> std::optional<mlir::Type>{
         llvm::SmallVector<mlir::Type, 6> inputs;
         llvm::SmallVector<mlir::Type, 1> results;
-        if(mlir::failed(typeConverter.convertTypes(functionType.getInputs(), inputs))
-                || mlir::failed(typeConverter.convertTypes(functionType.getResults(), results)))
+        if(mlir::failed(tc.convertTypes(functionType.getInputs(), inputs))
+                || mlir::failed(tc.convertTypes(functionType.getResults(), results)))
             return {};
 
         return mlir::FunctionType::get(functionType.getContext(), 
             inputs, results
         );
     });
+}
+
+void populateArithToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns, mlir::TypeConverter& tc){
+    auto* ctx = patterns.getContext();
+#define PATTERN_BITWIDTHS(patternName) patternName ## 8, patternName ## 16, patternName ## 32, patternName ## 64
+    // TODO even more fine grained control over which patterns to use
+    patterns.add<
+        PATTERN_BITWIDTHS(ConstantIntPat),
+        PATTERN_BITWIDTHS(AddIPat),
+        PATTERN_BITWIDTHS(SubIPat),
+        PATTERN_BITWIDTHS(MulIPat),
+        PATTERN_BITWIDTHS(CmpIPat),
+        PATTERN_BITWIDTHS(AndIPat),
+        PATTERN_BITWIDTHS(OrIPat),
+        PATTERN_BITWIDTHS(XOrIPat),
+        PATTERN_BITWIDTHS(MulIPat),
+        PATTERN_BITWIDTHS(DivUIPat),
+        PATTERN_BITWIDTHS(DivSIPat),
+        PATTERN_BITWIDTHS(RemSIPat),
+        PATTERN_BITWIDTHS(RemSIPat),
+        PATTERN_BITWIDTHS(ShlIPat),
+        PATTERN_BITWIDTHS(ShrSIPat),
+        PATTERN_BITWIDTHS(ShrUIPat),
+        ExtUII1Pat,
+        ExtUIPat16_8, ExtUIPat32_8, ExtUIPat64_8, ExtUIPat32_16, ExtUIPat64_16, ExtUIPat64_32,
+        ExtSIPat16_8, ExtSIPat32_8, ExtSIPat64_8, ExtSIPat32_16, ExtSIPat64_16, ExtSIPat64_32,
+        TruncPat8_16, TruncPat8_32, TruncPat8_64, TruncPat16_32, TruncPat16_64, TruncPat32_64
+    >(tc, ctx);
+
+    //patterns.add<TestConvPatternWOOp>(tc, ctx);
+}
+
+void populateCFToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns, mlir::TypeConverter& tc){
+    auto* ctx = patterns.getContext();
+    patterns.add<BrPat, CondBrPat, ReturnPat>(tc, ctx);
+}
+
+void populateFuncToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns, mlir::TypeConverter& tc){
+    auto* ctx = patterns.getContext();
+    patterns.add<PATTERN_BITWIDTHS(CallPat)>(tc, ctx);
+    mlir::populateAnyFunctionOpInterfaceTypeConversionPattern(patterns, tc);
+}
+
+void populateLLVMToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns, mlir::TypeConverter& tc, GlobalsInfo& globals){
+    patterns.add<
+        LLVMGEPPattern, LLVMAllocaPat, PATTERN_BITWIDTHS(LLVMLoadPat), PATTERN_BITWIDTHS(LLVMStorePat),
+        PATTERN_BITWIDTHS(LLVMConstantIntPat),
+        LLVMReturnPat, LLVMFuncPat,
+        LLVMConstantStringPat, LLVMAddrofPat,
+        PATTERN_BITWIDTHS(LLVMCallPat),
+        LLVMBrPat,
+        LLVMCondBrPat,
+        PATTERN_BITWIDTHS(LLVMICmpPat),
+        LLVMZExtPat16_8,  LLVMZExtPat32_8,  LLVMZExtPat64_8,  LLVMZExtPat32_16,  LLVMZExtPat64_16,  LLVMZExtPat64_32,
+        LLVMSExtPat16_8,  LLVMSExtPat32_8,  LLVMSExtPat64_8,  LLVMSExtPat32_16,  LLVMSExtPat64_16,  LLVMSExtPat64_32,
+        LLVMTruncPat8_16, LLVMTruncPat8_32, LLVMTruncPat8_64, LLVMTruncPat16_32, LLVMTruncPat16_64, LLVMTruncPat32_64
+    >(tc, patterns.getContext());
+    patterns.add<LLVMGlobalPat>(tc, patterns.getContext(), globals);
+}
+
+
+void populateAnyKnownAMD64TypeConversionsConversionPatterns(mlir::RewritePatternSet& patterns, mlir::TypeConverter& tc, GlobalsInfo& globals){
+    //populateWithGenerated(patterns);
+    populateDefaultTypesToAMD64TypeConversions(tc);
+    populateArithToAMD64ConversionPatterns(patterns, tc);
+    populateFuncToAMD64ConversionPatterns(patterns, tc);
+    populateCFToAMD64ConversionPatterns(patterns, tc);
+    populateLLVMToAMD64TypeConversions(tc);
+    populateLLVMToAMD64ConversionPatterns(patterns, tc, globals);
+}
+#undef PATTERN_BITWIDTHS
+
+/// takes an operation and does isel on its regions using all available type conversions and conversion patterns
+/// use the populate* functions, a custom rewrite pattern set and type converter, and the `isel` function to customize the pattern set and isel to your liking
+[[nodiscard("You should check whether ISel succeeded!")]] bool maximalIsel(mlir::Operation* regionOp, GlobalsInfo& globals){
+    mlir::RewritePatternSet patterns(regionOp->getContext());
+    mlir::TypeConverter typeConverter;
+    populateAnyKnownAMD64TypeConversionsConversionPatterns(patterns, typeConverter, globals);
+    return isel(regionOp, typeConverter, patterns);
+}
+
+/// takes an operation and does isel on its regions
+/// if you want to use all known type and pattern conversions, use `maximalIsel`
+/// use the populate* functions to customize the pattern set to your liking
+[[nodiscard("You should check whether ISel succeeded!")]] bool isel(mlir::Operation* regionOp, mlir::TypeConverter& typeConverter, mlir::RewritePatternSet& patterns){
+    using namespace amd64;
+    using namespace mlir::arith;
+
+    auto* ctx = regionOp->getContext();
 
     mlir::ConversionTarget target(*ctx);
     target.addLegalDialect<mlir::BuiltinDialect>();
@@ -546,57 +938,20 @@ bool prototypeIsel(mlir::Operation* regionOp){
     // from https://discourse.llvm.org/t/lowering-and-type-conversion-of-block-arguments/63570
     // funcs are only legal once their args have been converted
     // TODO if this costs a lot of performance, try defining an amd64::FuncOp and make all of func illegal
+    // TODO can these be put in any of the populate* functions?
     target.addDynamicallyLegalOp<mlir::func::FuncOp>([&](mlir::func::FuncOp op) {
         return typeConverter.isSignatureLegal(op.getFunctionType()) && typeConverter.isLegal(&op.getBody());
     });
-
-    // this also needs a pattern to rewrite func ops, see `FuncPat`
-
-    //target.addLegalDialect<mlir::func::FuncDialect>();
-    // func is legal, except for returns and calls, as soon as those have instructions
-    //target.addIllegalOp<mlir::func::ReturnOp>();
-
-    mlir::RewritePatternSet patterns(ctx);
-    //populateWithGenerated(patterns); // does `patterns.add<SubExamplePat>(ctx);`, ... for all tablegen generated patterns
-
-    // TODO probably put this pattern adding near the actual patterns, so its harder to forget, and there are multiple pattern sets to choose from, depending on the optimization level
-#define ADD_PATTERN(patternName) patterns.add<patternName ## 8, patternName ## 16, patternName ## 32, patternName ## 64>(typeConverter, ctx);
-    ADD_PATTERN(ConstantIntPat);
-    ADD_PATTERN(AddIPat);
-    ADD_PATTERN(SubIPat);
-    ADD_PATTERN(MulIPat);
-    ADD_PATTERN(CmpIPat);
-    ADD_PATTERN(AndIPat);
-    ADD_PATTERN(OrIPat);
-    ADD_PATTERN(XOrIPat);
-    ADD_PATTERN(MulIPat);
-    ADD_PATTERN(DivUIPat);
-    ADD_PATTERN(DivSIPat);
-    ADD_PATTERN(RemSIPat);
-    ADD_PATTERN(RemSIPat);
-    ADD_PATTERN(ShlIPat);
-    ADD_PATTERN(ShrSIPat);
-    ADD_PATTERN(ShrUIPat);
-    patterns.add<ExtUII1Pat>(typeConverter, ctx);
-    patterns.add<ExtUIPat16_8, ExtUIPat32_8, ExtUIPat64_8, ExtUIPat32_16, ExtUIPat64_16, ExtUIPat64_32>(typeConverter, ctx);
-    patterns.add<ExtSIPat16_8, ExtSIPat32_8, ExtSIPat64_8, ExtSIPat32_16, ExtSIPat64_16, ExtSIPat64_32>(typeConverter, ctx);
-    patterns.add<TruncPat8_16, TruncPat8_32, TruncPat8_64, TruncPat16_32, TruncPat16_64, TruncPat32_64>(typeConverter, ctx);
-
-    patterns.add<BrPat>(typeConverter, ctx);
-    patterns.add<CondBrPat>(typeConverter, ctx);
-
-    ADD_PATTERN(CallPat);
-    patterns.add<ReturnPat>(typeConverter, ctx);
-
-    mlir::populateAnyFunctionOpInterfaceTypeConversionPattern(patterns, typeConverter);
-
-    //patterns.add<TestConvPatternWOOp>(typeConverter, ctx);
-#undef ADD_PATTERN
+    target.addDynamicallyLegalOp<mlir::LLVM::LLVMFuncOp>([&](mlir::LLVM::LLVMFuncOp op) {
+        return typeConverter.isLegal(op.getFunctionType().getParams()) && typeConverter.isLegal(op.getFunctionType().getReturnType()) && typeConverter.isLegal(&op.getBody());
+    });
     
     //llvm::setCurrentDebugType("greedy-rewriter");
     //llvm::setCurrentDebugType("dialect-conversion");
 
+    // TODO try to get greedy driver to work
     //auto result = mlir::applyPatternsAndFoldGreedily(patternMatchingTestFn, std::move(patterns)); // TODO I think this only applies normal rewrite patterns, not conversion patterns...
+                                                                                                    // TODO actually no, i think this is a problem with this driver only applying patterns to the top level ops in the region
     // TODO try to do this concurrently, for function regions
     return mlir::failed(mlir::applyFullConversion(regionOp, target, std::move(patterns)));
 }

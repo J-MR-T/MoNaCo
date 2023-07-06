@@ -126,7 +126,9 @@ class MemSIBD_subset<string mnemonic, list<Trait> traits = []>: MemOp<mnemonic, 
   }];
 
   // custom builder to initialize the properties, this is currently the only way to do it
-  let builders = [
+   
+  // dont generate a builder if the only argument would be the base, as this will just infinitely call itself
+  let builders = !if(!or(hasScaleIndex, hasDisplacement), [
     OpBuilder<
       // arguments
       !con(
@@ -150,7 +152,7 @@ class MemSIBD_subset<string mnemonic, list<Trait> traits = []>: MemOp<mnemonic, 
       # [{
       );
     }]>
-  ];
+  ], []);
 }
 
 // memory op with base, scale, index, and displacement, most general case
@@ -190,6 +192,31 @@ def RawMemoryOp : MemOp<"RawMemoryOp"> {
       build($_builder, $_state);
     }]>
   ];
+}
+
+// TODO this currently ignores alignment, obviously not ideal
+def AllocaOp : MemOp<"AllocaOp"> {
+  // allocas need to know the size of the allocation, and the rbp offset that they get assigned
+  let arguments = (ins Property<"uint32_t">:$size, Property<"uint32_t">:$rbpOffset);
+  let results = (outs memLoc:$memloc);
+
+  let encoding = [{
+    assert(getProperties().rbpOffset != 0 && "rbp offset not set for alloca when encoding");
+    return FE_MEM(FE_BP, 0, FE_NOREG, getProperties().rbpOffset);
+  }];
+  let builders = [
+    OpBuilder<(ins "uint32_t":$sizeArg), [{
+      auto& prop = $_state.getOrAddProperties<AllocaOp::Properties>();
+      prop.size = sizeArg;
+      build($_builder, $_state);
+    }]>
+  ];
+}
+
+// TODO not ideal
+def AddrOfGlobal : AMD64_Op<"AddrOfGlobal">{
+  let arguments = (ins FlatSymbolRefAttr:$name);
+  let results = (outs gpr64:$addr);
 }
 
 // === properties ===
@@ -244,10 +271,17 @@ class Instruction<string mnemonic, list<Trait> traits = []> :
   let arguments = !con(operands, (ins InstructionInfoProp:$instructionInfoImpl));
 }
 
+def LEA64rm : Instruction<"LEA64rm">{
+  let operands = (ins memLoc:$mem);
+  let results = (outs gpr64:$dst);
+}
+
+
 // immediate instruction multiclass
 multiclass Instr_i<string mnemonic, list<Trait> traits = []> {
   // TODO probably needs custom builder or declaration to initialize the immediate I don't think this is possible generically, as we would have to repeat all possible arguments. Let's hope there is in-tree support for this soon
-  def "i" : Instruction<mnemonic # "i", traits # [SpecialCase<"HasImm">]>;
+  defvar concatenation = !if(!eq(!substr(mnemonic, !sub(!size(mnemonic), 1), 1), "i"), "", "i");
+  def concatenation : Instruction<mnemonic # concatenation, traits # [SpecialCase<"HasImm">]>;
 }
 
 // produces "rr", "rm", "mr", "mi", "ri" variants, depending on the bits set here
@@ -324,7 +358,7 @@ defm AND : Instr8_16_32_64_rmi<"AND", [Pure, Operand0IsDestN<0>]>;
 defm OR  : Instr8_16_32_64_rmi<"OR",  [Pure, Operand0IsDestN<0>]>;
 defm XOR : Instr8_16_32_64_rmi<"XOR", [Pure, Operand0IsDestN<0>]>;
 
-// miscellaneous 'special' instructions dependant bitwidth
+// miscellaneous 'special' instructions dependent on bitwidth
 foreach bitwidth = ["8", "16", "32", "64"] in {
   defvar gprType = !cast<AMD64_GPRegisterType>("gpr"#bitwidth);
 
@@ -452,7 +486,10 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
   }
 }
 
-// special instructions independant of bitwidth
+// special instructions independent of bitwidth
+
+let results = (outs gpr64:$dst), operands = (ins gpr64:$src1) in
+defm IMUL64rr : Instr_i<"IMUL64rr", [Pure]>;
 
 // JMP is the cf.br equivalent, is a terminator has block args, but no result. It uses MLIRs built-in successor list to define its successors
 // this is kept close to cf.br
@@ -519,6 +556,7 @@ def CALL : Instruction<"CALL">{
   let operands = (ins FlatSymbolRefAttr:$callee, Variadic<AnyType>:$operands);
   let results = (outs anygprType:$ret); // only single return value for now.
   // TODO we will need some info about what size the callee returns, see RET
+  // technically this is an ABI thing, not an architecture thing, but it doesn't really matter
   let resultConstraint1 = "{.which = 0, .reg = FE_AX}";
 
   let extraExtraClassDeclarations = [[{

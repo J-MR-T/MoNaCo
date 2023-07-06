@@ -7,6 +7,7 @@
 #include "fadec-enc.h"
 
 #include "mlir/IR/OpDefinition.h"
+#include <llvm/ADT/StringMap.h>
 
 using FeMnem = uint64_t;
 
@@ -81,6 +82,17 @@ struct Constraints{
 };
 using OperandRegisterConstraints = Constraints<OperandRegisterConstraint>;
 using ResultRegisterConstraints  = Constraints<ResultRegisterConstraint>;
+
+// TODO maybe actually don't put any of this into the namespace?
+struct GlobalSymbolInfo{
+    llvm::SmallVector<uint8_t, 8> bytes;
+    unsigned alignment;
+    // TODO linkage/visibility
+
+    intptr_t addrInDataSection;
+};
+
+using GlobalsInfo = llvm::StringMap<GlobalSymbolInfo>;
 
 // TODO put the rest of the stuff into the namespace as well
 }

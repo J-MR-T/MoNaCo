@@ -1,6 +1,7 @@
 #pragma once
 
 #include <concepts>
+#include <dlfcn.h>
 #include <map>
 #include <string>
 #include <err.h>
@@ -288,6 +289,20 @@ namespace ArgParse{
 } // end namespace ArgParse
 
 // === misc ===
+
+inline void* checked_dlsym(llvm::StringRef name){
+    // TODO do this in a better way, without construcing a std::string in between
+    // TODO add possible caching to this, and enable it via template arg or smth
+
+    // reset previous error (TODO is this necessary?)
+    dlerror();
+    void* symAddr = dlsym(NULL, name.str().c_str());
+    char* err = dlerror();
+    if(err != NULL){
+       errx(EXIT_FAILURE, "could not find symbol %s in current process, dlerror: %s", name.str().c_str(), err);
+    }
+    return symAddr;
+}
 
 /// read an mlir module from a file
 mlir::OwningOpRef<mlir::ModuleOp> readMLIRMod(const llvm::StringRef filename, mlir::MLIRContext& ctx);
