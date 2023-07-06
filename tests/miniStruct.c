@@ -1,3 +1,5 @@
+// RUN: %RunC | FileCheck --allow-empty %s
+// CHECK-NOT: {{.+}}
 
 typedef struct {
     int a;
