@@ -8,7 +8,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(CMAKE_CXX_STANDARD 23 CACHE STRING "C++ standard to conform to")
 
+# 10x link speedup
 set(LLVM_USE_LINKER lld)
+
+# clang-tidy doesn't work, because it analyzes all system headers and produces errors that don't exist
+#set(CMAKE_CXX_CLANG_TIDY clang-tidy -checks=clang-analyzer-core*,clang-analyzer-security*,readability-qualified-auto,performance-* -header-filter=.*)
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   find_package(MLIR REQUIRED CONFIG)
