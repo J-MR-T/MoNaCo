@@ -612,6 +612,8 @@ struct AbstractRegAllocerEncoder{
                             auto call = mlir::cast<amd64::CALL>(instr);
                             static constexpr FeReg argRegs[] = {FE_DI, FE_SI, FE_DX, FE_CX, FE_R8, FE_R9};
 
+                            // TODO more than 6 args
+                            assert(call.getNumOperands() <= 6 && "more than 6 args not supported yet");
                             for(auto [i ,operand]: llvm::enumerate(instr->getOperands())){
                                 moveFromSlotToOperandReg(operand, valueToSlot[operand], argRegs[i]);
                             }
@@ -625,8 +627,7 @@ struct AbstractRegAllocerEncoder{
 
                         // ignore the instruction, if it's pure and it's uses are empty
                         // TODO might cost performance, maybe remove for quick allocer
-                        // NOTE: mlir::isOpTriviallyDead doesn't work either
-                        //if(mlir::isPure(&op) && instr->use_empty()) [[unlikely]]
+                        //if(mlir::isOpTriviallyDead(&op)) [[unlikely]]
                         //    continue;
 
                         // two operands max for now
