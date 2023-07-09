@@ -18,7 +18,8 @@
 #include "AMD64/AMD64Dialect.h"
 #include "AMD64/AMD64Ops.h"
 
-using namespace amd64;
+using GlobalsInfo = amd64::GlobalsInfo;
+using Special = amd64::Special;
 
 // TODO reconsider this whole returning failed, doesn't make much sense here, it should never do that.
 
@@ -160,15 +161,22 @@ public:
 
 
     bool encodeCall(mlir::ModuleOp mod, amd64::CALL call){
+        // indirect calls via pointer, that pointer has already been moved to FE_AX
+        if(!call.getCallee()){
+            encodeRaw(FE_CALLr, FE_AX);
+            return false;
+        }
+
+        // has to be a direct call
+
         // get the entry block of the corresponding function, jump there
         auto maybeFunc = getFuncForCall(mod, call, symbolrefToFuncCache);
         if(!maybeFunc){
             llvm::errs() << "Call to unknown function, relocations not implemented yet\n";
-            return true; // readability
+            return true;
         }
 
-        auto func = mlir::dyn_cast<mlir::func::FuncOp>(maybeFunc);
-        assert(func);
+        auto func = mlir::cast<mlir::func::FuncOp>(maybeFunc);
 
         // emit args
         if(func.isExternal()){
@@ -187,10 +195,8 @@ public:
                 return encodeRaw(FE_CALLr, FE_AX);
             }else{
                 llvm::errs() << "Call to external function, relocations not implemented yet\n";
-                return true; // readability
+                return true;
             }
-
-            llvm_unreachable("External functions shouldn't be encoded normally");
         }
 
         auto entryBB = &func.getBlocks().front();
@@ -610,14 +616,24 @@ struct AbstractRegAllocerEncoder{
                         // for a call: handle things differently, load all operands directly into the correct registers
                         if(instr.getFeMnemonic() == FE_CALL) [[unlikely]]{
                             auto call = mlir::cast<amd64::CALL>(instr);
-                            static constexpr FeReg argRegs[] = {FE_DI, FE_SI, FE_DX, FE_CX, FE_R8, FE_R9};
 
-                            // TODO more than 6 args
-                            assert(call.getNumOperands() <= 6 && "more than 6 args not supported yet");
-                            for(auto [i ,operand]: llvm::enumerate(instr->getOperands())){
-                                moveFromSlotToOperandReg(operand, valueToSlot[operand], argRegs[i]);
+                            auto moveOperands = [&](auto&& argRegs){
+                                assert(call.getNumOperands() <= sizeof(argRegs)/sizeof(argRegs[0]) && "more than 6 args not supported yet");
+                                for(auto [i ,operand]: llvm::enumerate(instr->getOperands())){
+                                    moveFromSlotToOperandReg(operand, valueToSlot[operand], argRegs[i]);
+                                }
+                            };
+
+                            if(call.getCallee()){
+                                // direct call
+                                static constexpr FeReg argRegs[] = {FE_DI, FE_SI, FE_DX, FE_CX, FE_R8, FE_R9};
+                                moveOperands(argRegs);
+                            }else{
+                                // indirect call, first operand is the pointer to what to call, rest is the same
+                                static constexpr FeReg argRegs[] = {FE_AX, FE_DI, FE_SI, FE_DX, FE_CX, FE_R8, FE_R9};
+                                moveOperands(argRegs);
                             }
-                            
+
                             // TODO this needs to be factored out to a kind of "allocated but dont spill or encode" function. Alternatively template variants (either with boolean template arguments, or as specializations) of the allocateEncodeValueDef function that don't do that.
                             encoder.encodeCall(mod, call);
                             auto& slot = valueToSlot[call.getResult()] = ValueSlot{.kind = ValueSlot::Stack, .mem = allocateNewStackslot(8), .bitwidth = 8};

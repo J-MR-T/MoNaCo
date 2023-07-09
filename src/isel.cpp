@@ -19,11 +19,14 @@
 #include "AMD64/AMD64Dialect.h"
 #include "AMD64/AMD64Ops.h"
 
-using namespace amd64;
+using GlobalsInfo = amd64::GlobalsInfo;
+using GlobalSymbolInfo = amd64::GlobalSymbolInfo;
 
 // anonymous namespace to contain patterns
 namespace {
 #include "AMD64/Lowerings.cpp.inc"
+
+using namespace mlir;
 
 // use this to mark that a specific type of instruction is not available to use in the lambda of a pattern
 using NOT_AVAILABLE = void;
@@ -440,7 +443,7 @@ auto callMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
     if(callOp.getNumResults() > 1)
         return rewriter.notifyMatchFailure(callOp, "multiple return values not supported");
 
-    // TODO needs type conversion for operands. Wait, maybe the adaptor takes care of this
+    // direct call and indirect call are just handled the same as in the llvm dialect, the first op can be a ptr. So we don't do anything here, and check if the attribute exists in encoding, if it does, move it to AX and start one after the normal operand with moving to the operand registers
     rewriter.replaceOpWithNewOp<CALL>(callOp, gprType::get(callOp->getContext()), callOp.getCalleeAttr(), adaptor.getOperands());
     return mlir::success();
 };
@@ -537,7 +540,7 @@ struct LLVMGEPPattern : public mlir::OpConversionPattern<mlir::LLVM::GEPOp>{
 
                     unsigned elementAlignment = structType.isPacked() ? 1 : dl.getTypeABIAlignment(element);
                     // Add padding to the struct size to align it to the abi alignment of the
-                    // element type before than adding the size of the element
+                    // element type before then adding the size of the element
                     structSizeUpToNow = llvm::alignTo(structSizeUpToNow, elementAlignment);
                     structSizeUpToNow += dl.getTypeSize(element);
 
@@ -694,8 +697,9 @@ struct LLVMAddrofPat : public mlir::OpConversionPattern<mlir::LLVM::AddressOfOp>
             // TODO maybe pass globals and check if it's in there already to avoid making the extra op. Might also be slower, not sure
             rewriter.replaceOpWithNewOp<amd64::AddrOfGlobal>(op, adaptor.getGlobalNameAttr());
             return mlir::success();
-        }else if(auto func = mlir::dyn_cast<mlir::func::FuncOp>(global)){
-            EXIT_TODO_X("addrof func");
+        }else if(auto func = mlir::dyn_cast<mlir::LLVM::LLVMFuncOp>(global)){
+            rewriter.replaceOpWithNewOp<amd64::MOV64ri>(op, (intptr_t) checked_dlsym(func.getName()));
+            return mlir::success();
         }
         llvm_unreachable("TODO what?");
     }
