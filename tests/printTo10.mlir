@@ -1,4 +1,4 @@
-// RUN: %FileCheckExecOutput %s
+// RUN: %Run | FileCheck %s
 
 // CHECK: 0123456789
 
