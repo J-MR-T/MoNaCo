@@ -62,7 +62,7 @@ constexpr const char* file_name(const char* path) {
 
 // exit status 2 for 2-do :)
 #define EXIT_TODO_X(x) \
-    do {errx(2, "TODO(File: %s\tLine " STRINGIZE_MACRO(__LINE__) "): " x "\n", file_name(__FILE__)); llvm_unreachable("");} while(0)
+    do {errx(2, "TODO(" /*"File: %s\t" */ "Line " STRINGIZE_MACRO(__LINE__) "): " x "\n" /*, file_name(__FILE__)*/); llvm_unreachable("");} while(0)
 
 #define EXIT_TODO EXIT_TODO_X("Not implemented yet.")
 
