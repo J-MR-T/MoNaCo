@@ -70,9 +70,10 @@ InsertBeforeQueryMap<Arg, std::string>& parse(int argc, char *argv[]) {
 
     // REFACTOR this arg string generation is not very nice
     std::stringstream ss;
-    ss << " ";
+    string separator = "\xff";
+    ss << separator;
     for (int i = 1; i < argc; ++i) {
-        ss << argv[i] << " ";
+        ss << argv[i] << separator;
     }
 
     string argString = ss.str();
@@ -102,8 +103,8 @@ cont:
     // long/short/flags
     for (const auto &arg : args) {
         if (!arg.flag()) {
-            std::regex matchShort{" -" + arg.shortOpt + "\\s*([^\\s]+)"};
-            std::regex matchLong{" --" + arg.longOpt + "(\\s*|=)([^\\s=]+)"};
+            std::regex matchShort{separator + "-" + arg.shortOpt + "" + separator + "*([^" + separator + "]+)"};
+            std::regex matchLong{separator + "--" + arg.longOpt + "(" + separator + "*|=)([^" + separator + "=]+)"};
             std::smatch match;
             if (arg.shortOpt != "" &&
                     std::regex_search(argString, match, matchShort)) {
@@ -113,8 +114,8 @@ cont:
                 parsedArgs.insert(arg, match[2]);
             }
         } else {
-            std::regex matchFlagShort{" -[a-zA-z]*" + arg.shortOpt};
-            std::regex matchFlagLong{" --" + arg.longOpt};
+            std::regex matchFlagShort{separator + "-[a-zA-z]*" + arg.shortOpt};
+            std::regex matchFlagLong{separator + "--" + arg.longOpt};
             if (std::regex_search(argString, matchFlagShort) ||
                     std::regex_search(argString, matchFlagLong)) {
                 parsedArgs.insert(arg, ""); // empty string for flags, will just be checked using .contains
