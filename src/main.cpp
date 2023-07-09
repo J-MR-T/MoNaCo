@@ -222,20 +222,23 @@ int main(int argc, char *argv[]) {
             const auto jitArgvStr = std::string{*args.jit};
             std::regex regexz("[ ]+");
             std::vector<std::string> split(std::sregex_token_iterator(jitArgvStr.begin(), jitArgvStr.end(), regexz, -1), std::sregex_token_iterator());
-            // TODO vector
-            const char** jitArgv = new const char*[split.size() + 1];
+
+            std::vector<char*> jitArgv(split.size() + 1);
             for(unsigned i = 0; i < split.size(); i++){
-                jitArgv[i] = split[i].c_str();
+                // TODO this is probably UB, find out if theres a better way
+                jitArgv[i] = const_cast<char*>(split[i].c_str());
             }
             jitArgv[split.size()] = nullptr;
 
-            // TODO technically have to be non-const
-            using main_t = int(*)(int, const char**);
+            using main_t = int(*)(int, char**);
             auto main = reinterpret_cast<main_t>(execStart);
 
-            // TODO the miniStruct test program currently overwrites the stack slot of rbp, resulting in 0xa being popped to rbp instead of the original value, that's why it segfaults after returning
-            auto ret =  main(split.size(), jitArgv);
-            delete[] jitArgv;
+            if(printOpts != PRINT_NONE)
+                llvm::outs() << termcolor::make(termcolor::red, "JIT execution output:\n");
+
+            fflush(stdout);
+
+            auto ret =  main(split.size(), jitArgv.data());
             return ret;
         }
 
