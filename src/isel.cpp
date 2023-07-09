@@ -518,20 +518,65 @@ struct LLVMGEPPattern : public mlir::OpConversionPattern<mlir::LLVM::GEPOp>{
     LLVMGEPPattern(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<mlir::LLVM::GEPOp>(tc, ctx, 1){}
 
     mlir::LogicalResult matchAndRewrite(mlir::LLVM::GEPOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
+        auto  dl = mlir::DataLayout::closest(op);
+        // TODO this is wrong, we don't want to add the size of the whole type
+
+        auto getBytesOffsetAndType = [&](auto type, unsigned elemNum) -> std::pair<unsigned, mlir::Type>  {
+            using namespace mlir::LLVM;
+
+            if(LLVMStructType structType = type.template dyn_cast<LLVMStructType>()){
+                auto structParts = structType.getBody();
+
+                // modified version of LLVMStructType::getTypeSizeInBits
+                unsigned structSizeUpToNow = 0;
+                unsigned structAlignment = 1;
+                for (auto [i, element] : llvm::enumerate(structParts)){
+                    // stop if we've reached the element we want to address
+                    if(i == elemNum)
+                        return {structSizeUpToNow, element}; // TODO hope that there's no dangling reference to element here,  but i think its a reference, and the structParts is a reference itself, so it should be fine
+
+                    unsigned elementAlignment = structType.isPacked() ? 1 : dl.getTypeABIAlignment(element);
+                    // Add padding to the struct size to align it to the abi alignment of the
+                    // element type before than adding the size of the element
+                    structSizeUpToNow = llvm::alignTo(structSizeUpToNow, elementAlignment);
+                    structSizeUpToNow += dl.getTypeSize(element);
+
+                    // The alignment requirement of a struct is equal to the strictest alignment
+                    // requirement of its elements.
+                    structAlignment = std::max(elementAlignment, structAlignment);
+                }
+                llvm_unreachable("element index out of bounds");
+            }else if(LLVMArrayType arrayType = type.template dyn_cast<LLVMArrayType>()){
+                return {dl.getTypeSize(arrayType.getElementType()) * elemNum, arrayType.getElementType()};
+            }else if(LLVMPointerType ptrType = type.template dyn_cast<LLVMPointerType>()){
+                // in this case, we just always use the source element type, because there should only ever be one index in this case
+                assert(op.getIndices().size() == 1 && "only one index is supported for pointer types");
+                return {dl.getTypeSize(op.getSourceElementType()) * elemNum, mlir::Type()};
+            }else{
+                llvm_unreachable("unhandled type");
+            }
+        };
+
         // there is no adaptor.getIndices(), the adaptor only gives access to the dynamic indices. so we iterate over all of the indices, and if we find a dynamic one, use the rewriter to remap it
         auto indices = op.getIndices();
+        // TODO check for allocas to optimize if possible
         auto currentIndexComputationValue = adaptor.getBase();
 
-        auto  dl = mlir::DataLayout::closest(op);
+        // TODO the other case is some weird vector thing, i'd rather have it fail for now, if that is encountered
         assert(op.getElemType().has_value());
-        auto elemTypeSize = dl.getTypeSize(*op.getElemType());
+        mlir::Type currentType = *op.getElemType();
 
         for(auto indexPtr_u : indices){
             assert(getTypeConverter()->convertType(currentIndexComputationValue.getType()) == amd64::gpr64Type::get(getContext()) && "only 64 bit pointers are supported");
 
             if(mlir::Value val = indexPtr_u.dyn_cast<mlir::Value>()){
+                // no dynamic struct indices please
+                assert(!mlir::isa<mlir::LLVM::LLVMStructType>(currentType) && "dynamic struct indices are not allowed, this should be fixed in the verification of GEP in the llvm dialect!");
+
                 auto scaled = rewriter.create<amd64::IMUL64rri>(op.getLoc(), rewriter.getRemappedValue(val));
-                scaled.instructionInfo().imm = elemTypeSize;
+
+                // we perform the computation analogously, but just for ptr/array types, so use 1 as the index
+                std::tie(scaled.instructionInfo().imm, currentType) = getBytesOffsetAndType(currentType, 1);
                 currentIndexComputationValue = rewriter.create<amd64::ADD64rr>(op.getLoc(), currentIndexComputationValue, scaled);
             }else{
                 // has to be integer attr otherwise
@@ -539,9 +584,8 @@ struct LLVMGEPPattern : public mlir::OpConversionPattern<mlir::LLVM::GEPOp>{
                 if(indexInt == 0)
                     continue;
 
-                auto scaled = indexInt * elemTypeSize;
                 auto addri = rewriter.create<amd64::ADD64ri>(op.getLoc(), currentIndexComputationValue);
-                addri.instructionInfo().imm = scaled;
+                std::tie(addri.instructionInfo().imm, currentType) = getBytesOffsetAndType(currentType, indexInt);
                 currentIndexComputationValue = addri;
             }
         }
@@ -596,6 +640,7 @@ struct LLVMAllocaPat : public mlir::OpConversionPattern<mlir::LLVM::AllocaOp>{
     LLVMAllocaPat(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<mlir::LLVM::AllocaOp>(tc, ctx, 1){}
 
     mlir::LogicalResult matchAndRewrite(mlir::LLVM::AllocaOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
+        // TODO maybe this can be improved when considering that the alloca is only ever used as a ptr by GEP, load, store, and ptrtoint. In this case the lea is technically only needed for ptrtoint
         auto numElemsVal = op.getArraySize();
         auto numElems = mlir::cast<mlir::LLVM::ConstantOp>(numElemsVal.getDefiningOp()).getValue().cast<mlir::IntegerAttr>().getValue().getSExtValue();
 
@@ -625,13 +670,13 @@ auto llvmMovMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
 };
 PATTERN(LLVMConstantIntPat, mlir::LLVM::ConstantOp, amd64::MOV, llvmMovMatchReplace, 2);
 
+// TODO this is obviously not finished
 struct LLVMConstantStringPat : public mlir::OpConversionPattern<mlir::LLVM::ConstantOp>{
     LLVMConstantStringPat(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<mlir::LLVM::ConstantOp>(tc, ctx, 1){}
 
     mlir::LogicalResult matchAndRewrite(mlir::LLVM::ConstantOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
         if(op.use_empty()){
             rewriter.eraseOp(op);
-            DEBUGLOG("Hiiiii");
             return mlir::success();
         }
 
@@ -652,7 +697,7 @@ struct LLVMAddrofPat : public mlir::OpConversionPattern<mlir::LLVM::AddressOfOp>
         }else if(auto func = mlir::dyn_cast<mlir::func::FuncOp>(global)){
             EXIT_TODO_X("addrof func");
         }
-        llvm_unreachable("");
+        llvm_unreachable("TODO what?");
     }
 };
 
@@ -797,6 +842,12 @@ TRUNC_PAT(32, 64);
 
 #undef TRUNC_PAT
 
+PATTERN(LLVMAddPat, mlir::LLVM::AddOp, amd64::ADD, binOpAndImmMatchReplace, 2);
+PATTERN(LLVMSubPat, mlir::LLVM::SubOp, amd64::SUB, binOpMatchReplace);
+PATTERN(LLVMAndPat, mlir::LLVM::AndOp, amd64::AND, binOpMatchReplace);
+PATTERN(LLVMOrPat,  mlir::LLVM::OrOp,  amd64::OR,  binOpMatchReplace);
+PATTERN(LLVMXOrPat, mlir::LLVM::XOrOp, amd64::XOR, binOpMatchReplace);
+
 } // end anonymous namespace
 
 
@@ -886,8 +937,13 @@ void populateFuncToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns, ml
 
 void populateLLVMToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns, mlir::TypeConverter& tc, GlobalsInfo& globals){
     patterns.add<
-        LLVMGEPPattern, LLVMAllocaPat, PATTERN_BITWIDTHS(LLVMLoadPat), PATTERN_BITWIDTHS(LLVMStorePat),
         PATTERN_BITWIDTHS(LLVMConstantIntPat),
+        PATTERN_BITWIDTHS(LLVMAddPat),
+        PATTERN_BITWIDTHS(LLVMSubPat),
+        PATTERN_BITWIDTHS(LLVMAndPat),
+        PATTERN_BITWIDTHS(LLVMOrPat),
+        PATTERN_BITWIDTHS(LLVMXOrPat),
+        LLVMGEPPattern, LLVMAllocaPat, PATTERN_BITWIDTHS(LLVMLoadPat), PATTERN_BITWIDTHS(LLVMStorePat),
         LLVMReturnPat, LLVMFuncPat,
         LLVMConstantStringPat, LLVMAddrofPat,
         PATTERN_BITWIDTHS(LLVMCallPat),
