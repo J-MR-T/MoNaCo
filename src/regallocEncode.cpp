@@ -262,10 +262,11 @@ public:
                     // as long as there are no 'op-result' interfaces in mlir, this is probably the only way to do it
                     regOfOperand = amd64::registerOf(asOpResult);
                 }else{
-                    assert(false && "Operand 0 is neither a block argument nor an op result");
+                    llvm_unreachable("Operand 0 is neither a block argument nor an op result");
                 }
-                // TODO comment this back in, as soon as there is a solution for the problem of x times the same operand
-                //assert(regOfOperand == instrOp.instructionInfo().regs.reg1 && "Operand 0 is constrained to the destination register, but operand 0 register and destination register differ");
+                // either all operands are the same, or the first operand is the destination register
+                // TODO this is just a temporary solution to catch more bugs. In actuality, it's not okay if an op has multiple equal operands and the result register differs, because if we use that value, we will use it from the wrong point
+                assert(((instrOp->getOperands().size() >= 2 && llvm::all_equal(instrOp->getOperands())) || regOfOperand == instrOp.instructionInfo().regs.reg1) && "Operand 0 is constrained to the destination register, but operand 0 register and destination register differ");
 #endif
             }
 
