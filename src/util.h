@@ -322,3 +322,24 @@ inline std::pair<uint8_t* /* buf */, uint8_t* /* bufEnd */> mmapSpace(size_t siz
 
     return {start, start + size};
 }
+
+
+inline void memcpyToLittleEndianBuffer(void* bufStart, std::integral auto value, size_t size = 0){
+     if(size == 0)
+        size = sizeof(value);
+    // all x86(-64) instructions are little endian, but in accessing allocationSize, we have to take care of endianness
+
+    if constexpr(std::endian::native == std::endian::little){
+        // little endian, so we can just copy the bytes
+        memcpy(bufStart, &value, size); // TODO can i do this in a more C++-y way?
+    }else{
+        static_assert(std::endian::native == std::endian::big, "endianness is neither big nor little, what is it then?");
+
+        // big endian, so we have to reverse the bytes
+        // this is wrong, seems that std::copy/reverse copy access the memory at +4, which is UB
+        //std::reverse_copy(&value, &value+4, start);
+        for(size_t i = 0; i < size; i++){
+            static_cast<uint8_t*>(bufStart)[i] = static_cast<uint8_t*>(&value)[size - i - 1];
+        }
+    }
+}

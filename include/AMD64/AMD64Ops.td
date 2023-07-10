@@ -82,9 +82,17 @@ def anygprType: TypeConstraint<Or<[gpr8.predicate, gpr16.predicate, gpr32.predic
 // === memory ops ===
 class MemOp<string mnemonic, list<Trait> traits = []>: AMD64_Op<mnemonic, traits # [EncodeOpInterface]>{
   code encoding = ?;
+  code getBaseGeneric = "return std::nullopt;";
+  code getIndexGeneric = "return std::nullopt;";
   let extraClassDeclaration = [{
     inline FeOp encode() {
       }] # encoding # [{
+    }
+    inline std::optional<mlir::Value> getBaseGeneric() {
+      }] # getBaseGeneric # [{
+    }
+    inline std::optional<mlir::Value> getIndexGeneric() {
+      }] # getIndexGeneric # [{
     }
   }];
 }
@@ -153,6 +161,9 @@ class MemSIBD_subset<string mnemonic, list<Trait> traits = []>: MemOp<mnemonic, 
       );
     }]>
   ], []);
+
+  let getBaseGeneric = !if(hasBase, "return getBase();", "return std::nullopt;");
+  let getIndexGeneric = !if(hasScaleIndex,  "return getIndex();", "return std::nullopt;");
 }
 
 // memory op with base, scale, index, and displacement, most general case

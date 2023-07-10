@@ -392,7 +392,9 @@ public:
             // hexdump the bytes:
             llvm::outs() << termcolor::make(termcolor::magenta, sym) << ": ";
             for(uint8_t* cur = start; cur < start + len; cur++){
-                llvm::outs() << llvm::format_hex_no_prefix(*cur, 4) << " ";
+                llvm::outs() << llvm::format_hex_no_prefix(*(cur++), 2);
+                if(cur < start + len)
+                    llvm::outs() << llvm::format_hex_no_prefix(*cur, 2) << " ";
             }
             // as string:
             llvm::outs() << "(\"";
@@ -407,7 +409,11 @@ public:
                     llvm::outs() << ".";
                 }
             }
-            llvm::outs() << "\")\n";
+            llvm::outs() << "\")";
+            if(ArgParse::args.debug()){
+                llvm::outs() << "\t\t" << "#byte " << llvm::format_hex((cur - bufStart), 0);
+            }
+            llvm::outs() << "\n";
 
             cur += global.bytes.size();
         }
@@ -653,13 +659,24 @@ struct AbstractRegAllocerEncoder{
                         for(auto [i, operand] : llvm::enumerate(instr->getOperands())){
                             // TODO BIIIIG problem: We're setting the register of the value (via registerOf) to be the one it's moved to, which makes sense for the most part, we can overwrite it because it's only needed once, but not if the operation has the same SSA value as input multiple times. The encoder will then get the idea that all operands are in the same register. This is correct for their values, but as that register might get overwritten in the result, we have a huge mess on our hands in that case.
 
-                            // don't load memory operands
                             // TODO is this enough?
                             assert((!operand.isa<mlir::OpResult>() || !mlir::isa<amd64::AddrOfGlobal>(operand.getDefiningOp())) && "AddrOfGlobal should have been replaced at the time of use");
-                            if(operand.getType().isa<amd64::memLocType>())
-                                continue;
 
-                            loadValueForUse(operand, i, instr.getOperandRegisterConstraints()[i]);
+                            auto operandRegConstraint = instr.getOperandRegisterConstraints()[i];
+
+                            // for memloc operands, we have to load all register values, the base and the index, into registers
+                            if(mlir::isa<mlir::OpResult>(operand)) /* && */ if(auto memOp = mlir::dyn_cast<amd64::EncodeOpInterface>(operand.getDefiningOp())){
+                                if(auto base = memOp.getBaseGeneric().value_or(nullptr)){
+                                    loadValueForUse(base, 0, operandRegConstraint);
+                                    if(auto index = memOp.getIndexGeneric().value_or(nullptr))
+                                        loadValueForUse(index, 1, operandRegConstraint);
+                                }else if(auto index = memOp.getIndexGeneric().value_or(nullptr)){
+                                    loadValueForUse(index, 0, operandRegConstraint);
+                                }
+                                continue;
+                            }
+
+                            loadValueForUse(operand, i, operandRegConstraint);
                         }
 
                         allocateEncodeValueDef(instr);
@@ -796,21 +813,7 @@ struct AbstractRegAllocerEncoder{
             // immediate encoding is tricky, we can't just encode a bigger immediate into a smaller space, and if we get a bigger space at the start, reencoding with a smaller immediate changes the operand size byte again and now we have too many bytes
             // -> patch in the individual immediate bytes
 
-            auto patch4ByteImm = [](uint8_t* start, uint32_t value){
-                // all x86(-64) instructions are little endian, but in accessing allocationSize, we have to take care of endianness
-
-                if constexpr(std::endian::native == std::endian::little){
-                    // little endian, so we can just copy the bytes
-                    memcpy(start, &value, 4); // TODO can i do this in a more C++-y way?
-                }else{
-                    static_assert(std::endian::native == std::endian::big, "endianness is neither big nor little, what is it then?");
-
-                    // big endian, so we have to reverse the bytes
-                    // TODO this is wrong, seems that std::copy/reverse copy access the memory at +4, which is UB
-                    //std::reverse_copy(&value, &value+4, start);
-                    static_assert(false, "TODO");
-                }
-            };
+            auto patch4ByteImm = [&](uint8_t* start, uint32_t val){ memcpyToLittleEndianBuffer(start, val); };
             // allocation
             // `sub rax, 0x01000000` is: 0x 48 81 EC 00 00 00 01
             patch4ByteImm(stackAllocationInstruction+3, allocationSize);

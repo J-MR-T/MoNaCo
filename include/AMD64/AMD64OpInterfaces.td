@@ -31,7 +31,9 @@ def EncodeOpInterface : OpInterface<"EncodeOpInterface">{
   }];
 
   let methods = [
-    InterfaceMethod<"TODO", "FeOp", "encode">
+    InterfaceMethod<"TODO", "FeOp", "encode">,
+    InterfaceMethod<"TODO", "std::optional<mlir::Value>", "getBaseGeneric">,
+    InterfaceMethod<"TODO", "std::optional<mlir::Value>", "getIndexGeneric">,
   ];
 
   let cppNamespace = "::amd64";
