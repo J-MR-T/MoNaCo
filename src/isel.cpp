@@ -1,6 +1,7 @@
-#include <llvm/Support/Debug.h>
+#include <span>
 #include <thread>
 
+#include <llvm/Support/Debug.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/ControlFlow/IR/ControlFlow.h>
@@ -97,6 +98,7 @@ struct MatchRMI : public mlir::OpConversionPattern<OpTy>{
     PATTERN_FOR_BITWIDTH(64, patternName, opTy, opPrefixToReplaceWith, lambda,## __VA_ARGS__ )
 
 // TODO technically I could replace the OpAdaptor template arg everywhere with a simple `auto adaptor` parameter
+// TODO even better: use a typename T for the op, and then use T::Adaptor for the adaptor
 
 // TODO an alternative would be to generate custom builders for the RR versions, which check if their argument is a movxxri and then fold it into the RR, resulting in an RI version. That probably wouldn't work because the returned thing would of course expect an RR version, not an RI version
 auto binOpMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
@@ -554,9 +556,15 @@ struct LLVMGEPPattern : public mlir::OpConversionPattern<LLVM::GEPOp>{
                 return {dl.getTypeSize(arrayType.getElementType()) * elemNum, arrayType.getElementType()};
             }else if(LLVMPointerType ptrType = type.template dyn_cast<LLVMPointerType>()){
                 // in this case, we just always use the source element type, because there should only ever be one index in this case
-                assert(op.getIndices().size() == 1 && "only one index is supported for pointer types");
+                assert(op.getIndices().size() == 1 && "only one index is supported for pointer element types");
                 return {dl.getTypeSize(op.getSourceElementType()) * elemNum, mlir::Type()};
+            }else if(IntegerType intType = type.template dyn_cast<IntegerType>()){
+                // in this case, we just always use the source element type, because there should only ever be one index in this case
+                assert(op.getIndices().size() == 1 && "only one index is supported for int element types");
+                return {dl.getTypeSize(intType) * elemNum, mlir::Type()};
             }else{
+                op.dump();
+                type.dump();
                 llvm_unreachable("unhandled type");
             }
         };
@@ -820,8 +828,7 @@ struct LLVMGlobalPat : public mlir::OpConversionPattern<LLVM::GlobalOp>{
                 llvm_unreachable("sad");
             }
         }else{
-            op.dump();
-            llvm_unreachable("sad2");
+            addr = (intptr_t) checked_dlsym(symbol);
         }
 
     finish:
@@ -847,13 +854,133 @@ PATTERN(LLVMICmpPat, LLVM::ICmpOp, amd64::CMP, cmpIMatchReplace<LLVM::ICmpPredic
 
 using LLVMBrPat = MatchRMI<LLVM::BrOp, 64, branchMatchReplace, amd64::JMP, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, ignoreBitwidthMatchLambda>;
 
-struct LLVMCondBrPat: public mlir::OpConversionPattern<LLVM::CondBrOp> {
+struct LLVMCondBrPat : public mlir::OpConversionPattern<LLVM::CondBrOp> {
     LLVMCondBrPat(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<LLVM::CondBrOp>(tc, ctx, 3){}
 
     mlir::LogicalResult matchAndRewrite(LLVM::CondBrOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
         return condBrMatchReplace<LLVM::ICmpOp, decltype(this), OpAdaptor>(this, op, adaptor, rewriter);
     }
 };
+
+struct CaseInfo{
+    int64_t comparisonValue;
+    mlir::Block* block;
+    mlir::OperandRange operands;
+};
+
+// TODO maybe do this non-recursively at some point, but that's too annoying for now
+template<typename CMPri>
+void binarySearchSwitchLowering(mlir::Location loc, mlir::ConversionPatternRewriter& rewriter, mlir::Value adaptedValue, CaseInfo defaultDest, size_t pivotIndex, std::span<CaseInfo> caseInfoSection){
+    DEBUGLOG("binarySearchSwitchLowering: pivotIndex = " << pivotIndex << ", caseInfoSection.size() = " << caseInfoSection.size());
+    auto* currentBlock = rewriter.getInsertionBlock();
+
+    // TODO recursion end condition 1
+    if(caseInfoSection.empty() || pivotIndex >= caseInfoSection.size()){
+        // jump to default block on empty case section
+        currentBlock->replaceAllUsesWith(defaultDest.block);
+        currentBlock->erase();
+        return;
+    }
+
+    auto pivotInfo = caseInfoSection[pivotIndex];
+
+    // if the value is equal, jump to the block
+    auto cmp = rewriter.create<CMPri>(loc, adaptedValue);
+    cmp.instructionInfo().imm = pivotInfo.comparisonValue;
+
+    auto createBlock = [&](mlir::Block* insertAfter){
+        // make a new block, but don't let the rewriter do it, because it would switch to it immediately, we want to do that manually (this is akin to OpBuilder::createBlock)
+        auto* newBlock = new mlir::Block();
+        // no arguments to this block
+        // insert it after the current block
+        currentBlock->getParent()->getBlocks().insertAfter(insertAfter->getIterator(), newBlock); // TODO the block ordering of this is no quite right yet
+        rewriter.notifyBlockCreated(newBlock);
+        return newBlock;
+    };
+
+    // if the size is 1, we can simply jump to the block or the default block, recursion end condition 2
+    if(caseInfoSection.size() == 1){
+        rewriter.create<amd64::JE>(loc, pivotInfo.operands, defaultDest.operands, pivotInfo.block, defaultDest.block);
+        return;
+    }
+
+    auto* searchLowerOrUpperHalf = createBlock(currentBlock);
+    auto* searchLowerHalf = createBlock(searchLowerOrUpperHalf); // TODO probably create these immediately before the recursive call, to optimize the block ordering
+    auto* searchUpperHalf = createBlock(searchLowerHalf);
+
+    rewriter.create<amd64::JE>(loc, pivotInfo.operands, mlir::ValueRange(), pivotInfo.block, searchLowerOrUpperHalf);
+
+    // if the value is less than the pivot, search the lower half, otherwise search the upper half
+    rewriter.setInsertionPointToEnd(searchLowerOrUpperHalf);
+    rewriter.create<amd64::JL>(loc, mlir::ValueRange(), mlir::ValueRange(), searchLowerHalf, searchUpperHalf);
+
+    rewriter.setInsertionPointToEnd(searchLowerHalf);
+    binarySearchSwitchLowering<CMPri>(loc, rewriter, adaptedValue, defaultDest, pivotIndex/2, caseInfoSection.first(pivotIndex));
+
+    rewriter.setInsertionPointToEnd(searchUpperHalf);
+    // TODO check that this is modmod  done using a bitwise and with 1
+    binarySearchSwitchLowering<CMPri>(loc, rewriter, adaptedValue, defaultDest, (pivotIndex % 2 == 1) ? (pivotIndex/2) : (pivotIndex/2 - 1) , caseInfoSection.last(caseInfoSection.size() - pivotIndex - 1 /* leave out the pivot itself */));
+}
+
+
+// TODO extend this to mlir.cf.switch
+auto switchMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
+     typename CMPrr, typename CMPri, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE
+     >(LLVM::SwitchOp op, LLVM::SwitchOp::Adaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
+
+    auto caseValuesOpt = op.getCaseValues();
+    if(!caseValuesOpt.has_value())
+        return rewriter.notifyMatchFailure(op, "switches without case values are not supported yet");
+
+    // TODO case operands/block args
+
+    // lower the switch using binary search, so sort the cases
+
+    auto caseValues = mlir::cast<mlir::DenseIntElementsAttr>(*caseValuesOpt);
+    // TODO would be nicer to have the right int type here, maybe template arg this?
+    llvm::SmallVector<CaseInfo, 8> caseValuesIntSorted;
+    caseValuesIntSorted.reserve(caseValues.size());
+    for(auto [caseValue, block, operands] : llvm::zip(caseValues, op.getCaseDestinations(), op.getCaseOperands()))
+        caseValuesIntSorted.push_back({caseValue.getSExtValue(), block, operands});
+
+    // TODO this might be super slow
+    std::sort(caseValuesIntSorted.begin(), caseValuesIntSorted.end(), [](auto a, auto b){return a.comparisonValue < b.comparisonValue;});
+
+    // now do the actual binary search
+    auto pivotIndex = caseValuesIntSorted.size()/2;
+
+    auto defaultCase = op.getDefaultDestination();
+    assert(defaultCase && "switches without default cases are not allowed (I think)");
+    binarySearchSwitchLowering<CMPri>(op->getLoc(), rewriter, adaptor.getValue(), {0, defaultCase, op.getDefaultOperands()}, pivotIndex, caseValuesIntSorted);
+
+    rewriter.eraseOp(op);
+
+    return mlir::success();
+};
+
+PATTERN(LLVMSwitchPat, LLVM::SwitchOp, amd64::CMP, switchMatchReplace, 1, /* bitwidth matcher: basically default, but we cant use the result */ []<unsigned bitwidth, typename thisType, typename OpAdaptor>(thisType thiis, LLVM::SwitchOp op, OpAdaptor, mlir::ConversionPatternRewriter& rewriter){
+    // TODO this is almost the same as defaultBitwidthMatchLambda, try to merge them
+    mlir::Type opType = op.getValue().getType();
+
+    auto type = thiis->getTypeConverter()->convertType(opType);
+    // TODO might be slow
+    if(!type)
+        return rewriter.notifyMatchFailure(op, "type conversion failed");
+
+    auto typeToMatch= type.template dyn_cast<amd64::RegisterTypeInterface>();
+    //assert(typeToMatch && "expected register type");
+    if(!typeToMatch)
+        return rewriter.notifyMatchFailure(op, "expected register type");
+    // TODO this assertion currently fails wrongly on a conditional branch
+    //assert((op->getNumOperands() == 0 || typeToMatch == thiis->getTypeConverter()->convertType(op->getOperand(0).getType()).template dyn_cast<amd64::RegisterTypeInterface>()) && "this simple bitwidth matcher assumes that the type of the op and the type of the operands are the same");
+
+    if(typeToMatch.getBitwidth() != bitwidth)
+        return rewriter.notifyMatchFailure(op, "bitwidth mismatch");
+
+    return mlir::success();
+});
+
+// Arithmetic stuff
 
 auto llvmGetIn = [](auto adaptorOrOp){ return adaptorOrOp.getArg(); };
 auto llvmGetOut = [](auto adaptorOrOp){ return adaptorOrOp.getRes(); };
@@ -1025,8 +1152,7 @@ void populateLLVMToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns, ml
         LLVMReturnPat, LLVMFuncPat,
         LLVMConstantStringPat, LLVMAddrofPat,
         PATTERN_BITWIDTHS(LLVMCallPat),
-        LLVMBrPat,
-        LLVMCondBrPat,
+        LLVMBrPat, LLVMCondBrPat, PATTERN_BITWIDTHS(LLVMSwitchPat),
         PATTERN_BITWIDTHS(LLVMICmpPat),
         LLVMZExtPat16_8,  LLVMZExtPat32_8,  LLVMZExtPat64_8,  LLVMZExtPat32_16,  LLVMZExtPat64_16,  LLVMZExtPat64_32,
         LLVMSExtPat16_8,  LLVMSExtPat32_8,  LLVMSExtPat64_8,  LLVMSExtPat32_16,  LLVMSExtPat64_16,  LLVMSExtPat64_32,
