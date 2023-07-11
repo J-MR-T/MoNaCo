@@ -1,4 +1,4 @@
-// RUN: %Run | FileCheck %s
+// RUN: %monaco --jit main %s | FileCheck %s
 
 // CHECK: 0123456789
 

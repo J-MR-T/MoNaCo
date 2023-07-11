@@ -23,7 +23,6 @@ int main(int argc, char *argv[]) {
 #define MEASURED_TIME_AS_SECONDS(point, iterations) std::chrono::duration_cast<std::chrono::duration<double>>(point ## _end - point ## _start).count()/(static_cast<double>(iterations))
 
     auto& features = ArgParse::features;
-    auto& enabled = ArgParse::enabled;
 
     ArgParse::parse(argc, argv);
 
@@ -50,7 +49,7 @@ int main(int argc, char *argv[]) {
     }
 
     if(args.forceFallback())
-        enabled[features["force-fallback"]] = false;
+        features["force-fallback"] = true;
 
     if(args.featuresArg()){
         auto charRange = llvm::make_range(std::begin(*args.featuresArg), std::end(*args.featuresArg));
@@ -58,11 +57,11 @@ int main(int argc, char *argv[]) {
         unsigned lastStart = 0;
 
         auto handleFeature = [&](auto index){
-            auto feature = std::string_view{charRange.begin() + lastStart, charRange.begin() + index};
-            if(feature.starts_with("no-"))
-                enabled[features[feature.substr(3)]] = false;
+            auto feature_strv = std::string_view{charRange.begin() + lastStart, charRange.begin() + index};
+            if(feature_strv.starts_with("no-"))
+                features[feature_strv.substr(3)] = false;
             else
-                enabled[features[feature]] = true;
+                features[feature_strv] = true;
             lastStart = index + 1;
         };
 
@@ -76,7 +75,7 @@ int main(int argc, char *argv[]) {
 
         DEBUGLOG("Features: ");
         for(auto feature : features){
-            DEBUGLOG(feature.name << ": " << enabled[features[feature.name]]);
+            DEBUGLOG(feature.name << ": " << (features[feature.name] ? "true" : "false"));
         }
     }
 
@@ -150,7 +149,7 @@ int main(int argc, char *argv[]) {
             modClones[i] = mlir::OwningOpRef<mlir::ModuleOp>(owningModRef->clone());
         }
 
-        if(args.forceFallback()){
+        if(features["force-fallback"]){
             llvm::TargetOptions opt;
             opt.EnableFastISel = true;
 

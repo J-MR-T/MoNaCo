@@ -228,6 +228,10 @@ namespace ArgParse{
             constexpr operator unsigned() const{
                 return index;
             }
+
+            operator bool&() const;
+
+            bool operator=(bool enable) const;
         };
 
         static constexpr unsigned size = N;
@@ -274,6 +278,17 @@ namespace ArgParse{
     );
 
     extern std::array<bool, features.size> enabled;
+
+    template<unsigned N>
+    Features<N>::FeatureIndex::operator bool&() const{
+        return enabled[index];
+    }
+
+    template<unsigned N>
+    bool Features<N>::FeatureIndex::operator=(bool enable) const{
+        return enabled[index] = enable;
+    }
+
     enum kind : uint32_t{
         REQUIRED = 0x1,
         FLAG = 0x2,
@@ -331,7 +346,7 @@ namespace ArgParse{
         const Arg featuresArg{"f",   "features",       0, ([](){
             std::string str = "Comma separated list of features:\n"s;
             for(const auto& f: features)
-                str += "- " + std::string{f.name} + ": " + std::string{f.description} + "(default: " + (enabled[features[f.name]] ? "true" : "false" ) + ")\n";
+                str += "- " + std::string{f.name} + ": " + std::string{f.description} + "(default: " + (features[f.name] ? "true" : "false" ) + ")\n";
 
             return str;
             })()
