@@ -22,6 +22,8 @@ int main(int argc, char *argv[]) {
 
 #define MEASURED_TIME_AS_SECONDS(point, iterations) std::chrono::duration_cast<std::chrono::duration<double>>(point ## _end - point ## _start).count()/(static_cast<double>(iterations))
 
+    auto& features = ArgParse::features;
+    auto& enabled = ArgParse::enabled;
 
     ArgParse::parse(argc, argv);
 
@@ -34,9 +36,8 @@ int main(int argc, char *argv[]) {
 
     enum {PRINT_NONE = 0x0, PRINT_INPUT = 0x1, PRINT_ISEL = 0x2, PRINT_ASM = 0x4};
     int printOpts = PRINT_NONE;
-    if(args.fallback() && args.noFallback()){
-        errx(EXIT_FAILURE, "Cannot specify both --fallback and --no-fallback");
-    }else if((*args.input).empty()){
+    // TODO rework once ArgParse::features is done
+    if((*args.input).empty()){
         errx(EXIT_FAILURE, "Input file cannot be empty");
     }else if(args.output() && (*args.output).empty()){
         errx(EXIT_FAILURE, "Output file cannot be empty");
@@ -46,6 +47,37 @@ int main(int argc, char *argv[]) {
         errx(EXIT_FAILURE, "Benchmarking the JIT execution time is not yet supported");
     }else if(args.jit() && *args.jit == ""){
         errx(EXIT_FAILURE, "Cannot JIT without arguments");
+    }
+
+    if(args.forceFallback())
+        enabled[features["force-fallback"]] = false;
+
+    if(args.featuresArg()){
+        auto charRange = llvm::make_range(std::begin(*args.featuresArg), std::end(*args.featuresArg));
+        auto charIndexRange = llvm::enumerate(charRange);
+        unsigned lastStart = 0;
+
+        auto handleFeature = [&](auto index){
+            auto feature = std::string_view{charRange.begin() + lastStart, charRange.begin() + index};
+            if(feature.starts_with("no-"))
+                enabled[features[feature.substr(3)]] = false;
+            else
+                enabled[features[feature]] = true;
+            lastStart = index + 1;
+        };
+
+        for(auto it = charIndexRange.begin(); it != charIndexRange.end(); ++it){
+            auto [index, c] = *it;
+            // look for ','
+            if(c == ',')
+                handleFeature(index);
+        }
+        handleFeature((*args.featuresArg).size());
+
+        DEBUGLOG("Features: ");
+        for(auto feature : features){
+            DEBUGLOG(feature.name << ": " << enabled[features[feature.name]]);
+        }
     }
 
     if(args.print()){
@@ -118,7 +150,7 @@ int main(int argc, char *argv[]) {
             modClones[i] = mlir::OwningOpRef<mlir::ModuleOp>(owningModRef->clone());
         }
 
-        if(args.fallback()){
+        if(args.forceFallback()){
             llvm::TargetOptions opt;
             opt.EnableFastISel = true;
 
@@ -184,7 +216,7 @@ int main(int argc, char *argv[]) {
             llvm::outs() << "Combining these two times gives " << MEASURED_TIME_AS_SECONDS(iselMLIR, iterations) + MEASURED_TIME_AS_SECONDS(regallocMLIR, iterations) << " seconds on average, be aware that the last three measurements do not represent realistic use-case of these functions!\n";
             llvm::outs() << "Experimental: Liveness analysis took " << MEASURED_TIME_AS_SECONDS(liveness, iterations) << " seconds on average over " << iterations << " iterations\n";
         }
-    }else if(args.fallback()){
+    }else if(args.forceFallback()){
         auto obj = llvm::SmallVector<char, 0>();
         if(fallbackToLLVMCompilation(*owningModRef, obj))
             return EXIT_FAILURE;

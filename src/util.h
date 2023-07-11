@@ -6,6 +6,9 @@
 #include <string>
 #include <err.h>
 #include <sys/mman.h>
+#include <string_view>
+#include <typeinfo>
+#include <numeric>
 
 #pragma GCC diagnostic push 
 #pragma GCC diagnostic ignored "-Wunused-parameter"
@@ -20,9 +23,8 @@
 #include <mlir/IR/OwningOpRef.h>
 #pragma GCC diagnostic pop
 
-
 // macros etc.
-using namespace std::literals::string_literals;
+using namespace std::literals;
 
 #define STRINGIZE(x) #x
 #define STRINGIZE_MACRO(x) STRINGIZE(x)
@@ -202,6 +204,76 @@ template struct InsertBeforeQueryMap<int, llvm::SmallString<32>>;
 // === argparse === 
 
 namespace ArgParse{
+    struct Feature{
+        std::string_view name;
+        std::string_view description;
+        bool defaultEnabled;
+
+        constexpr Feature() = default;
+        constexpr Feature(const std::string_view name, std::string_view description, bool defaultEnabled) : name(name), description(description), defaultEnabled(defaultEnabled){}
+    };
+
+    template<unsigned N>
+    struct Features{
+        struct FeatureIndex{
+            unsigned index;
+            Feature feature;
+
+            constexpr FeatureIndex(unsigned index, Feature feature) : index(index), feature(feature){}
+
+            constexpr operator Feature() const{
+                return feature;
+            }
+
+            constexpr operator unsigned() const{
+                return index;
+            }
+        };
+
+        static constexpr unsigned size = N;
+
+        Feature arr[N];
+
+        constexpr Features() : arr(){}
+
+        constexpr void insert(Feature f, unsigned pos){
+            arr[pos] = f;
+        }
+
+        constexpr auto operator[](std::string_view name) const{
+            unsigned i = 0;
+            for(auto& f : arr){
+                if(f.name == name)
+                    return FeatureIndex(i, f);
+                i++;
+            }
+            errx(EXIT_FAILURE, "Feature %s not found", name.data());
+        }
+
+        template<typename... T>
+        constexpr Features(T... features) : arr(features...){
+            static_assert(sizeof...(features) == N, "Feature array size mismatch");
+        }
+
+        constexpr auto begin() const{
+            return &arr[0];
+        }
+
+        constexpr auto end() const{
+            return &arr[N];
+        }
+    };
+
+    template<typename... T> 
+    Features(T&&...) -> Features<sizeof...(T)>;
+
+    constexpr auto features = Features(
+        Feature("force-fallback", "Force fallback to MLIR module compilation through the LLVM toolchain",                         false),
+        Feature("fallback",       "Fall back to MLIR module compilation through the LLVM toolchain if MoNaCo compilation failes", true),
+        Feature("codegen-dce",    "Eliminate dead instructions generated in codegen",                                             true)
+    );
+
+    extern std::array<bool, features.size> enabled;
     enum kind : uint32_t{
         REQUIRED = 0x1,
         FLAG = 0x2,
@@ -244,23 +316,30 @@ namespace ArgParse{
     };
 
     extern InsertBeforeQueryMap<Arg, std::string> parsedArgs;
-    
+
     // struct for all possible arguments
     const struct {
-        const Arg help{      "h", "help",           0, "Show this help message and exit",                                                          FLAG};
-        const Arg input{     "i", "input",          1, "Input file"                     ,                                                          REQUIRED};
-        const Arg output{    "o", "output",         2, "Output file"};
-        const Arg fallback{  "F", "force-fallback", 0, "Force fallback to MLIR module compilation through the LLVM toolchain",                     FLAG};
-        const Arg noFallback{"n", "no-fallback",    0, "Do not fallback to MLIR module compilation through the LLVM toolchain",                    FLAG};
-        const Arg print{     "p", "print",          0, "Print parts of the compilation process. Expects 'input', 'isel', 'asm', or any combination of those as an argument"};
-        const Arg debug{     "d", "debug",          0, "Print maximum debug information (set llvm::DebugFlag and all -p options)",                 FLAG};
-        const Arg benchmark{ "b", "benchmark",      0, "Benchmark the compiler",                                                                   FLAG};
-        const Arg iterations{"",  "iterations",     0, "Number of iterations for benchmarking (default: 1)"};
-        const Arg jit{       "j", "jit",            0, "JIT compile, i.e. JIT link and immediately execute the compiled code, with the given (space separated) argvs"};
+        const Arg help{      "h",    "help",           0, "Show this help message and exit",                                                                                     FLAG};
+        const Arg input{     "i",    "input",          1, "Input file"                     ,                                                          REQUIRED};
+        const Arg output{    "o",    "output",         2, "Output file"};
+        const Arg print{     "p",    "print",          0, "Print parts of the compilation process. Expects 'input', 'isel', 'asm', or any combination of those as an argument"};
+        const Arg debug{     "d",    "debug",          0, "Print maximum debug information (set llvm::DebugFlag and all -p options)",                                            FLAG};
+        const Arg benchmark{ "b",    "benchmark",      0, "Benchmark the compiler",                                                                                              FLAG};
+        const Arg iterations{"",     "iterations",     0, "Number of iterations for benchmarking (default: 1)"};
+        const Arg jit{       "j",    "jit",            0, "JIT compile, i.e. JIT link and immediately execute the compiled code, with the given (space separated) argvs"};
+        const Arg forceFallback{"F", "force-fallback", 0, "shorthand for adding 'force-fallback' to the list of features",                                                       FLAG};
+        const Arg featuresArg{"f",   "features",       0, ([](){
+            std::string str = "Comma separated list of features:\n"s;
+            for(const auto& f: features)
+                str += "- " + std::string{f.name} + ": " + std::string{f.description} + "(default: " + (enabled[features[f.name]] ? "true" : "false" ) + ")\n";
+
+            return str;
+            })()
+        };
 
         const Arg sentinel{"", "", 0, ""};
 
-        const Arg* const all[11] = {&help, &input, &output, &fallback, &noFallback, &print, &debug, &benchmark, &iterations, &jit, &sentinel};
+        const Arg* const all[11] = {&help, &input, &output, &forceFallback, &print, &debug, &benchmark, &iterations, &jit, &featuresArg, &sentinel};
 
         // iterator over all
         const Arg* begin() const{

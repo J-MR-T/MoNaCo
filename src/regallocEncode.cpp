@@ -650,8 +650,9 @@ struct AbstractRegAllocerEncoder{
 
                         // ignore the instruction, if it's pure and it's uses are empty
                         // TODO might cost performance, maybe remove for quick allocer
-                        //if(mlir::isOpTriviallyDead(&op)) [[unlikely]]
-                        //    continue;
+                        // TODO also check that the enabled check doesn't cost performance. But it should really only be a single bool comparison, as the rest of that is constexpr, and that comparison will always be predicted correctly after the first branch miss
+                        if(ArgParse::enabled[ArgParse::features["codegen-dce"]] && mlir::isOpTriviallyDead(&op)) [[unlikely]]
+                            continue;
 
                         // two operands max for now
                         // TODO make this nicer

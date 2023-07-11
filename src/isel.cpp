@@ -810,13 +810,17 @@ struct LLVMGlobalPat : public mlir::OpConversionPattern<LLVM::GlobalOp>{
                 bytes.resize(size);
                 memcpyToLittleEndianBuffer(bytes.data(), intAttr.getValue().getSExtValue(), size);
             }else if(auto floatAttr = attr.dyn_cast<mlir::FloatAttr>()){
+                op.dump();
                 EXIT_TODO;
             }else if(auto funcAttr = attr.dyn_cast<mlir::FlatSymbolRefAttr>()){
+                op.dump();
                 EXIT_TODO;
             }else{
+                op.dump();
                 llvm_unreachable("sad");
             }
         }else{
+            op.dump();
             llvm_unreachable("sad2");
         }
 

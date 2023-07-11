@@ -1,5 +1,5 @@
 // RUN: %monaco -p isel %s | FileCheck --check-prefix ISEL %s
-// RUN: %FileCheckAsm -vv --check-prefix ASM %s
+// RUN: %monaco -fno-codegen-dce -pasm %s | FileCheck -vv --check-prefix ASM %s
 
 module {
   // ISEL: giveI8

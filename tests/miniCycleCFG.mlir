@@ -1,4 +1,4 @@
-// RUN: %FileCheckAsm %s
+// RUN: %monaco -fno-codegen-dce -pasm %s | FileCheck %s
 
 // correct RPO is bb0, bb1, bb2, and it shouldn't die doing it :)
 module {

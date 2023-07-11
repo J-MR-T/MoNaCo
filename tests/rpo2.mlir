@@ -1,9 +1,9 @@
 // COM: only one of these continued run lines will ever work, and at least one should work. So run all 4, the sums of their exit codes should be 3, because one will work
-// RUN: sum=0;                                                                       \
-// RUN: %FileCheckAsm --check-prefix CHECK-1 %s; sum=$(expr $(echo $?) + $sum); \
-// RUN: %FileCheckAsm --check-prefix CHECK-2 %s; sum=$(expr $(echo $?) + $sum); \
-// RUN: %FileCheckAsm --check-prefix CHECK-3 %s; sum=$(expr $(echo $?) + $sum); \
-// RUN: %FileCheckAsm --check-prefix CHECK-4 %s; sum=$(expr $(echo $?) + $sum); \
+// RUN: sum=0;                                                                                                  \
+// RUN: %monaco -fno-codegen-dce -pasm %s | FileCheck --check-prefix CHECK-1 %s; sum=$(expr $(echo $?) + $sum); \
+// RUN: %monaco -fno-codegen-dce -pasm %s | FileCheck --check-prefix CHECK-2 %s; sum=$(expr $(echo $?) + $sum); \
+// RUN: %monaco -fno-codegen-dce -pasm %s | FileCheck --check-prefix CHECK-3 %s; sum=$(expr $(echo $?) + $sum); \
+// RUN: %monaco -fno-codegen-dce -pasm %s | FileCheck --check-prefix CHECK-4 %s; sum=$(expr $(echo $?) + $sum); \
 // RUN: [ $sum -eq 3 ]
 
 // COM: Dot: https://dreampuf.github.io/GraphvizOnline/#digraph%20G%20%7B%0A%0A%20%20bb0%20-%3E%20bb1%3B%0A%20%20bb0%20-%3E%20bb2%3B%0A%20%20bb1%20-%3E%20bb2%3B%0A%20%20bb2%20-%3E%20bb3%20-%3E%20bb4%20-%3E%20bb2%3B%0A%20%20bb2%20-%3E%20bb5%3B%0A%20%20bb1%20-%3E%20bb6%3B%0A%0A%20%20bb0%20%5Bshape%3DMdiamond%5D%3B%0A%20%20bb5%2C%20bb6%20%5Bshape%3DMsquare%5D%3B%0A%7D

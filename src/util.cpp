@@ -29,6 +29,15 @@ namespace ArgParse{
 
 InsertBeforeQueryMap<Arg, std::string> parsedArgs{};
 
+std::array<bool, features.size> enabled = ([](){
+    std::array<bool, features.size> arr;
+    for(unsigned i = 0; i < features.size; i++)
+        arr[i] = features.arr[i].defaultEnabled;
+
+    return arr;
+})();
+
+
 void printHelp(const char *argv0) {
     auto colorRed = [](const char *str) {
         std::string red = "\x1b[0;31m";
@@ -62,7 +71,9 @@ void printHelp(const char *argv0) {
     }
 
     llvm::errs() << "\nExamples: \n"
-        << "  " << argv0 << " -i input.mlir\n";
+        << "  " << argv0 << " -i input.mlir\n"
+        << "  " << argv0 << " input.mlir -fno-codegen-dce\n"
+        << "  " << argv0 << " -fforce-fallback,fallback\n";
 }
 
 InsertBeforeQueryMap<Arg, std::string>& parse(int argc, char *argv[]) {
