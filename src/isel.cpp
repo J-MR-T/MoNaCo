@@ -659,7 +659,7 @@ struct LLVMAllocaPat : public mlir::OpConversionPattern<mlir::LLVM::AllocaOp>{
         auto numElemsVal = op.getArraySize();
         auto numElems = mlir::cast<LLVM::ConstantOp>(numElemsVal.getDefiningOp()).getValue().cast<mlir::IntegerAttr>().getValue().getSExtValue();
 
-
+        // TODO AllocaOp::print does this a bit differently -> use that?
         auto  dl = mlir::DataLayout::closest(op);
         assert(op.getElemType().has_value());
         auto elemSize = dl.getTypeSize(*op.getElemType());
@@ -773,6 +773,7 @@ struct LLVMGlobalPat : public mlir::OpConversionPattern<LLVM::GlobalOp>{
         auto symbol = op.getSymName();
         if(op.isDeclaration()){
             // this address is allowed to be 0, checked_dlsym handles an actual error through dlerror()
+            DEBUGLOG("external symbol: " << symbol << ", getting address from environment");
             addr = (intptr_t) checked_dlsym(symbol);
         }
 
@@ -831,6 +832,7 @@ struct LLVMGlobalPat : public mlir::OpConversionPattern<LLVM::GlobalOp>{
                 llvm_unreachable("sad");
             }
         }else{
+            DEBUGLOG("external symbol: " << symbol << ", getting address from environment");
             addr = (intptr_t) checked_dlsym(symbol);
         }
 

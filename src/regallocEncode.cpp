@@ -86,25 +86,31 @@ private:
 
 public:
     /// returns whether or not this failed
+    /// TODO rework the whole return failed thing in encoding, encoding is technically never suppsoed to fail
     template<typename... args_t>
     bool encodeRaw(FeMnem mnem, args_t... args){
         // TODO performance test if this slows it down
         if (cur >= bufEnd)
             errx(EXIT_FAILURE, "Critical: Out of memory");
 
+        bool failed = false;
+
         // this looks very ugly, but is a result of having to interface with the C API. It's not actually slow, so this is annoying, but not a big problem
         if constexpr(sizeof...(args) == 0)
-            return fe_enc64(&cur, mnem);
+            failed = fe_enc64(&cur, mnem);
         else if constexpr(sizeof...(args) == 1)
-            return fe_enc64(&cur, mnem, args..., 0, 0, 0);
+            failed = fe_enc64(&cur, mnem, args..., 0, 0, 0);
         else if constexpr(sizeof...(args) == 2)
-            return fe_enc64_impl(&cur, mnem, args..., 0, 0);
+            failed = fe_enc64_impl(&cur, mnem, args..., 0, 0);
         else if constexpr(sizeof...(args) == 3)
-            return fe_enc64_impl(&cur, mnem, args..., 0);
+            failed = fe_enc64_impl(&cur, mnem, args..., 0);
         else if constexpr(sizeof...(args) == 4)
-            return fe_enc64_impl(&cur, mnem, args...);
+            failed = fe_enc64_impl(&cur, mnem, args...);
         else
             static_assert(false, "Too many arguments");
+
+        assert(!failed && "encodeRaw failed");
+        return failed;
     }
 
     bool encodeJMP(amd64::JMP jmp, mlir::Block* nextBB = nullptr){
@@ -685,8 +691,11 @@ struct AbstractRegAllocerEncoder{
                         // TODO this is not very nice
                         auto it = globals.find(addrofGlobalOp.getName());
                         assert(it != globals.end() && "unknown global");
+                        DEBUGLOG("addrofGlobal \"" << addrofGlobalOp.getName() << "\" at " << addrofGlobalOp.getLoc() << " is at " << it->second.addrInDataSection << " in data section");
                         uint8_t* globalAddr = (uint8_t*) it->second.addrInDataSection;
+                        assert((intptr_t)globalAddr == it->second.addrInDataSection && "global cast lost information");
                         assert(globalAddr != nullptr && "global not in data section");
+                        assert((globalAddr - encoder.cur) == ((intptr_t)globalAddr - (intptr_t)encoder.cur) && "global cast lost information");
 
                         mlir::OpBuilder builder(&op);
 
