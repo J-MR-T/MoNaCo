@@ -738,12 +738,18 @@ struct AbstractRegAllocerEncoder{
 
                         mlir::OpBuilder builder(&op);
 
-                        // TODO maybe just MOV64ri? Problem: size
-                        auto rawMemForLea = builder.create<amd64::RawMemoryOp>(addrofGlobalOp.getLoc(), FE_MEM(FE_IP, 0, FE_NOREG, globalAddr-encoder.cur));
-                        auto lea = builder.create<amd64::LEA64rm>(addrofGlobalOp.getLoc(), rawMemForLea);
-                        addrofGlobalOp.replaceAllUsesWith(lea->getResult(0));
+                        // TODO what's the tradeoff here: RIP relative addressing LEA vs. absolute addressing with a 64bit immediate MOV
+                        // advantage of 64 bit mov: no raw mem op, and external symbols don't need special handling
+                        /*
+                            auto rawMemForLea = builder.create<amd64::RawMemoryOp>(addrofGlobalOp.getLoc(), FE_MEM(FE_IP, 0, FE_NOREG, globalAddr-encoder.cur));
+                            auto lea = builder.create<amd64::LEA64rm>(addrofGlobalOp.getLoc(), rawMemForLea);
+                            addrofGlobalOp.replaceAllUsesWith(lea->getResult(0));
 
-                        allocateEncodeValueDef(lea);
+                            allocateEncodeValueDef(lea);
+                        */
+                        auto mov64ri = builder.create<amd64::MOV64ri>(addrofGlobalOp.getLoc(), (intptr_t)globalAddr);
+                        addrofGlobalOp.replaceAllUsesWith(mov64ri->getResult(0));
+                        allocateEncodeValueDef(mov64ri);
                     }
 
                     if constexpr(isEntryBlock){
