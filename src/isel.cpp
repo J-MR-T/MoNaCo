@@ -527,10 +527,13 @@ struct LLVMGEPPattern : public mlir::OpConversionPattern<LLVM::GEPOp>{
         auto  dl = mlir::DataLayout::closest(op);
         // TODO this is wrong, we don't want to add the size of the whole type
 
-        auto getBytesOffsetAndType = [&](auto type, unsigned elemNum) -> std::pair<unsigned, mlir::Type>  {
+        auto getBytesOffsetAndType = [&](auto type, int64_t elemNum) -> std::pair<int64_t, mlir::Type>  {
             using namespace mlir::LLVM;
 
             if(LLVMStructType structType = type.template dyn_cast<LLVMStructType>()){
+                assert(elemNum >= 0 && "struct element number cannot be negative");
+                auto elemNumUnsigned = static_cast<uint64_t>(elemNum);
+
                 auto structParts = structType.getBody();
 
                 // modified version of LLVMStructType::getTypeSizeInBits
@@ -538,7 +541,7 @@ struct LLVMGEPPattern : public mlir::OpConversionPattern<LLVM::GEPOp>{
                 unsigned structAlignment = 1;
                 for (auto [i, element] : llvm::enumerate(structParts)){
                     // stop if we've reached the element we want to address
-                    if(i == elemNum)
+                    if(i == elemNumUnsigned)
                         return {structSizeUpToNow, element}; // TODO hope that there's no dangling reference to element here,  but i think its a reference, and the structParts is a reference itself, so it should be fine
 
                     unsigned elementAlignment = structType.isPacked() ? 1 : dl.getTypeABIAlignment(element);
