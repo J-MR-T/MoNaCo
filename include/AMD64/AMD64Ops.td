@@ -77,6 +77,7 @@ foreach bitwidth = [8, 16, 32, 64] in {
 }
 
 // TODO this doesn't seem optimal
+// type constraint vs using the type interface as the return value?
 def anygprType: TypeConstraint<Or<[gpr8.predicate, gpr16.predicate, gpr32.predicate, gpr64.predicate]>>;
 
 // === memory ops ===
@@ -282,7 +283,7 @@ class Instruction<string mnemonic, list<Trait> traits = []> :
   let arguments = !con(operands, (ins InstructionInfoProp:$instructionInfoImpl));
 }
 
-def LEA64rm : Instruction<"LEA64rm">{
+def LEA64rm : Instruction<"LEA64rm", [Pure]>{
   let operands = (ins memLoc:$mem);
   let results = (outs gpr64:$dst);
 }
@@ -427,15 +428,15 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
     let operandConstraint1 = "{.which = 1, .reg = FE_CX}" in
     let operands = (ins gprType:$src1, gprType:$src2) in {
       // technically the second operand is always CL, i.e. gpr8. But what we would want to do, if it wasn't gpr8, is just truncate it. The easiest way to model that is simply to allow any gprType, during encoding, this will be left out anyway
-      def SHL # bitwidth # "rr" : Instruction<"SHL" # bitwidth # "rr", [Operand0IsDestN<0>]>;
-      def SHR # bitwidth # "rr" : Instruction<"SHR" # bitwidth # "rr", [Operand0IsDestN<0>]>;
-      def SAR # bitwidth # "rr" : Instruction<"SAR" # bitwidth # "rr", [Operand0IsDestN<0>]>;
+      def SHL # bitwidth # "rr" : Instruction<"SHL" # bitwidth # "rr", [Pure, Operand0IsDestN<0>]>;
+      def SHR # bitwidth # "rr" : Instruction<"SHR" # bitwidth # "rr", [Pure, Operand0IsDestN<0>]>;
+      def SAR # bitwidth # "rr" : Instruction<"SAR" # bitwidth # "rr", [Pure, Operand0IsDestN<0>]>;
     }
 
     let operands = (ins gprType:$src1) in {
-      defm SHL # bitwidth # "r" : Instr_i<"SHL" # bitwidth # "r", [Operand0IsDestN<0>]>;
-      defm SHR # bitwidth # "r" : Instr_i<"SHR" # bitwidth # "r", [Operand0IsDestN<0>]>;
-      defm SAR # bitwidth # "r" : Instr_i<"SAR" # bitwidth # "r", [Operand0IsDestN<0>]>;
+      defm SHL # bitwidth # "r" : Instr_i<"SHL" # bitwidth # "r", [Pure, Operand0IsDestN<0>]>;
+      defm SHR # bitwidth # "r" : Instr_i<"SHR" # bitwidth # "r", [Pure, Operand0IsDestN<0>]>;
+      defm SAR # bitwidth # "r" : Instr_i<"SAR" # bitwidth # "r", [Pure, Operand0IsDestN<0>]>;
     }
 
     // movsx/movzx
@@ -445,18 +446,18 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
 
         // movsx
         let operands = (ins innerGprType:$src1) in
-        def MOVSX # "r" # bitwidth # "r" # innerBitwidth: Instruction<"MOVSX" # "r" # bitwidth # "r" # innerBitwidth>;
+        def MOVSX # "r" # bitwidth # "r" # innerBitwidth: Instruction<"MOVSX" # "r" # bitwidth # "r" # innerBitwidth, [Pure]>;
 
         let operands = (ins memLoc:$src1) in
-        def MOVSX # "r" # bitwidth # "m" # innerBitwidth: Instruction<"MOVSX" # "r" # bitwidth # "m" # innerBitwidth>;
+        def MOVSX # "r" # bitwidth # "m" # innerBitwidth: Instruction<"MOVSX" # "r" # bitwidth # "m" # innerBitwidth, [Pure]>;
 
         // movzx
         if !not(!eq(innerBitwidth, "32")) then{
           let operands = (ins innerGprType:$src1) in
-          def MOVZX # "r" # bitwidth # "r" # innerBitwidth: Instruction<"MOVZX" # "r" # bitwidth # "r" # innerBitwidth>;
+          def MOVZX # "r" # bitwidth # "r" # innerBitwidth: Instruction<"MOVZX" # "r" # bitwidth # "r" # innerBitwidth, [Pure]>;
 
           let operands = (ins memLoc:$src1) in
-          def MOVZX # "r" # bitwidth # "m" # innerBitwidth: Instruction<"MOVZX" # "r" # bitwidth # "m" # innerBitwidth>;
+          def MOVZX # "r" # bitwidth # "m" # innerBitwidth: Instruction<"MOVZX" # "r" # bitwidth # "m" # innerBitwidth, [Pure]>;
         }
       }
     }
@@ -486,13 +487,13 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
   let resultConstraint1 = "{.which = 0, .reg = FE_AX}", resultConstraint2 = !if(!eq(bitwidth, "8"), "{.which = 1, .reg = FE_AH}", "{.which = 1, .reg = FE_DX}") in {
     let operands = (ins gprType:$src1, gprType:$src2) in {
       // indicate to the encoder, that these are special cases
-      def DIV # bitwidth # "r"  : Instruction<"DIV"  # bitwidth # "r", traits # [SpecialCase<"DIV"> ]>;
-      def IDIV # bitwidth # "r" : Instruction<"IDIV" # bitwidth # "r", traits # [SpecialCase<"IDIV">]>;
+      def DIV # bitwidth # "r"  : Instruction<"DIV"  # bitwidth # "r", traits # [SpecialCase<"DIV">,  Pure]>;
+      def IDIV # bitwidth # "r" : Instruction<"IDIV" # bitwidth # "r", traits # [SpecialCase<"IDIV">, Pure]>;
     }
 
     let operands = (ins gprType:$src1, memLoc:$src2) in {
-      def DIV # bitwidth # "m"  : Instruction<"DIV"  # bitwidth # "m", traits # [SpecialCase<"DIV"> ]>;
-      def IDIV # bitwidth # "m" : Instruction<"IDIV" # bitwidth # "m", traits # [SpecialCase<"IDIV">]>;
+      def DIV # bitwidth # "m"  : Instruction<"DIV"  # bitwidth # "m", traits # [SpecialCase<"DIV">,  Pure]>;
+      def IDIV # bitwidth # "m" : Instruction<"IDIV" # bitwidth # "m", traits # [SpecialCase<"IDIV">, Pure]>;
     }
   }
 }
@@ -548,7 +549,7 @@ defm "" : JccAndInverted<"JC", "JNC">; // == "JB", "JAE"
 defm "" : JccAndInverted<"JBE", "JA">;
 
 // SETcc
-class SETcc<string mnemonic, string cond> : Instruction<mnemonic, [PredicateInterface]> {
+class SETcc<string mnemonic, string cond> : Instruction<mnemonic, [PredicateInterface, Pure]> {
   let operands = (ins);
   let results = (outs gpr8:$result);
 
