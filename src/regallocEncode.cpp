@@ -370,27 +370,50 @@ public:
         return true;
     }
 
-    void dumpAfterEncodingDone(GlobalsInfo& globals){
+    void dumpAfterEncodingDone(mlir::ModuleOp mod, GlobalsInfo& globals){
         // dump the entire buffer
         // decode & print to test if it works
         auto max = cur;
 
         llvm::outs() << termcolor::make(termcolor::red, "Decoded assembly:\n");
 
-        // this is a not-very-performant way to get the block boundaries, but it serves its purpose, no need for optimization in dump output
+        // this is a not-very-performant way to get the block boundaries and globals, but it serves its purpose, no need for optimization in dump output
+        // block boundaries
         llvm::SmallVector<uint8_t*, 64> blockStartsSorted;
         for(auto [block, buf] : blocksToBuffer){
             blockStartsSorted.push_back(buf);
         }
         std::sort(blockStartsSorted.begin(), blockStartsSorted.end());
 
+        // globals
+        llvm::SmallVector<std::pair<llvm::StringRef, amd64::GlobalSymbolInfo>, 64> globalsSorted;
+        for(auto sym : globals.keys()){
+            globalsSorted.push_back({sym, globals[sym]});
+        }
+
+        // also add external functions to the globals
+        for(auto func : mod.getOps<mlir::func::FuncOp>()){
+            if(func.isExternal())
+                globalsSorted.push_back({func.getName(), amd64::GlobalSymbolInfo{
+                    .bytes = {},
+                    .alignment = 0,
+                    .addrInDataSection = (intptr_t)checked_dlsym(func.getName())}});
+        }
+
+        std::sort(globalsSorted.begin(), globalsSorted.end(), [](auto a, auto b){
+            return a.second.addrInDataSection < b.second.addrInDataSection;
+        });
+
         // .data section
         llvm::outs() << termcolor::make(termcolor::red, ".data") << "\n";
 
         uint8_t* cur = bufStart;
-        for(auto& [sym, global] : globals){
+        for(auto [sym, globalRef] : globalsSorted){
+            auto& global = globalRef;
+
             if(global.addrInDataSection != (intptr_t) cur){
-                llvm::errs() << termcolor::red << "Error: Global " << sym << " is not at the expected address in the data section\n" << termcolor::reset;
+                DEBUGLOG("abnormal address: " << (void*) global.addrInDataSection << " vs " << (void*) cur);
+                llvm::errs() << termcolor::red << "Warning: Global " << sym << " is not at the expected address in the data section. Could be external\n" << termcolor::reset;
             }
             auto* start = cur;
             auto len = global.bytes.size();
@@ -462,6 +485,22 @@ public:
                     auto it = std::lower_bound(blockStartsSorted.begin(), blockStartsSorted.end(), target);
                     if(it != blockStartsSorted.end() && *it == target){
                         llvm::outs() << termcolor::red << " -> BB" << (it - blockStartsSorted.begin()) << termcolor::reset;
+                    }
+
+                }else if(fdType == FDI_MOVABS && FD_OP_TYPE(&instr, 1) == FD_OT_IMM){
+                    // probably mov loading global -> try to find symbol
+
+                    auto globalAddr = (intptr_t) FD_OP_IMM(&instr, 1);
+                    auto it = std::lower_bound(globalsSorted.begin(), globalsSorted.end(), globalAddr, [](auto a, auto b){
+                        return a.second.addrInDataSection < b;
+                    });
+                    if(it != globalsSorted.end() && it->second.addrInDataSection == globalAddr){
+                        llvm::outs() << termcolor::red << " -> sym: " << it->first << ", byte: ";
+
+                        if(it->second.addrInDataSection < (intptr_t) bufStart || it->second.addrInDataSection >= (intptr_t) bufEnd)
+                            llvm::outs() << "<external>" << termcolor::reset;
+                        else
+                            llvm::outs() << it->second.addrInDataSection - (intptr_t) bufStart << termcolor::reset;
                     }
                 }
                 if(ArgParse::args.debug()){
@@ -1526,7 +1565,7 @@ uint8_t* regallocEncode(uint8_t* buf, uint8_t* bufEnd, mlir::ModuleOp mod, Globa
     StackRegAllocer regallocer(mod, buf, bufEnd, std::move(globals), jit, startSymbolIfJIT);
     regallocer.run();
     if(dumpAsm)
-        regallocer.encoder.dumpAfterEncodingDone(regallocer.globals);
+        regallocer.encoder.dumpAfterEncodingDone(mod, regallocer.globals);
 
     return regallocer.startSymbolInfo.second;
 }
