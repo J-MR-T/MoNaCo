@@ -89,7 +89,7 @@ struct GlobalSymbolInfo{
     unsigned alignment;
     // TODO linkage/visibility
 
-    intptr_t addrInDataSection;
+    intptr_t addrInDataSection; // TODO probably rename, this can also be outside the data section
 };
 
 using GlobalsInfo = llvm::StringMap<GlobalSymbolInfo>;
