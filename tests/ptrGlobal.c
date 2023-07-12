@@ -1,4 +1,4 @@
-// RUN: %RunC
+// RUN: %RunC main
 
 #include <stdlib.h>
 
