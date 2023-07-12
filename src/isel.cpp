@@ -33,8 +33,24 @@ using namespace mlir;
 // use this to mark that a specific type of instruction is not available to use in the lambda of a pattern
 using NOT_AVAILABLE = void;
 
-template <typename OpTy>
+template <typename OpTy, bool matchZeroResult = false>
 auto defaultBitwidthMatchLambda = []<unsigned bitwidth, typename thisType, typename OpAdaptor>(thisType thiis, OpTy op, OpAdaptor, mlir::ConversionPatternRewriter& rewriter){
+    auto matchZeroResultReturn = [](){
+        if constexpr(matchZeroResult)
+            return mlir::success();
+        else
+            return mlir::failure();
+        
+    };
+
+    if constexpr (OpTy::template hasTrait<mlir::OpTrait::ZeroResults>()){
+        return matchZeroResultReturn();
+    }
+    if constexpr(OpTy::template hasTrait<mlir::OpTrait::VariadicResults>()){
+        if(op.getNumResults() == 0)
+            return matchZeroResultReturn();
+    }
+
     mlir::Type opType;
     if constexpr (OpTy::template hasTrait<mlir::OpTrait::OneResult>())
         opType = op.getType();
@@ -447,12 +463,16 @@ auto callMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
         return rewriter.notifyMatchFailure(callOp, "multiple return values not supported");
 
     // direct call and indirect call are just handled the same as in the llvm dialect, the first op can be a ptr. So we don't do anything here, and check if the attribute exists in encoding, if it does, move it to AX and start one after the normal operand with moving to the operand registers
-    rewriter.replaceOpWithNewOp<CALL>(callOp, gprType::get(callOp->getContext()), callOp.getCalleeAttr(), adaptor.getOperands());
+    if(callOp.getNumResults() == 0)
+        rewriter.replaceOpWithNewOp<CALL>(callOp, TypeRange(), callOp.getCalleeAttr(), adaptor.getOperands());
+    else
+        rewriter.replaceOpWithNewOp<CALL>(callOp, gprType::get(callOp->getContext()), callOp.getCalleeAttr(), adaptor.getOperands());
+
     return mlir::success();
 };
 
 #define CALL_PAT(bitwidth) \
-    using CallPat ## bitwidth = MatchRMI<mlir::func::CallOp, bitwidth, callMatchReplace, amd64::CALL, amd64::MOV ## bitwidth ## rr, amd64::gpr ## bitwidth ## Type>
+    using CallPat ## bitwidth = MatchRMI<mlir::func::CallOp, bitwidth, callMatchReplace, amd64::CALL, amd64::MOV ## bitwidth ## rr, amd64::gpr ## bitwidth ## Type, NOT_AVAILABLE, NOT_AVAILABLE, 1, defaultBitwidthMatchLambda<mlir::func::CallOp, true>>
 
 CALL_PAT(8); CALL_PAT(16); CALL_PAT(32); CALL_PAT(64);
 
@@ -737,15 +757,18 @@ struct LLVMFuncPat : public mlir::OpConversionPattern<LLVM::LLVMFuncOp>{
         llvm::SmallVector<mlir::Type> convertedArgTypes;
         auto res = getTypeConverter()->convertTypes(llvmFnType.getParams(), convertedArgTypes);
         if(mlir::failed(res))
-            return mlir::failure();
+            return rewriter.notifyMatchFailure(func, "failed to convert arg types");
 
-        auto convertedReturnType = getTypeConverter()->convertType(llvmFnType.getReturnType());
-        if(!convertedReturnType)
-            return mlir::failure();
+        mlir::Type convertedReturnType{};
+        if(auto retType = llvmFnType.getReturnType(); retType != LLVM::LLVMVoidType::get(func.getContext())){
+            convertedReturnType = getTypeConverter()->convertType(retType);
+            if(!convertedReturnType)
+                return rewriter.notifyMatchFailure(func, "failed to convert return type");
+        }
 
         auto newFunc = rewriter.create<mlir::func::FuncOp>(
             func.getLoc(), func.getName(),
-            rewriter.getFunctionType(convertedArgTypes, convertedReturnType),
+            rewriter.getFunctionType(convertedArgTypes, convertedReturnType == mlir::Type{} ? TypeRange() : TypeRange(convertedReturnType)),
             rewriter.getStringAttr(/* this is apparently a different kind of visibility: LLVM::stringifyVisibility(adaptor.getVisibility_()) */ "private"),
             adaptor.getArgAttrsAttr(),
             adaptor.getResAttrsAttr());
@@ -847,7 +870,7 @@ struct LLVMGlobalPat : public mlir::OpConversionPattern<LLVM::GlobalOp>{
 };
 
 #define CALL_PAT(bitwidth) \
-    using LLVMCallPat ## bitwidth = MatchRMI<LLVM::CallOp, bitwidth, callMatchReplace, amd64::CALL, amd64::MOV ## bitwidth ## rr, amd64::gpr ## bitwidth ## Type>
+    using LLVMCallPat ## bitwidth = MatchRMI<LLVM::CallOp, bitwidth, callMatchReplace, amd64::CALL, amd64::MOV ## bitwidth ## rr, amd64::gpr ## bitwidth ## Type, NOT_AVAILABLE, NOT_AVAILABLE, 1, defaultBitwidthMatchLambda<mlir::LLVM::CallOp, true>>
 
 CALL_PAT(8); CALL_PAT(16); CALL_PAT(32); CALL_PAT(64);
 
@@ -882,8 +905,8 @@ void binarySearchSwitchLowering(mlir::Location loc, mlir::ConversionPatternRewri
     // TODO recursion end condition 1
     if(caseInfoSection.empty() || pivotIndex >= caseInfoSection.size()){
         // jump to default block on empty case section
-        currentBlock->replaceAllUsesWith(defaultDest.block);
-        currentBlock->erase();
+        rewriter.replaceAllUsesWith(currentBlock, defaultDest.block);
+        rewriter.eraseBlock(currentBlock);
         return;
     }
 

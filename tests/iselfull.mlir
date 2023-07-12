@@ -29,6 +29,7 @@ module {
   // ASM-COUNT-4: ret
   // TODO test more stuff on the individual instructions
   func.func private @patternMatchingTest() -> () {
+    // ASM: BB4
     %0 = call @giveI8() : () -> i8
     // ASM: mov byte ptr [[[MEM1:rbp\-0x[0-9a-f]+]]], al
     %1 = call @giveI8() : () -> i8
@@ -38,6 +39,9 @@ module {
     %3 = call @giveI16() : () -> i16
     %4 = call @giveI32() : () -> i32
     %5 = call @giveI32() : () -> i32
+    // ASM: mov dword ptr [[[U:rbp\-0x[0-9a-f]+]]], eax
+    // ASM-NEXT: call
+    // ASM-NEXT: mov dword ptr [[[U:rbp\-0x[0-9a-f]+]]], eax
     %6 = call @giveI64() : () -> i64
     %7 = call @giveI64() : () -> i64
     // ASM: mov [[REG1:[^,]+]], byte ptr [[[MEM1]]]

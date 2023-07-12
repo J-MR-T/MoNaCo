@@ -621,6 +621,11 @@ struct AbstractRegAllocerEncoder{
             assert(it != globals.end() && "global not found in globals map");
 
             auto& global = it->second;
+            if(global.addrInDataSection != 0){
+                DEBUGLOG("Global already written, skipping");
+                continue;
+            }
+
             memcpy(cur, global.bytes.data(), global.bytes.size());
             global.addrInDataSection = (intptr_t) cur;
             assert(globals[sym].addrInDataSection == (intptr_t) cur && "global address wasn't written correctly");
@@ -688,8 +693,13 @@ struct AbstractRegAllocerEncoder{
 
                             // TODO this needs to be factored out to a kind of "allocated but dont spill or encode" function. Alternatively template variants (either with boolean template arguments, or as specializations) of the allocateEncodeValueDef function that don't do that.
                             encoder.encodeCall(mod, call);
-                            auto& slot = valueToSlot[call.getResult()] = ValueSlot{.kind = ValueSlot::Stack, .mem = allocateNewStackslot(8), .bitwidth = 8};
-                            moveFromOperandRegToSlot(call.getResult(), slot, FE_AX);
+                            if(call.getNumResults() > 0){
+                                auto result = call.getResult(0);
+                                auto resultBw = mlir::cast<amd64::RegisterTypeInterface>(result.getType()).getBitwidth();
+                                assert(resultBw < std::numeric_limits<uint8_t>::max() && "bitwidth too high");
+                                auto& slot = valueToSlot[result] = ValueSlot{.kind = ValueSlot::Stack, .mem = allocateNewStackslot(resultBw), .bitwidth = static_cast<uint8_t>(resultBw)};
+                                moveFromOperandRegToSlot(result, slot, FE_AX);
+                            }
                             continue;
                         }
 

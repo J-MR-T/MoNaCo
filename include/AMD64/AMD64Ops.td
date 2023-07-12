@@ -566,7 +566,7 @@ foreach cond = ["Z" /* == E */, "NZ" /* == NE */, "L", "GE", "LE", "G", "C" /* =
 def CALL : Instruction<"CALL">{
   // Either has a callee (could theoretically be a direct call) or a ptr (has to be indirect call)
   let operands = (ins OptionalAttr<FlatSymbolRefAttr>:$callee, Variadic<AnyType>:$operands);
-  let results = (outs anygprType:$ret); // only single return value for now.
+  let results = (outs Optional<RegisterTypeInterface>:$ret); // single return value, or none
   // TODO we will need some info about what size the callee returns, see RET
   // technically this is an ABI thing, not an architecture thing, but it doesn't really matter
   let resultConstraint1 = "{.which = 0, .reg = FE_AX}";
