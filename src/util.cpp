@@ -73,7 +73,7 @@ void printHelp(const char *argv0) {
     llvm::errs() << "\nExamples: \n"
         << "  " << argv0 << " -i input.mlir\n"
         << "  " << argv0 << " input.mlir -fno-codegen-dce\n"
-        << "  " << argv0 << " -fforce-fallback,fallback\n";
+        << "  " << argv0 << " -ffallback,no-force-fallback,unreachable-abort\n";
 }
 
 InsertBeforeQueryMap<Arg, std::string>& parse(int argc, char *argv[]) {

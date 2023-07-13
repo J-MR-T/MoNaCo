@@ -1083,6 +1083,41 @@ using LLVMEraseMetadataPat = SimplePat<LLVM::MetadataOp, [](auto op, auto, mlir:
     return mlir::success();
 }>;
 
+using LLVMUnreachablePat = SimplePat<LLVM::UnreachableOp, [](auto op, auto,  mlir::ConversionPatternRewriter& rewriter){
+    if(ArgParse::features["unreachable-abort"])
+        rewriter.replaceOpWithNewOp<amd64::CALL>(op, TypeRange(), mlir::FlatSymbolRefAttr::get(rewriter.getContext(), "abort"), ValueRange());
+    else
+        rewriter.eraseOp(op);
+    return mlir::success();
+}>;
+
+#define MUL_DIV_PAT(bitwidth)                                                                                       \
+    using LLVMMulPat ## bitwidth = MatchRMI<LLVM::MulOp, bitwidth, binOpMatchReplace, amd64::MUL ## bitwidth ## r>; \
+    using LLVMUDivPat ## bitwidth = MatchRMI<LLVM::UDivOp, bitwidth,                                                \
+        matchDivRem<false>,                                                                                         \
+        amd64::DIV ## bitwidth ## r>;                                                                               \
+    using LLVMSDivPat ## bitwidth = MatchRMI<LLVM::SDivOp, bitwidth,                                                \
+        matchDivRem<false>,                                                                                         \
+        amd64::IDIV ## bitwidth ## r>;                                                                              \
+    using LLVMURemPat ## bitwidth = MatchRMI<LLVM::URemOp, bitwidth,                                                \
+        matchDivRem<true>,                                                                                          \
+        amd64::DIV ## bitwidth ## r>;                                                                               \
+    using LLVMSRemPat ## bitwidth = MatchRMI<LLVM::SRemOp, bitwidth,                                                \
+        matchDivRem<true>,                                                                                          \
+        amd64::IDIV ## bitwidth ## r>;
+
+MUL_DIV_PAT(8); MUL_DIV_PAT(16); MUL_DIV_PAT(32); MUL_DIV_PAT(64);
+
+#undef MUL_DIV_PAT
+
+#define SHIFT_PAT(bitwidth)                                                                                                                               \
+    using LLVMShlPat ## bitwidth  = MatchRMI<LLVM::ShlOp,  bitwidth, binOpMatchReplace, amd64::SHL ## bitwidth ## rr, amd64::SHL ## bitwidth ## ri>; \
+    using LLVMLShrPat ## bitwidth = MatchRMI<LLVM::LShrOp, bitwidth, binOpMatchReplace, amd64::SHR ## bitwidth ## rr, amd64::SHR ## bitwidth ## ri>; \
+    using LLVMAShrPat ## bitwidth = MatchRMI<LLVM::AShrOp, bitwidth, binOpMatchReplace, amd64::SAR ## bitwidth ## rr, amd64::SAR ## bitwidth ## ri>;
+
+SHIFT_PAT(8); SHIFT_PAT(16); SHIFT_PAT(32); SHIFT_PAT(64);
+
+#undef SHIFT_PAT
 
 } // end anonymous namespace
 
@@ -1179,7 +1214,15 @@ void populateLLVMToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns, ml
         PATTERN_BITWIDTHS(LLVMAndPat),
         PATTERN_BITWIDTHS(LLVMOrPat),
         PATTERN_BITWIDTHS(LLVMXOrPat),
-        LLVMNullPat, LLVMUndefPat, LLVMPoisonPat, LLVMEraseMetadataPat,
+        PATTERN_BITWIDTHS(LLVMMulPat),
+        PATTERN_BITWIDTHS(LLVMUDivPat),
+        PATTERN_BITWIDTHS(LLVMSDivPat),
+        PATTERN_BITWIDTHS(LLVMURemPat),
+        PATTERN_BITWIDTHS(LLVMSRemPat),
+        PATTERN_BITWIDTHS(LLVMShlPat),
+        PATTERN_BITWIDTHS(LLVMLShrPat),
+        PATTERN_BITWIDTHS(LLVMAShrPat),
+        LLVMNullPat, LLVMUndefPat, LLVMPoisonPat, LLVMEraseMetadataPat, LLVMUnreachablePat,
         LLVMGEPPattern, LLVMAllocaPat, PATTERN_BITWIDTHS(LLVMLoadPat), PATTERN_BITWIDTHS(LLVMStorePat), LLVMPtrToIntPat, LLVMIntToPtrPat,
         LLVMReturnPat, LLVMFuncPat,
         LLVMConstantStringPat, LLVMAddrofPat,

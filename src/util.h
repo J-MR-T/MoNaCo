@@ -272,9 +272,10 @@ namespace ArgParse{
     Features(T&&...) -> Features<sizeof...(T)>;
 
     constexpr auto features = Features(
-        Feature("force-fallback", "Force fallback to MLIR module compilation through the LLVM toolchain",                         false),
-        Feature("fallback",       "Fall back to MLIR module compilation through the LLVM toolchain if MoNaCo compilation failes", true),
-        Feature("codegen-dce",    "Eliminate dead instructions generated in codegen",                                             true)
+        Feature("force-fallback",    "Force fallback to MLIR module compilation through the LLVM toolchain",                         false),
+        Feature("fallback",          "Fall back to MLIR module compilation through the LLVM toolchain if MoNaCo compilation failes", true),
+        Feature("codegen-dce",       "Eliminate dead instructions generated in codegen",                                             true),
+        Feature("unreachable-abort", "Call `abort()` on unreachable instructions instead of simply ignoring unreachables",           false)
     );
 
     extern std::array<bool, features.size> enabled;
