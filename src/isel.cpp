@@ -231,12 +231,16 @@ auto matchDivRem = []<unsigned actualBitwidth, typename OpAdaptor,
 
 MULI_DIVI_PAT(8); MULI_DIVI_PAT(16); MULI_DIVI_PAT(32); MULI_DIVI_PAT(64);
 
+#undef MULI_DIVI_PAT
+
 #define SHIFT_PAT(bitwidth)                                                                                                                               \
     using ShlIPat ## bitwidth  = MatchRMI<mlir::arith::ShLIOp,  bitwidth, binOpMatchReplace, amd64::SHL ## bitwidth ## rr, amd64::SHL ## bitwidth ## ri>; \
-    using ShrUIPat ## bitwidth = MatchRMI<mlir::arith::ShRUIOp, bitwidth, binOpMatchReplace, amd64::SHR ## bitwidth ## rr, amd64::SHL ## bitwidth ## ri>; \
-    using ShrSIPat ## bitwidth = MatchRMI<mlir::arith::ShRSIOp, bitwidth, binOpMatchReplace, amd64::SAR ## bitwidth ## rr, amd64::SHL ## bitwidth ## ri>;
+    using ShrUIPat ## bitwidth = MatchRMI<mlir::arith::ShRUIOp, bitwidth, binOpMatchReplace, amd64::SHR ## bitwidth ## rr, amd64::SHR ## bitwidth ## ri>; \
+    using ShrSIPat ## bitwidth = MatchRMI<mlir::arith::ShRSIOp, bitwidth, binOpMatchReplace, amd64::SAR ## bitwidth ## rr, amd64::SAR ## bitwidth ## ri>;
 
 SHIFT_PAT(8); SHIFT_PAT(16); SHIFT_PAT(32); SHIFT_PAT(64);
+
+#undef SHIFT_PAT
 
 auto movMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr
