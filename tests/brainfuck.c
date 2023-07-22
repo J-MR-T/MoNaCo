@@ -20,7 +20,7 @@ struct BFState {
 };
 
 int
-searchStringForBracket(char findingBracket, const char *string, int sizeOfString, int positionInString, int direction);
+findClosingBracket(const char*, int, int);
 
 // Return 0 on success, and -1 in case of an error (e.g., an out-of-bounds access).
 int brainfuck(struct BFState *state, const char *program) {
@@ -52,25 +52,25 @@ int brainfuck(struct BFState *state, const char *program) {
                 state->cur--;
                 break;
             case '[':
-                if (*(state->cur) == 0) {
-                    if(bracketInfoPcToPcMap[pc] != -1)
-                        pc = bracketInfoPcToPcMap[pc];
-                    else
-                        pc = bracketInfoPcToPcMap[pc] = searchStringForBracket(']', program, programLength, pc, +1);
-
-                    //To counter the pc++ at the end
-                    pc--;
+                if(bracketInfoPcToPcMap[pc] == -1){
+                    // haven't seen this bracket yet
+                    int closeBracketPos = bracketInfoPcToPcMap[pc] = findClosingBracket(program, programLength, pc);
+                    // also set the other bracket
+                    bracketInfoPcToPcMap[closeBracketPos] = pc;
                 }
+
+                // set the bracket
+                if (*(state->cur) == 0)
+                    pc = bracketInfoPcToPcMap[pc];
                 break;
             case ']':
                 if (*(state->cur) != 0) {
-                    if(bracketInfoPcToPcMap[pc] != -1)
+                    if(bracketInfoPcToPcMap[pc] != -1){
                         pc = bracketInfoPcToPcMap[pc];
-                    else
-                        pc = bracketInfoPcToPcMap[pc] = searchStringForBracket('[', program, programLength, pc, -1);
-
-                    //To counter the pc++ at the end
-                    pc--;
+                    }else{
+                        // this should never happen: In this case, we have found a bracket that has no corersponding bracket, because the corresponding bracket would have written this to the map.
+                        return -1;
+                    }
                 }
                 break;
         }
@@ -88,12 +88,12 @@ int brainfuck(struct BFState *state, const char *program) {
 }
 
 //direction int: -1 means left +1 means right
-//returns the new position in the string, where the findingBracket can be found, or -1 when it couldn't find one
-int searchStringForBracket(char findingBracket, const char *string, int sizeOfString, int positionInString,
-                           int direction) {
+//returns the new position in the string, where the ']' can be found, or -1 when it couldn't find one
+int findClosingBracket(const char *string, int sizeOfString, int positionInString) {
     int depth = 0;
-    char *current = (char *) (string + positionInString);
+    const char *current = string + positionInString;
     char startingBracket = *current;
+    static const char closingBracket = ']';
     do {
         //Prevent page fault
         if (positionInString > sizeOfString||positionInString<0) {
@@ -101,12 +101,11 @@ int searchStringForBracket(char findingBracket, const char *string, int sizeOfSt
         }
         if (*current == startingBracket) {
             depth++;
-        } else if (*current == findingBracket) {
+        } else if (*current == closingBracket) {
             depth--;
         }
         if (depth != 0) {
-            positionInString += direction;
-            current = (char *) (string + positionInString);
+            current = string + ++positionInString;
         }
     } while (depth != 0);
     return positionInString;
@@ -139,13 +138,13 @@ int main(int argc, char** argv) {
             .cur = array,
     };
     int res = brainfuck(&state, argv[1]);
+    free(array);
+    free(bracketInfoPcToPcMap);
+
     if (res) {
         puts("an error occured");
         return EXIT_FAILURE;
     }
-
-    free(array);
-    free(bracketInfoPcToPcMap);
 
     return EXIT_SUCCESS;
 }
