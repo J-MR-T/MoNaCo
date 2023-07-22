@@ -589,9 +589,9 @@ struct LLVMGEPPattern : public mlir::OpConversionPattern<LLVM::GEPOp>{
             }else if(LLVMArrayType arrayType = type.template dyn_cast<LLVMArrayType>()){
                 return {dl.getTypeSize(arrayType.getElementType()) * elemNum, arrayType.getElementType()};
             }else if(LLVMPointerType ptrType = type.template dyn_cast<LLVMPointerType>()){
-                // in this case, we just always use the source element type, because there should only ever be one index in this case
-                assert(op.getIndices().size() == 1 && "only one index is supported for pointer element types");
-                return {dl.getTypeSize(op.getSourceElementType()) * elemNum, mlir::Type()};
+                // in this case, we just always use the source element type, and then index into that
+                assert(op.getIndices().size() <= 2 && "only up to two indices supported for pointer element types");
+                return {dl.getTypeSize(op.getSourceElementType()) * elemNum, op.getSourceElementType()};
             }else if(IntegerType intType = type.template dyn_cast<IntegerType>()){
                 // in this case, we just always use the source element type, because there should only ever be one index in this case
                 assert(op.getIndices().size() == 1 && "only one index is supported for int element types");
@@ -610,34 +610,35 @@ struct LLVMGEPPattern : public mlir::OpConversionPattern<LLVM::GEPOp>{
 
         // TODO the other case is some weird vector thing, i'd rather have it fail for now, if that is encountered
         assert(op.getElemType().has_value());
-        mlir::Type currentType = *op.getElemType(); // TODO I think this is wrong
+
+        // we start by indexing into the base type
+        mlir::Type currentlyIndexedType = op.getBase().getType();
 
         for(auto indexPtr_u : indices){
             assert(getTypeConverter()->convertType(currentIndexComputationValue.getType()) == amd64::gpr64Type::get(getContext()) && "only 64 bit pointers are supported");
 
             if(mlir::Value val = indexPtr_u.dyn_cast<mlir::Value>()){
                 // no dynamic struct indices please
-                // TODO remove this if
-                if(mlir::isa<LLVM::LLVMStructType>(currentType)){
-                    val.dump();
-                    op.dump();
-                }
-
-                assert(!mlir::isa<LLVM::LLVMStructType>(currentType) && "dynamic struct indices are not allowed, this should be fixed in the verification of GEP in the llvm dialect!");
+                assert(!mlir::isa<LLVM::LLVMStructType>(currentlyIndexedType) && "dynamic struct indices are not allowed, this should be fixed in the verification of GEP in the llvm dialect!");
 
                 auto scaled = rewriter.create<amd64::IMUL64rri>(op.getLoc(), rewriter.getRemappedValue(val));
 
                 // we perform the computation analogously, but just for ptr/array types, so use 1 as the index
-                std::tie(scaled.instructionInfo().imm, currentType) = getBytesOffsetAndType(currentType, 1);
+                std::tie(scaled.instructionInfo().imm, currentlyIndexedType) = getBytesOffsetAndType(currentlyIndexedType, 1);
                 currentIndexComputationValue = rewriter.create<amd64::ADD64rr>(op.getLoc(), currentIndexComputationValue, scaled);
             }else{
                 // has to be integer attr otherwise
                 auto indexInt = indexPtr_u.get<mlir::IntegerAttr>().getValue().getSExtValue();
+
+                int64_t byteOffset;
+                std::tie(byteOffset, currentlyIndexedType) = getBytesOffsetAndType(currentlyIndexedType, indexInt);
+
+                // if the index is zero, we don't have to create an instruction, but we do need to change the indexed type
                 if(indexInt == 0)
                     continue;
 
                 auto addri = rewriter.create<amd64::ADD64ri>(op.getLoc(), currentIndexComputationValue);
-                std::tie(addri.instructionInfo().imm, currentType) = getBytesOffsetAndType(currentType, indexInt);
+                addri.instructionInfo().imm = byteOffset;
                 currentIndexComputationValue = addri;
             }
         }

@@ -12,14 +12,16 @@ typedef struct {
 
 int main(int argc, char *argv[])
 {
-    a as[2];
-    as[0].a = 10;
-    as[1].b = 20;
+    a anA;
 
-    /*as[0].inner.c = 30;*/
-    /*as[1].inner.d = 40;*/
+    a* anAPtr = &anA;
 
-    if (as[0].a != 10 || as[1].b != 20 /*|| as[0].inner.c != 30 || as[1].inner.d != 40*/) {
+    anAPtr->a = 10;
+    anAPtr->b = 20;
+    anAPtr->inner.c = 30;
+    anAPtr->inner.d = 40;
+
+    if (anAPtr->a != 10 || anAPtr->b != 20 || anAPtr->inner.c != 30 || anAPtr->inner.d != 40) {
         return 1;
     }
 
