@@ -3,6 +3,7 @@
 
 // CHECK: {{^}}Hello World!{{$}}
 
+#include <err.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +13,7 @@ struct BFState {
     // The array and the size of the array.
     size_t array_len;
     uint8_t* array;
+    int* bracketInfoPcToPcMap;
 
     // Pointer to the current position, points into array..array+array_len.
     uint8_t* cur;
@@ -24,7 +26,10 @@ searchStringForBracket(char findingBracket, const char *string, int sizeOfString
 int brainfuck(struct BFState *state, const char *program) {
     //Program counter
     int programLength = 0;
-    for (int i = 0; program[i] != 0; i++, programLength++);
+    int* bracketInfoPcToPcMap = state->bracketInfoPcToPcMap;
+    for (int i = 0; program[i] != 0; i++, programLength++)
+        bracketInfoPcToPcMap[i] = -1;
+
     int pc = 0;
     while (pc < programLength) {
         switch (program[pc]) {
@@ -48,14 +53,22 @@ int brainfuck(struct BFState *state, const char *program) {
                 break;
             case '[':
                 if (*(state->cur) == 0) {
-                    pc = searchStringForBracket(']', program, programLength, pc, +1);
+                    if(bracketInfoPcToPcMap[pc] != -1)
+                        pc = bracketInfoPcToPcMap[pc];
+                    else
+                        pc = bracketInfoPcToPcMap[pc] = searchStringForBracket(']', program, programLength, pc, +1);
+
                     //To counter the pc++ at the end
                     pc--;
                 }
                 break;
             case ']':
                 if (*(state->cur) != 0) {
-                    pc = searchStringForBracket('[', program, programLength, pc, -1);
+                    if(bracketInfoPcToPcMap[pc] != -1)
+                        pc = bracketInfoPcToPcMap[pc];
+                    else
+                        pc = bracketInfoPcToPcMap[pc] = searchStringForBracket('[', program, programLength, pc, -1);
+
                     //To counter the pc++ at the end
                     pc--;
                 }
@@ -112,9 +125,17 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
+    int* bracketInfoPcToPcMap = malloc(sizeof(int)*array_len);
+    if (!bracketInfoPcToPcMap) {
+        fprintf(stderr, "could not allocate memory\n");
+        return EXIT_FAILURE;
+    }
+
+
     struct BFState state = {
             .array_len = array_len,
             .array = array,
+            .bracketInfoPcToPcMap = bracketInfoPcToPcMap,
             .cur = array,
     };
     int res = brainfuck(&state, argv[1]);
@@ -124,6 +145,7 @@ int main(int argc, char** argv) {
     }
 
     free(array);
+    free(bracketInfoPcToPcMap);
 
     return EXIT_SUCCESS;
 }
