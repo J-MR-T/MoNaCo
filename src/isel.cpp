@@ -147,7 +147,7 @@ auto binOpAndImmMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
 
     if(!constantOp ||
         // immediate is max 32 bit, otherwise we have to generate a mov for it
-        constantOp.value() > std::numeric_limits<int32_t>::max() || constantOp.value() < std::numeric_limits<int32_t>::min()
+        fitsInto32BitImm(constantOp.value())
     ){
         // -> we need to use the RR version, there is no pure immediate operand
         rewriter.replaceOpWithNewOp<INSTrr>(op, adaptor.getLhs(), adaptor.getRhs());
@@ -610,13 +610,19 @@ struct LLVMGEPPattern : public mlir::OpConversionPattern<LLVM::GEPOp>{
 
         // TODO the other case is some weird vector thing, i'd rather have it fail for now, if that is encountered
         assert(op.getElemType().has_value());
-        mlir::Type currentType = *op.getElemType();
+        mlir::Type currentType = *op.getElemType(); // TODO I think this is wrong
 
         for(auto indexPtr_u : indices){
             assert(getTypeConverter()->convertType(currentIndexComputationValue.getType()) == amd64::gpr64Type::get(getContext()) && "only 64 bit pointers are supported");
 
             if(mlir::Value val = indexPtr_u.dyn_cast<mlir::Value>()){
                 // no dynamic struct indices please
+                // TODO remove this if
+                if(mlir::isa<LLVM::LLVMStructType>(currentType)){
+                    val.dump();
+                    op.dump();
+                }
+
                 assert(!mlir::isa<LLVM::LLVMStructType>(currentType) && "dynamic struct indices are not allowed, this should be fixed in the verification of GEP in the llvm dialect!");
 
                 auto scaled = rewriter.create<amd64::IMUL64rri>(op.getLoc(), rewriter.getRemappedValue(val));
@@ -950,7 +956,7 @@ struct CaseInfo{
 };
 
 // TODO maybe do this non-recursively at some point, but that's too annoying for now
-template<typename CMPri>
+template<typename CMPri, typename CMPrr, typename MOVri>
 void binarySearchSwitchLowering(mlir::Location loc, mlir::ConversionPatternRewriter& rewriter, mlir::Value adaptedValue, CaseInfo defaultDest, size_t pivotIndex, std::span<CaseInfo> caseInfoSection){
     DEBUGLOG("binarySearchSwitchLowering: pivotIndex = " << pivotIndex << ", caseInfoSection.size() = " << caseInfoSection.size());
     auto* currentBlock = rewriter.getInsertionBlock();
@@ -966,9 +972,14 @@ void binarySearchSwitchLowering(mlir::Location loc, mlir::ConversionPatternRewri
     auto pivotInfo = caseInfoSection[pivotIndex];
 
     // if the value is equal, jump to the block
-    auto cmp = rewriter.create<CMPri>(loc, adaptedValue);
-    cmp.instructionInfo().imm = pivotInfo.comparisonValue;
-
+    // check whether comparison value can be encoded as a 32 bit immediate, otherwise do a MOVri, then CMPrr
+    if(fitsInto32BitImm(pivotInfo.comparisonValue)){
+        auto cmp = rewriter.create<CMPri>(loc, adaptedValue);
+        cmp.instructionInfo().imm = pivotInfo.comparisonValue;
+    }else{
+        auto movri = rewriter.create<MOVri>(loc, pivotInfo.comparisonValue);
+        rewriter.create<CMPrr>(loc, adaptedValue, movri);
+    }
     auto createBlock = [&](mlir::Block* insertAfter){
         // make a new block, but don't let the rewriter do it, because it would switch to it immediately, we want to do that manually (this is akin to OpBuilder::createBlock)
         auto* newBlock = new mlir::Block();
@@ -996,17 +1007,17 @@ void binarySearchSwitchLowering(mlir::Location loc, mlir::ConversionPatternRewri
     rewriter.create<amd64::JL>(loc, mlir::ValueRange(), mlir::ValueRange(), searchLowerHalf, searchUpperHalf);
 
     rewriter.setInsertionPointToEnd(searchLowerHalf);
-    binarySearchSwitchLowering<CMPri>(loc, rewriter, adaptedValue, defaultDest, pivotIndex/2, caseInfoSection.first(pivotIndex));
+    binarySearchSwitchLowering<CMPri, CMPrr, MOVri>(loc, rewriter, adaptedValue, defaultDest, pivotIndex/2, caseInfoSection.first(pivotIndex));
 
     rewriter.setInsertionPointToEnd(searchUpperHalf);
     // TODO check that this is modmod  done using a bitwise and with 1
-    binarySearchSwitchLowering<CMPri>(loc, rewriter, adaptedValue, defaultDest, (pivotIndex % 2 == 1) ? (pivotIndex/2) : (pivotIndex/2 - 1) , caseInfoSection.last(caseInfoSection.size() - pivotIndex - 1 /* leave out the pivot itself */));
+    binarySearchSwitchLowering<CMPri, CMPrr, MOVri>(loc, rewriter, adaptedValue, defaultDest, (pivotIndex % 2 == 1) ? (pivotIndex/2) : (pivotIndex/2 - 1) , caseInfoSection.last(caseInfoSection.size() - pivotIndex - 1 /* leave out the pivot itself */));
 }
 
 
 // TODO extend this to mlir.cf.switch
 auto switchMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
-     typename CMPrr, typename CMPri, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE
+     typename CMPri, typename CMPrr, typename MOVri, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE
      >(LLVM::SwitchOp op, LLVM::SwitchOp::Adaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
 
     auto caseValuesOpt = op.getCaseValues();
@@ -1032,14 +1043,15 @@ auto switchMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
 
     auto defaultCase = op.getDefaultDestination();
     assert(defaultCase && "switches without default cases are not allowed (I think)");
-    binarySearchSwitchLowering<CMPri>(op->getLoc(), rewriter, adaptor.getValue(), {0, defaultCase, op.getDefaultOperands()}, pivotIndex, caseValuesIntSorted);
+    binarySearchSwitchLowering<CMPri, CMPrr, MOVri>(op->getLoc(), rewriter, adaptor.getValue(), {0, defaultCase, op.getDefaultOperands()}, pivotIndex, caseValuesIntSorted);
 
     rewriter.eraseOp(op);
 
     return mlir::success();
 };
 
-PATTERN(LLVMSwitchPat, LLVM::SwitchOp, amd64::CMP, switchMatchReplace, 1, /* bitwidth matcher: basically default, but we cant use the result */ []<unsigned bitwidth, typename thisType, typename OpAdaptor>(thisType thiis, LLVM::SwitchOp op, OpAdaptor, mlir::ConversionPatternRewriter& rewriter){
+// bitwidth matcher: basically default, but we cant use the result, have to use `getValue` at the start
+auto switchBitwidthMatcher = []<unsigned bitwidth, typename thisType, typename OpAdaptor>(thisType thiis, LLVM::SwitchOp op, OpAdaptor, mlir::ConversionPatternRewriter& rewriter){
     // TODO this is almost the same as defaultBitwidthMatchLambda, try to merge them
     mlir::Type opType = op.getValue().getType();
 
@@ -1059,7 +1071,16 @@ PATTERN(LLVMSwitchPat, LLVM::SwitchOp, amd64::CMP, switchMatchReplace, 1, /* bit
         return rewriter.notifyMatchFailure(op, "bitwidth mismatch");
 
     return mlir::success();
-});
+};
+
+// TODO define for cf.switch
+#define SWITCH_PAT(name, OpTy, bitwidth)\
+    using name ## bitwidth = MatchRMI<OpTy, bitwidth, switchMatchReplace, amd64::CMP ## bitwidth ## ri, amd64::CMP ## bitwidth ## rr, amd64::MOV ## bitwidth ## ri, NOT_AVAILABLE, NOT_AVAILABLE, 1, switchBitwidthMatcher>;
+
+SWITCH_PAT(LLVMSwitchPat, LLVM::SwitchOp, 8);
+SWITCH_PAT(LLVMSwitchPat, LLVM::SwitchOp, 16);
+SWITCH_PAT(LLVMSwitchPat, LLVM::SwitchOp, 32);
+SWITCH_PAT(LLVMSwitchPat, LLVM::SwitchOp, 64);
 
 // Arithmetic stuff
 

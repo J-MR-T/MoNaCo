@@ -438,3 +438,11 @@ inline void memcpyToLittleEndianBuffer(void* bufStart, std::integral auto value,
         }
     }
 }
+
+inline bool fitsInto32BitImm(std::signed_integral auto val){
+    return std::numeric_limits<int32_t>::min() <= val && val <= std::numeric_limits<int32_t>::max();
+}
+
+inline bool fitsInto32BitImm(std::unsigned_integral auto val){
+    return std::numeric_limits<uint32_t>::min() <= val && val <= std::numeric_limits<uint32_t>::max();
+}
