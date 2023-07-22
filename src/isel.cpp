@@ -1227,7 +1227,6 @@ void populateArithToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns, m
         PATTERN_BITWIDTHS(AndIPat),
         PATTERN_BITWIDTHS(OrIPat),
         PATTERN_BITWIDTHS(XOrIPat),
-        PATTERN_BITWIDTHS(MulIPat),
         PATTERN_BITWIDTHS(DivUIPat),
         PATTERN_BITWIDTHS(DivSIPat),
         PATTERN_BITWIDTHS(RemSIPat),
