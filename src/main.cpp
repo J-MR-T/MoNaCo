@@ -101,7 +101,9 @@ int main(int argc, char *argv[]) {
     ctx.loadDialect<mlir::cf::ControlFlowDialect>();
     ctx.loadDialect<mlir::arith::ArithDialect>();
     ctx.loadDialect<mlir::LLVM::LLVMDialect>();
-    // TODO not sure about this
+    // TODO not sure about these 3
+    mlir::registerLLVMDialectTranslation(ctx);
+    mlir::registerBuiltinDialectTranslation(ctx);
     ctx.allowUnregisteredDialects();
 
     auto inputFile = ArgParse::args.input() ? *ArgParse::args.input : "-";

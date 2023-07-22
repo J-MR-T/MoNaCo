@@ -16,6 +16,13 @@
 #include <mlir/Pass/Pass.h>
 #include <mlir/IR/PatternMatch.h>
 
+// to let llvm handle translating globals
+#include <llvm/IR/IRBuilder.h>
+#include <mlir/Conversion/LLVMCommon/Pattern.h>
+#include <mlir/Target/LLVMIR/ModuleTranslation.h>
+#include <mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h>
+#include <mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h>
+
 #include "util.h"
 #include "isel.h"
 #include "AMD64/AMD64Dialect.h"
@@ -804,17 +811,24 @@ struct LLVMGlobalPat : public mlir::OpConversionPattern<LLVM::GlobalOp>{
             addr = (intptr_t) checked_dlsym(symbol);
         }
 
+        auto insertGlobalAndEraseOp = [&](){
+            globals.insert({symbol, std::move(unfinishedGlobal)});
+            rewriter.eraseOp(op);
+            return mlir::success();
+        };
+
         // TODO globals with initalization region
         if(auto initBlock = op.getInitializerBlock()){
-            auto fail = [&](){
-                return rewriter.notifyMatchFailure(op, "globals with complex initializer blocks are not supported yet");
+            auto fail = [&](StringRef msg = "globals with complex initializer blocks are not supported yet"){
+                return rewriter.notifyMatchFailure(op, msg);
             };
 
             if(initBlock->getOperations().size() == 2){
                 // TODO dyn cast operand as ptr?
+                // TODO this only remains, because it was there first, technically this case would be covered by the llvm-ir translation. But as that is probably quite slow, and this is a common case, let's leave it for now.
                 auto llvmNull = mlir::dyn_cast<LLVM::NullOp>(initBlock->getOperations().front());
-                auto ret = mlir::dyn_cast<LLVM::ReturnOp>(initBlock->getOperations().back());
-                if(!llvmNull || !ret || ret.getOperands().size() != 1 || ret.getOperand(0) != llvmNull)
+                auto ret = mlir::cast<LLVM::ReturnOp>(initBlock->getOperations().back()); // has to be a return, according to doc
+                if(!llvmNull || ret.getOperands().size() != 1 || ret.getOperand(0) != llvmNull)
                     return fail();
 
                 auto byteSize = sizeof(intptr_t);
@@ -822,9 +836,47 @@ struct LLVMGlobalPat : public mlir::OpConversionPattern<LLVM::GlobalOp>{
                 auto nullptr_ = nullptr;
                 assert(byteSize == sizeof(nullptr_) && "nullptr is not the same size as a pointer");
                 assert(memcmp(bytes.data(), &nullptr_, byteSize) == 0 && "nullptr is not all 0s");
-                unfinishedGlobal.alignment = byteSize;
-                goto finish; // TODO make nicer with a lambda or smth
+                unfinishedGlobal.alignment = op.getAlignment().value_or(byteSize);
+            }else{
+                // do the same thing that LLVM does itself (ModuleTranslation::convertGlobals), this is quite ugly, but can handle the most amount of cases
+                // TODO performance test if creating the module/context globally (or with `static` here)once is faster than locally every time
+                llvm::LLVMContext llvmCtx;
+
+                mlir::MLIRContext& mlirCtx = *op.getContext();
+
+                mlir::ModuleOp miniModule = mlir::ModuleOp::create(mlir::UnknownLoc::get(&mlirCtx));
+                miniModule.getBody()->push_back(op.clone());
+
+                auto llvmModule = translateModuleToLLVMIR(miniModule, llvmCtx);
+                if(!llvmModule)
+                    return fail("failed to translate global to llvm ir");
+
+                assert(!llvmModule->empty() && llvmModule->global_size() == 1 && "expected exactly one global in the module");
+
+                auto llvmConstant = llvmModule->globals().begin()->getInitializer();
+                if(!llvmConstant)
+                    return fail("failed to get initializer of global");
+
+                unfinishedGlobal.alignment = op.getAlignment().value_or(0);
+
+                assert(llvm::isa<llvm::ConstantData>(llvmConstant));
+                // get bytes from the constant
+                if(auto sequential = llvm::dyn_cast<llvm::ConstantDataSequential>(llvmConstant)){
+                    auto bytes = sequential->getRawDataValues();
+                    unfinishedGlobal.bytes.resize(bytes.size());
+                    memcpy(unfinishedGlobal.bytes.data(), bytes.data(), bytes.size());
+                }else if(auto zero = llvm::dyn_cast<llvm::ConstantAggregateZero>(llvmConstant)){
+                    auto byteSize = llvmModule->getDataLayout().getTypeSizeInBits(zero->getType()) / 8;
+                    unfinishedGlobal.bytes.resize(byteSize);
+#ifndef NDEBUG
+                    for(auto byte : unfinishedGlobal.bytes)
+                        assert(byte == 0 && "constant aggregate zero is not all 0s");
+#endif
+                }else{
+                    return fail("failed to get raw data values of constant, TODO");
+                }
             }
+            return insertGlobalAndEraseOp();
 
             return fail();
         }
@@ -863,13 +915,10 @@ struct LLVMGlobalPat : public mlir::OpConversionPattern<LLVM::GlobalOp>{
             addr = (intptr_t) checked_dlsym(symbol);
         }
 
-    finish:
         unfinishedGlobal.alignment = static_cast<unsigned>(adaptor.getAlignment().value_or(mlir::DataLayout::closest(op).getTypeSize(adaptor.getGlobalType())));
 
         // TODO handle visibility
-        globals.insert({symbol, std::move(unfinishedGlobal)});
-        rewriter.eraseOp(op);
-        return mlir::success();
+        return insertGlobalAndEraseOp();
     }
 };
 

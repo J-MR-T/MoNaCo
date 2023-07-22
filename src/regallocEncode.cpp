@@ -2,6 +2,7 @@
 #include <fadec.h>
 
 #include <llvm/Support/Format.h>
+#include <llvm/Support/Alignment.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/ControlFlow/IR/ControlFlow.h>
@@ -410,6 +411,8 @@ public:
         uint8_t* cur = bufStart;
         for(auto [sym, globalRef] : globalsSorted){
             auto& global = globalRef;
+            if(global.alignment != 0)
+                cur = (uint8_t*) llvm::alignTo((intptr_t) cur, global.alignment);
 
             if(global.addrInDataSection != (intptr_t) cur){
                 DEBUGLOG("abnormal address: " << (void*) global.addrInDataSection << " vs " << (void*) cur);
@@ -619,11 +622,18 @@ struct AbstractRegAllocerEncoder{
 
             auto it = globals.find(sym);
             assert(it != globals.end() && "global not found in globals map");
-
             auto& global = it->second;
+
+            // skip external/finished global
             if(global.addrInDataSection != 0){
                 DEBUGLOG("Global already written, skipping");
                 continue;
+            }
+
+            // align
+            if(global.alignment != 0){
+                cur = (uint8_t*) llvm::alignTo((intptr_t) cur, global.alignment);
+                assert((intptr_t) cur % global.alignment == 0 && "global alignment has gone wrong");
             }
 
             memcpy(cur, global.bytes.data(), global.bytes.size());
