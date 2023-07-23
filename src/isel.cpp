@@ -493,12 +493,14 @@ CALL_PAT(8); CALL_PAT(16); CALL_PAT(32); CALL_PAT(64);
 // returns
 auto returnMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename RET, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE
-     >(mlir::func::ReturnOp returnOp, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
+     >(auto returnOp, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
     mlir::Value retOperand;
     if(returnOp.getNumOperands() > 1)
         return rewriter.notifyMatchFailure(returnOp, "multiple return values not supported");
     else if(returnOp.getNumOperands() == 0)
-        retOperand = rewriter.create<amd64::MOV64ri>(returnOp.getLoc(), 0); // TODO this is not right yet, need to know the return type for the right bitwidth
+        // if there is a zero op return, the function does not return anythign ,so we can just mov 0 to rax and return that.
+        // TODO consider omitting the return
+        retOperand = rewriter.create<amd64::MOV64ri>(returnOp.getLoc(), 0);
     else
         retOperand = adaptor.getOperands().front();
 
@@ -755,16 +757,7 @@ struct LLVMAddrofPat : public mlir::OpConversionPattern<LLVM::AddressOfOp>{
     }
 };
 
-auto llvmReturnMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
-     typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr
-     >(LLVM::ReturnOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
-    // TODO arg is optional, handle it not existing
-    rewriter.replaceOpWithNewOp<INSTrr>(op, adaptor.getArg());
-    return mlir::success();
-};
-
-// probably wrong
-using LLVMReturnPat = MatchRMI<LLVM::ReturnOp, 64, llvmReturnMatchReplace, amd64::RET, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, ignoreBitwidthMatchLambda>;
+using LLVMReturnPat = MatchRMI<LLVM::ReturnOp, 64, returnMatchReplace, amd64::RET, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, NOT_AVAILABLE, 1, ignoreBitwidthMatchLambda>;
 
 struct LLVMFuncPat : public mlir::OpConversionPattern<LLVM::LLVMFuncOp>{
     LLVMFuncPat(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<LLVM::LLVMFuncOp>(tc, ctx, 1){}
