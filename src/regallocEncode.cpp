@@ -26,11 +26,13 @@ using Special = amd64::Special;
 
 // TODO very small test indicates, that the cache doesn't work (i.e. performs worse), if there aren't many calls to a function
 // TODO a simple string map would probably be better anyways, DenseMaps waste a lot of key space too
-mlir::Operation* getFuncForCall(mlir::ModuleOp mod, auto call, llvm::DenseMap<mlir::SymbolRefAttr, mlir::Operation*>& cache){
-    // get function back from call
-    mlir::CallInterfaceCallable callee = call.getCallableForCallee();
+mlir::Operation* getFuncForCall(mlir::ModuleOp mod, mlir::CallInterfaceCallable callee, llvm::DenseMap<mlir::SymbolRefAttr, mlir::Operation*>& cache){
     auto [it, _] = cache.try_emplace(callee.get<mlir::SymbolRefAttr>(), mlir::SymbolTable::lookupNearestSymbolFrom(mod, callee.get<mlir::SymbolRefAttr>()));
     return it->second;
+}
+mlir::Operation* getFuncForCall(mlir::ModuleOp mod, auto callee, llvm::DenseMap<mlir::SymbolRefAttr, mlir::Operation*>& cache){
+    // get function back from call
+    return getFuncForCall(mod, callee.getCallableForCallee(), cache);
 }
 
 // TODO maybe merge this with the AbstractRegAllocerEncoder
@@ -577,6 +579,10 @@ struct AbstractRegAllocerEncoder{
 
     mlir::ModuleOp mod;
 
+    // === information for patching in stuff at the end ===
+
+    llvm::SmallVector<std::pair<uint8_t* /* where */, mlir::Block* /* function entry */>, 8> incompleteFunctionAddressMOVABS;
+
     /// size of the stack of the current function, measured in bytes from the base pointer. Includes saving of callee-saved registers. This is for easy access to the current top of stack
     uint32_t stackSizeFromBP = 0;
     /// number of bytes used for special purposes, like saving return address and BP
@@ -585,7 +591,7 @@ struct AbstractRegAllocerEncoder{
 
     /// the SUB64rr rsp, xxx instruction that allocates the stackframe
     uint8_t* stackAllocationInstruction = nullptr;
-    /// the ADD64rr rsp, xxx instruction***s*** that deallocate the stackframe
+    /// the ADD64rr rsp, xxx instruction*s* that deallocate the stackframe
     llvm::SmallVector<uint8_t*, 8> stackDeallocationInstructions;
 
     /// the number of bytes we need to allocate at the end doesn't include the preallocated stack bytes (specialStackBytes + what is needed for saving callee saved regs), because they are already allocated, so these need to be saved, to be subtracted from the total
@@ -779,6 +785,60 @@ struct AbstractRegAllocerEncoder{
                         auto mov64ri = builder.create<amd64::MOV64ri>(addrofGlobalOp.getLoc(), (intptr_t)globalAddr);
                         addrofGlobalOp.replaceAllUsesWith(mov64ri->getResult(0));
                         allocateEncodeValueDef(mov64ri);
+                    }else if(auto addrofFuncOp = mlir::dyn_cast<amd64::AddrOfFunc>(&op)) [[unlikely]]{
+                        // TODO this is not very nice
+                        mlir::CallInterfaceCallable callable = addrofFuncOp.getNameAttr();
+                        auto maybeFunc = getFuncForCall(mod, callable, encoder.symbolrefToFuncCache);
+
+                        // we will use a mov64ri to move various pointers/addresses into place, but we need to replace the original ops use
+                        auto allocateEncodeMOV64ri = [&](intptr_t addr){
+                            // TODO maaaaybe merge with addrofglobal? has similar code
+                            mlir::OpBuilder builder(&op);
+                            auto mov64ri = builder.create<amd64::MOV64ri>(addrofFuncOp.getLoc(), addr);
+                            addrofFuncOp.replaceAllUsesWith(mov64ri->getResult(0));
+                            allocateEncodeValueDef(mov64ri);
+
+                        };
+
+                        auto handleExternal = [&](){
+                            if(encoder.jit){
+                                // try to find the function in the environment
+                                intptr_t fnPtr = (intptr_t) checked_dlsym(addrofFuncOp.getName());
+                                assert(fnPtr && "Symbol not found");
+
+                                allocateEncodeMOV64ri(fnPtr);
+                            }else{
+                                llvm::errs() << "Call to external function, relocations not implemented yet";
+                            }
+                        };
+
+                        // TODO at the moment this can't even be called with external things, so maybe remove this in the future
+                        // function has a declaration
+                        if(maybeFunc){
+                            auto func = mlir::cast<mlir::func::FuncOp>(maybeFunc);
+                            if(func.isExternal()){
+                                handleExternal();
+                            }else{
+
+                                mlir::Block* entryBlock = &func.getBody().front();
+                                assert(entryBlock && "function has no entry block");
+
+                                // if we've already written this, we can just use the address we've written it to
+                                if(auto entryBlockAddrIt = encoder.blocksToBuffer.find(entryBlock); entryBlockAddrIt != encoder.blocksToBuffer.end()){
+                                    allocateEncodeMOV64ri((intptr_t)entryBlockAddrIt->second);
+                                }else{
+                                    // if we don't know it yet, generate a dummy instruction to be patched later
+
+                                    auto bufLocation = encoder.saveCur();
+                                    allocateEncodeMOV64ri(0x0100000000000000 /* to reserve space for the 64bit pointer immediate */);
+
+                                    incompleteFunctionAddressMOVABS.emplace_back(bufLocation, entryBlock);
+                                }
+                            }
+                        }else{
+                            // its probably external
+                            handleExternal();
+                        }
                     }
 
                     if constexpr(isEntryBlock){
@@ -796,6 +856,7 @@ struct AbstractRegAllocerEncoder{
 
 
             // TODO probably yeet this if constexpr at some point, this is just for performance testing. Or maybe make it dependent on the optimization level, if there is a significant difference
+            // TODO make a feature arg for it
             constexpr bool useRPO = true;
 
             // set vector might be quite expensive, but it seems alright
@@ -919,10 +980,15 @@ struct AbstractRegAllocerEncoder{
 #endif
         }
 
+        // resolve all things that need to know every block
         failed |= encoder.resolveBranches();
-
-        // TODO at some point trim the vector to size
-        // the current problem with that is, that the vector doesn't know it's own size, it thinks its empty, so resize populate the vector with the default value, which is not what we want
+        // this also includes the function address moves
+        auto cur = encoder.saveCur();
+        for(auto [buf, entryBlock] : incompleteFunctionAddressMOVABS){
+            encoder.restoreCur(buf);
+            encoder.encodeRaw(FE_MOV64ri, (intptr_t) encoder.blocksToBuffer[entryBlock]);
+        }
+        encoder.restoreCur(cur);
 
         return failed;
     }

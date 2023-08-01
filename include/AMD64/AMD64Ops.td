@@ -230,6 +230,10 @@ def AddrOfGlobal : AMD64_Op<"AddrOfGlobal">{
   let arguments = (ins FlatSymbolRefAttr:$name);
   let results = (outs gpr64:$addr);
 }
+def AddrOfFunc : AMD64_Op<"AddrOfFunc">{
+  let arguments = (ins FlatSymbolRefAttr:$name);
+  let results = (outs gpr64:$addr);
+}
 
 // === properties ===
 

@@ -739,15 +739,23 @@ struct LLVMAddrofPat : public mlir::OpConversionPattern<LLVM::AddressOfOp>{
 
     mlir::LogicalResult matchAndRewrite(LLVM::AddressOfOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
         auto global = mlir::SymbolTable::lookupNearestSymbolFrom(op, adaptor.getGlobalNameAttr());
+        assert(global && "global from addrof not found");
         if(auto globalOp = mlir::dyn_cast<LLVM::GlobalOp>(global)){
             // we don't necessarily know the offset of the global yet, might need to be resolved later
             // TODO maybe pass globals and check if it's in there already to avoid making the extra op. Might also be slower, not sure
             rewriter.replaceOpWithNewOp<amd64::AddrOfGlobal>(op, adaptor.getGlobalNameAttr());
             return mlir::success();
-        }else if(auto func = mlir::dyn_cast<LLVM::LLVMFuncOp>(global)){
-            rewriter.replaceOpWithNewOp<amd64::MOV64ri>(op, (intptr_t) checked_dlsym(func.getName()));
+        }else {
+            auto mlirFunc = mlir::dyn_cast<mlir::func::FuncOp>(global);
+            auto llvmFunc = mlir::dyn_cast<LLVM::LLVMFuncOp>(global);
+            if((mlirFunc && mlirFunc.isExternal()) || (llvmFunc && llvmFunc.isExternal()))
+                rewriter.replaceOpWithNewOp<amd64::MOV64ri>(op, (intptr_t) checked_dlsym(adaptor.getGlobalName()));
+            else
+                rewriter.replaceOpWithNewOp<amd64::AddrOfFunc>(op, adaptor.getGlobalNameAttr());
             return mlir::success();
         }
+        global->dump();
+        op.dump();
         llvm_unreachable("TODO what?");
     }
 };
