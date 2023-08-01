@@ -1107,6 +1107,35 @@ PATTERN(LLVMAndPat, LLVM::AndOp, amd64::AND, binOpMatchReplace);
 PATTERN(LLVMOrPat,  LLVM::OrOp,  amd64::OR,  binOpMatchReplace);
 PATTERN(LLVMXOrPat, LLVM::XOrOp, amd64::XOR, binOpMatchReplace);
 
+#define MUL_DIV_PAT(bitwidth)                                                                                       \
+    using LLVMMulPat ## bitwidth = MatchRMI<LLVM::MulOp, bitwidth, binOpMatchReplace, amd64::MUL ## bitwidth ## r>; \
+    using LLVMUDivPat ## bitwidth = MatchRMI<LLVM::UDivOp, bitwidth,                                                \
+        matchDivRem<false>,                                                                                         \
+        amd64::DIV ## bitwidth ## r>;                                                                               \
+    using LLVMSDivPat ## bitwidth = MatchRMI<LLVM::SDivOp, bitwidth,                                                \
+        matchDivRem<false>,                                                                                         \
+        amd64::IDIV ## bitwidth ## r>;                                                                              \
+    using LLVMURemPat ## bitwidth = MatchRMI<LLVM::URemOp, bitwidth,                                                \
+        matchDivRem<true>,                                                                                          \
+        amd64::DIV ## bitwidth ## r>;                                                                               \
+    using LLVMSRemPat ## bitwidth = MatchRMI<LLVM::SRemOp, bitwidth,                                                \
+        matchDivRem<true>,                                                                                          \
+        amd64::IDIV ## bitwidth ## r>;
+
+MUL_DIV_PAT(8); MUL_DIV_PAT(16); MUL_DIV_PAT(32); MUL_DIV_PAT(64);
+
+#undef MUL_DIV_PAT
+
+#define SHIFT_PAT(bitwidth)                                                                                                                               \
+    using LLVMShlPat ## bitwidth  = MatchRMI<LLVM::ShlOp,  bitwidth, binOpMatchReplace, amd64::SHL ## bitwidth ## rr, amd64::SHL ## bitwidth ## ri>; \
+    using LLVMLShrPat ## bitwidth = MatchRMI<LLVM::LShrOp, bitwidth, binOpMatchReplace, amd64::SHR ## bitwidth ## rr, amd64::SHR ## bitwidth ## ri>; \
+    using LLVMAShrPat ## bitwidth = MatchRMI<LLVM::AShrOp, bitwidth, binOpMatchReplace, amd64::SAR ## bitwidth ## rr, amd64::SAR ## bitwidth ## ri>;
+
+SHIFT_PAT(8); SHIFT_PAT(16); SHIFT_PAT(32); SHIFT_PAT(64);
+
+#undef SHIFT_PAT
+
+
 template<typename OpTy, auto matchAndRewriteInject, unsigned benefit = 1>
 struct SimplePat : public mlir::OpConversionPattern<OpTy>{
     using OpAdaptor = typename mlir::OpConversionPattern<OpTy>::OpAdaptor;
@@ -1193,35 +1222,6 @@ struct LLVMIntrGenericPat : public mlir::OpConversionPattern<LLVM::CallIntrinsic
     }
 
 };
-
-
-#define MUL_DIV_PAT(bitwidth)                                                                                       \
-    using LLVMMulPat ## bitwidth = MatchRMI<LLVM::MulOp, bitwidth, binOpMatchReplace, amd64::MUL ## bitwidth ## r>; \
-    using LLVMUDivPat ## bitwidth = MatchRMI<LLVM::UDivOp, bitwidth,                                                \
-        matchDivRem<false>,                                                                                         \
-        amd64::DIV ## bitwidth ## r>;                                                                               \
-    using LLVMSDivPat ## bitwidth = MatchRMI<LLVM::SDivOp, bitwidth,                                                \
-        matchDivRem<false>,                                                                                         \
-        amd64::IDIV ## bitwidth ## r>;                                                                              \
-    using LLVMURemPat ## bitwidth = MatchRMI<LLVM::URemOp, bitwidth,                                                \
-        matchDivRem<true>,                                                                                          \
-        amd64::DIV ## bitwidth ## r>;                                                                               \
-    using LLVMSRemPat ## bitwidth = MatchRMI<LLVM::SRemOp, bitwidth,                                                \
-        matchDivRem<true>,                                                                                          \
-        amd64::IDIV ## bitwidth ## r>;
-
-MUL_DIV_PAT(8); MUL_DIV_PAT(16); MUL_DIV_PAT(32); MUL_DIV_PAT(64);
-
-#undef MUL_DIV_PAT
-
-#define SHIFT_PAT(bitwidth)                                                                                                                               \
-    using LLVMShlPat ## bitwidth  = MatchRMI<LLVM::ShlOp,  bitwidth, binOpMatchReplace, amd64::SHL ## bitwidth ## rr, amd64::SHL ## bitwidth ## ri>; \
-    using LLVMLShrPat ## bitwidth = MatchRMI<LLVM::LShrOp, bitwidth, binOpMatchReplace, amd64::SHR ## bitwidth ## rr, amd64::SHR ## bitwidth ## ri>; \
-    using LLVMAShrPat ## bitwidth = MatchRMI<LLVM::AShrOp, bitwidth, binOpMatchReplace, amd64::SAR ## bitwidth ## rr, amd64::SAR ## bitwidth ## ri>;
-
-SHIFT_PAT(8); SHIFT_PAT(16); SHIFT_PAT(32); SHIFT_PAT(64);
-
-#undef SHIFT_PAT
 
 } // end anonymous namespace
 
