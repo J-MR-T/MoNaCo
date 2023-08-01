@@ -383,80 +383,80 @@ using BrPat = MatchRMI<mlir::cf::BranchOp, 64, branchMatchReplace, amd64::JMP, N
 
 template<typename IntegerCmpOp, typename thisType, typename OpAdaptor>
 auto condBrMatchReplace = [](thisType thiis, auto /* some kind of cond branch, either cf or llvm */ op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
-        auto ops1 = adaptor.getTrueDestOperands();
-        auto ops2 = adaptor.getFalseDestOperands();
+    auto ops1 = adaptor.getTrueDestOperands();
+    auto ops2 = adaptor.getFalseDestOperands();
 
-        auto* block1 = op.getTrueDest();
-        auto* block2 = op.getFalseDest();
+    auto* block1 = op.getTrueDest();
+    auto* block2 = op.getFalseDest();
 
-        assert(thiis->getTypeConverter()->convertType(mlir::IntegerType::get(thiis->getContext(), 1)) == amd64::gpr8Type::get(thiis->getContext()));
+    assert(thiis->getTypeConverter()->convertType(mlir::IntegerType::get(thiis->getContext(), 1)) == amd64::gpr8Type::get(thiis->getContext()));
 
-        auto generalI1Case = [&](){
-            // and the condition i1 with 1, then do JNZ
-            auto andri = rewriter.create<amd64::AND8ri>(op.getLoc(), adaptor.getCondition());
-            andri.instructionInfo().imm = 1;
+    auto generalI1Case = [&](){
+        // and the condition i1 with 1, then do JNZ
+        auto andri = rewriter.create<amd64::AND8ri>(op.getLoc(), adaptor.getCondition());
+        andri.instructionInfo().imm = 1;
 
-            rewriter.replaceOpWithNewOp<amd64::JNZ>(op, ops1, ops2, block1, block2);
-            return mlir::success();
-        };
+        rewriter.replaceOpWithNewOp<amd64::JNZ>(op, ops1, ops2, block1, block2);
+        return mlir::success();
+    };
 
-        // if its a block argument, emit a CMP and a conditional JMP
-        if(adaptor.getCondition().template isa<mlir::BlockArgument>()) [[unlikely]]{
-            // need to do this in case of a block argument at the start, because otherwise calling getDefiningOp() will fail. This is also called if no other case matches
-            return generalI1Case();
-        } else if(auto constI1AsMov8 = mlir::dyn_cast<amd64::MOV8ri>(adaptor.getCondition().getDefiningOp())) [[unlikely]]{
-            // constant conditions, that can either occur naturally or through folding, will result in i1 constants that get matched by the constant int pattern, and thus converted to MOV8ri (because i1 is modeled as 8 bit)
+    // if its a block argument, emit a CMP and a conditional JMP
+    if(adaptor.getCondition().template isa<mlir::BlockArgument>()) [[unlikely]]{
+        // need to do this in case of a block argument at the start, because otherwise calling getDefiningOp() will fail. This is also called if no other case matches
+        return generalI1Case();
+    } else if(auto constI1AsMov8 = mlir::dyn_cast<amd64::MOV8ri>(adaptor.getCondition().getDefiningOp())) [[unlikely]]{
+        // constant conditions, that can either occur naturally or through folding, will result in i1 constants that get matched by the constant int pattern, and thus converted to MOV8ri (because i1 is modeled as 8 bit)
 
-            // do an unconditional JMP, if it's a constant condition
-            if(constI1AsMov8.instructionInfo().imm)
-                rewriter.replaceOpWithNewOp<amd64::JMP>(op, ops1, block1);
-            else
-                rewriter.replaceOpWithNewOp<amd64::JMP>(op, ops2, block2);
+        // do an unconditional JMP, if it's a constant condition
+        if(constI1AsMov8.instructionInfo().imm)
+            rewriter.replaceOpWithNewOp<amd64::JMP>(op, ops1, block1);
+        else
+            rewriter.replaceOpWithNewOp<amd64::JMP>(op, ops2, block2);
 
-            // TODO how do I remove this MOV8ri, if it's only used here? erasing it results in an error about failing to legalize the erased op
-            return mlir::success();
-        } else if(auto setccPredicate = mlir::dyn_cast<amd64::PredicateInterface>(adaptor.getCondition().getDefiningOp())){
-            // conditional branch
+        // TODO how do I remove this MOV8ri, if it's only used here? erasing it results in an error about failing to legalize the erased op
+        return mlir::success();
+    } else if(auto setccPredicate = mlir::dyn_cast<amd64::PredicateInterface>(adaptor.getCondition().getDefiningOp())){
+        // conditional branch
 
-            auto cmpi = mlir::dyn_cast<IntegerCmpOp>(op.getCondition().getDefiningOp());
-            auto CMP = setccPredicate->getPrevNode();
-            assert(cmpi && CMP && "Conditional branch with SETcc, but without cmpi and CMP");
+        auto cmpi = mlir::dyn_cast<IntegerCmpOp>(op.getCondition().getDefiningOp());
+        auto CMP = setccPredicate->getPrevNode();
+        assert(cmpi && CMP && "Conditional branch with SETcc, but without cmpi and CMP");
 
-            // we're using the SETcc here, because the cmpi might have been folded, so we need to get to the original CMP, which is the CMP before the SETcc, then the SETcc has the right predicate
+        // we're using the SETcc here, because the cmpi might have been folded, so we need to get to the original CMP, which is the CMP before the SETcc, then the SETcc has the right predicate
 
-            // cmp should already have been replaced by the cmp pattern, so we don't need to do that here
-            // but the cmp can be arbitrarily far away, so we need to reinsert it here, except if it's immediately before our current op (cond.br), and it's the replacement for the SETcc that we're using
-            if(!(cmpi->getNextNode() == op && setccPredicate->getNextNode() == cmpi)){
-                // TODO IR/Builders.cpp suggests that this gets inserted at the right point, but check again
-                // clone the cmpi, it will then have no uses and get pattern matched with the normal cmp pattern as we want. The SET from that pattern shouldn't be generated, because the cmpi is dead.
-                rewriter.clone(*CMP);
-            }
-
-
-            using namespace amd64::conditional;
-
-            switch(setccPredicate.getPredicate()){
-                case Z:  rewriter.replaceOpWithNewOp<amd64::JE>(op,  ops1, ops2, block1, block2); break;
-                case NZ: rewriter.replaceOpWithNewOp<amd64::JNE>(op, ops1, ops2, block1, block2); break;
-                case L:  rewriter.replaceOpWithNewOp<amd64::JL>(op,  ops1, ops2, block1, block2); break;
-                case LE: rewriter.replaceOpWithNewOp<amd64::JLE>(op, ops1, ops2, block1, block2); break;
-                case G:  rewriter.replaceOpWithNewOp<amd64::JG>(op,  ops1, ops2, block1, block2); break;
-                case GE: rewriter.replaceOpWithNewOp<amd64::JGE>(op, ops1, ops2, block1, block2); break;
-                case C:  rewriter.replaceOpWithNewOp<amd64::JB>(op,  ops1, ops2, block1, block2); break;
-                case BE: rewriter.replaceOpWithNewOp<amd64::JBE>(op, ops1, ops2, block1, block2); break;
-                case A:  rewriter.replaceOpWithNewOp<amd64::JA>(op,  ops1, ops2, block1, block2); break;
-                case NC: rewriter.replaceOpWithNewOp<amd64::JAE>(op, ops1, ops2, block1, block2); break;
-                default: llvm_unreachable("unknown predicate");
-            }
-
-            //if(setccPredicate->use_empty())
-                //rewriter.eraseOp(setccPredicate);
-
-            return mlir::success();
-        }else{
-            // general i1 arithmetic
-            return generalI1Case();
+        // cmp should already have been replaced by the cmp pattern, so we don't need to do that here
+        // but the cmp can be arbitrarily far away, so we need to reinsert it here, except if it's immediately before our current op (cond.br), and it's the replacement for the SETcc that we're using
+        if(!(cmpi->getNextNode() == op && setccPredicate->getNextNode() == cmpi)){
+            // TODO IR/Builders.cpp suggests that this gets inserted at the right point, but check again
+            // clone the cmpi, it will then have no uses and get pattern matched with the normal cmp pattern as we want. The SET from that pattern shouldn't be generated, because the cmpi is dead.
+            rewriter.clone(*CMP);
         }
+
+
+        using namespace amd64::conditional;
+
+        switch(setccPredicate.getPredicate()){
+            case Z:  rewriter.replaceOpWithNewOp<amd64::JE>(op,  ops1, ops2, block1, block2); break;
+            case NZ: rewriter.replaceOpWithNewOp<amd64::JNE>(op, ops1, ops2, block1, block2); break;
+            case L:  rewriter.replaceOpWithNewOp<amd64::JL>(op,  ops1, ops2, block1, block2); break;
+            case LE: rewriter.replaceOpWithNewOp<amd64::JLE>(op, ops1, ops2, block1, block2); break;
+            case G:  rewriter.replaceOpWithNewOp<amd64::JG>(op,  ops1, ops2, block1, block2); break;
+            case GE: rewriter.replaceOpWithNewOp<amd64::JGE>(op, ops1, ops2, block1, block2); break;
+            case C:  rewriter.replaceOpWithNewOp<amd64::JB>(op,  ops1, ops2, block1, block2); break;
+            case BE: rewriter.replaceOpWithNewOp<amd64::JBE>(op, ops1, ops2, block1, block2); break;
+            case A:  rewriter.replaceOpWithNewOp<amd64::JA>(op,  ops1, ops2, block1, block2); break;
+            case NC: rewriter.replaceOpWithNewOp<amd64::JAE>(op, ops1, ops2, block1, block2); break;
+            default: llvm_unreachable("unknown predicate");
+        }
+
+        //if(setccPredicate->use_empty())
+            //rewriter.eraseOp(setccPredicate);
+
+        return mlir::success();
+    }else{
+        // general i1 arithmetic
+        return generalI1Case();
+    }
 };
 
 struct CondBrPat : public mlir::OpConversionPattern<mlir::cf::CondBranchOp> {
