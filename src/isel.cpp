@@ -1191,10 +1191,9 @@ using LLVMUnreachablePat = SimplePat<LLVM::UnreachableOp, [](auto op, auto, mlir
 
 
 auto selectMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
-     typename ANDri, typename CMOVNZrr, typename MOVrr, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE
-     >(auto op, auto adaptor, mlir::ConversionPatternRewriter& rewriter){
-    /* and the condition i1 with 1, then do a cmov */
-    /* TODO this can be improved by trying to reason about where the i1 came from, but this is guaranteed to work, because i1s are moedled as 8 bit regs, so we need to take care of them having values other than 0 and 1 */
+    typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE, typename = NOT_AVAILABLE
+    >(auto op, auto adaptor, mlir::ConversionPatternRewriter& rewriter){
+    // to handle the most cases possible, just do branching. For integer selects, CMOVs would theoretically be possible, but hard to get working in SSA, and for FP selects, there are no CMOVs.
 
     mlir::Block* trueBlock = new mlir::Block();
     rewriter.notifyBlockCreated(trueBlock);
@@ -1202,7 +1201,7 @@ auto selectMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
     rewriter.notifyBlockCreated(falseBlock);
 
     mlir::Block* originalBlock = rewriter.getInsertionBlock();
-    auto condBr = rewriter.create<LLVM::CondBrOp>(op->getLoc(), op.getCondition(), trueBlock, falseBlock); // TODO translated transitively atm, probably not the fastest, but easier
+    rewriter.create<LLVM::CondBrOp>(op->getLoc(), op.getCondition(), trueBlock, falseBlock); // TODO translated transitively atm, probably not the fastest, but easier
 
     mlir::Block* mergeBlock = rewriter.splitBlock(originalBlock, rewriter.getInsertionPoint());
     trueBlock->insertBefore(mergeBlock);
@@ -1219,7 +1218,7 @@ auto selectMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
     return mlir::success();
 };
 #define SELECT_PAT(bitwidth, lambda) \
-    using LLVMSelectPat ## bitwidth = MatchRMI<LLVM::SelectOp, bitwidth, lambda, amd64::AND ## bitwidth ## ri, amd64::CMOVNZ ## bitwidth ## rr, amd64::MOV ## bitwidth ## rr>;
+    using LLVMSelectPat ## bitwidth = MatchRMI<LLVM::SelectOp, bitwidth, lambda>;
 
 // TODO because there's no 8 bit CMOV, this is not currently supported. Maybe do 16 bit cmov plus trunc
 SELECT_PAT(16, selectMatchReplace);
