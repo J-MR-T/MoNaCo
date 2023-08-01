@@ -475,9 +475,9 @@ auto callMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
 
     // direct call and indirect call are just handled the same as in the llvm dialect, the first op can be a ptr. So we don't do anything here, and check if the attribute exists in encoding, if it does, move it to AX and start one after the normal operand with moving to the operand registers
     if(callOp.getNumResults() == 0)
-        rewriter.replaceOpWithNewOp<CALL>(callOp, TypeRange(), callOp.getCalleeAttr(), adaptor.getOperands());
+        rewriter.replaceOpWithNewOp<CALL>(callOp, TypeRange(),                        callOp.getCalleeAttr(), /* is guaranteed external */ false, adaptor.getOperands());
     else
-        rewriter.replaceOpWithNewOp<CALL>(callOp, gprType::get(callOp->getContext()), callOp.getCalleeAttr(), adaptor.getOperands());
+        rewriter.replaceOpWithNewOp<CALL>(callOp, gprType::get(callOp->getContext()), callOp.getCalleeAttr(), /* is guaranteed external */ false, adaptor.getOperands());
 
     return mlir::success();
 };
@@ -712,11 +712,6 @@ struct LLVMAllocaPat : public mlir::OpConversionPattern<mlir::LLVM::AllocaOp>{
     }
 };
 
-struct IntrinsicsPattern : public mlir::OpConversionPattern<LLVM::CallIntrinsicOp>{
-    // TODO
-
-};
-
 auto llvmMovMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
      typename INSTrr, typename INSTri, typename INSTrm, typename INSTmi, typename INSTmr
      >(LLVM::ConstantOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) {
@@ -840,6 +835,8 @@ struct LLVMGlobalPat : public mlir::OpConversionPattern<LLVM::GlobalOp>{
             }else{
                 // do the same thing that LLVM does itself (ModuleTranslation::convertGlobals), this is quite ugly, but can handle the most amount of cases
                 // TODO performance test if creating the module/context globally (or with `static` here)once is faster than locally every time
+                // TODO because globals (that might need to be translated by llvm) can cross reference each other, we can't create isolated modules only containing one global, we need to create one big llvm module containing all globals, to allow for that. But only do it if it actually happens 
+                // TODO calling functions in global initializers would be even more difficult.
                 llvm::LLVMContext llvmCtx;
 
                 mlir::MLIRContext& mlirCtx = *op.getContext();
@@ -1149,11 +1146,54 @@ using LLVMEraseMetadataPat = SimplePat<LLVM::MetadataOp, [](auto op, auto, mlir:
 
 using LLVMUnreachablePat = SimplePat<LLVM::UnreachableOp, [](auto op, auto,  mlir::ConversionPatternRewriter& rewriter){
     if(ArgParse::features["unreachable-abort"])
-        rewriter.replaceOpWithNewOp<amd64::CALL>(op, TypeRange(), mlir::FlatSymbolRefAttr::get(rewriter.getContext(), "abort"), ValueRange());
+        rewriter.replaceOpWithNewOp<amd64::CALL>(op, TypeRange(), mlir::FlatSymbolRefAttr::get(rewriter.getContext(), "abort"), /* is guaranteed external */ true, ValueRange());
     else
         rewriter.eraseOp(op);
     return mlir::success();
 }>;
+
+using LLVMIntrMemCpyPat = SimplePat<LLVM::MemcpyOp, [](auto op, LLVM::MemcpyOp::Adaptor adaptor, mlir::ConversionPatternRewriter& rewriter){
+    rewriter.replaceOpWithNewOp<amd64::CALL>(op,
+        TypeRange(),
+        mlir::FlatSymbolRefAttr::get(rewriter.getContext(), "memcpy"),
+        /* is guaranteed external */ true,
+        ValueRange({
+            adaptor.getDst(),
+            adaptor.getSrc(),
+            adaptor.getLen()
+        })
+    );
+    return mlir::success();
+}, 2>;
+
+using LLVMIntrMemSetPat = SimplePat<LLVM::MemsetOp, [](auto op, auto adaptor, mlir::ConversionPatternRewriter& rewriter){
+    // first zero extend the first arg, as it is an 8 bit signless int in LLVM (and interpreted as such by memset), but passed as a 32 bit int
+    static_assert(sizeof(int) == 4, "non 32 bit int platforms not supported yet");
+    auto zextVal = rewriter.create<amd64::MOVZXr32r8>(op.getLoc(), adaptor.getVal());
+    rewriter.replaceOpWithNewOp<amd64::CALL>(op,
+        TypeRange(),
+        mlir::FlatSymbolRefAttr::get(rewriter.getContext(), "memset"),
+        /* is guaranteed external */ true,
+        ValueRange({
+            adaptor.getDst(),
+            zextVal,
+            adaptor.getLen()
+        })
+    );
+    return mlir::success();
+}, 2>;
+
+struct LLVMIntrGenericPat : public mlir::OpConversionPattern<LLVM::CallIntrinsicOp>{
+    LLVMIntrGenericPat(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<LLVM::CallIntrinsicOp>(tc, ctx, 1){}
+
+    mlir::LogicalResult matchAndRewrite(LLVM::CallIntrinsicOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
+        // TODO for mcf still necesasry: FMA intr. 2 options: either use FMA extension (but those are vector based instructions), or just split it up
+        op.dump();
+        return rewriter.notifyMatchFailure(op, "unknown intrinsic" + adaptor.getIntrin());
+    }
+
+};
+
 
 #define MUL_DIV_PAT(bitwidth)                                                                                       \
     using LLVMMulPat ## bitwidth = MatchRMI<LLVM::MulOp, bitwidth, binOpMatchReplace, amd64::MUL ## bitwidth ## r>; \
@@ -1294,7 +1334,10 @@ void populateLLVMToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns, ml
         PATTERN_BITWIDTHS(LLVMICmpPat),
         LLVMZExtPat16_8,  LLVMZExtPat32_8,  LLVMZExtPat64_8,  LLVMZExtPat32_16,  LLVMZExtPat64_16,  LLVMZExtPat64_32,
         LLVMSExtPat16_8,  LLVMSExtPat32_8,  LLVMSExtPat64_8,  LLVMSExtPat32_16,  LLVMSExtPat64_16,  LLVMSExtPat64_32,
-        LLVMTruncPat8_16, LLVMTruncPat8_32, LLVMTruncPat8_64, LLVMTruncPat16_32, LLVMTruncPat16_64, LLVMTruncPat32_64
+        LLVMTruncPat8_16, LLVMTruncPat8_32, LLVMTruncPat8_64, LLVMTruncPat16_32, LLVMTruncPat16_64, LLVMTruncPat32_64,
+        // intrinsics
+        LLVMIntrMemCpyPat, LLVMIntrMemSetPat,
+        LLVMIntrGenericPat
     >(tc, patterns.getContext());
     patterns.add<LLVMGlobalPat>(tc, patterns.getContext(), globals);
 }

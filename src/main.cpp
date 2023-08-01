@@ -51,6 +51,7 @@ int main(int argc, char *argv[]) {
     if(args.forceFallback())
         features["force-fallback"] = true;
 
+    // parse features
     if(args.featuresArg()){
         auto charRange = llvm::make_range(std::begin(*args.featuresArg), std::end(*args.featuresArg));
         auto charIndexRange = llvm::enumerate(charRange);

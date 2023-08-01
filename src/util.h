@@ -391,6 +391,7 @@ inline void* checked_dlsym(llvm::StringRef name){
 
     // reset previous error (TODO is this necessary?)
     dlerror();
+    // TODO this is a very stupid way of getting a null terminated string from this
     void* symAddr = dlsym(NULL, name.str().c_str());
     char* err = dlerror();
     if(err != NULL){

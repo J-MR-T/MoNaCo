@@ -564,8 +564,8 @@ foreach cond = ["Z" /* == E */, "NZ" /* == NE */, "L", "GE", "LE", "G", "C" /* =
 
 // similar to llvm.call, model the indirect call as a call with a pointer operand
 def CALL : Instruction<"CALL">{
-  // Either has a callee (could theoretically be a direct call) or a ptr (has to be indirect call)
-  let operands = (ins OptionalAttr<FlatSymbolRefAttr>:$callee, Variadic<AnyType>:$operands);
+  // Either has a callee (could theoretically be a direct call) or a ptr (has to be indirect call), which is then the first operand
+  let operands = (ins OptionalAttr<FlatSymbolRefAttr>:$callee, DefaultValuedAttr<BoolAttr, "false">:$isGuaranteedExternal, Variadic<AnyType>:$operands);
   let results = (outs Optional<RegisterTypeInterface>:$ret); // single return value, or none
   // TODO we will need some info about what size the callee returns, see RET
   // technically this is an ABI thing, not an architecture thing, but it doesn't really matter

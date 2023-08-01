@@ -169,12 +169,38 @@ public:
 
     bool encodeCall(mlir::ModuleOp mod, amd64::CALL call){
         // indirect calls via pointer, that pointer has already been moved to FE_AX
-        if(!call.getCallee()){
+        auto fnNameOpt = call.getCallee();
+        if(!fnNameOpt.has_value()){
             encodeRaw(FE_CALLr, FE_AX);
             return false;
         }
+        auto fnName = *fnNameOpt;
 
         // has to be a direct call
+
+        auto handleCallToExternal = [&](){
+            if(jit){
+                auto name = fnName;
+
+                // resolve symbol
+                // TODO try if caching dlsym results improves performance
+                intptr_t symbolPtr = (intptr_t) checked_dlsym(name);
+
+                assert(symbolPtr && "Symbol not found");
+
+                // TODO make this a direct call
+                //      doesn't seem possible, this is basically guaranteed to be more than 2GB away
+                encodeRaw(FE_MOV64ri, FE_AX, symbolPtr);
+                return encodeRaw(FE_CALLr, FE_AX);
+            }else{
+                llvm::errs() << "Call to external function, relocations not implemented yet\n";
+                return true;
+            }
+        };
+
+        // this also includes functions, that don't necessarily have an MLIR declaration, that getFuncForCall could find. Examples include intrinsic translation such as memcpy, memset, or stuff like abort
+        if(call.getIsGuaranteedExternal())
+            return handleCallToExternal();
 
         // get the entry block of the corresponding function, jump there
         auto maybeFunc = getFuncForCall(mod, call, symbolrefToFuncCache);
@@ -185,26 +211,8 @@ public:
 
         auto func = mlir::cast<mlir::func::FuncOp>(maybeFunc);
 
-        // emit args
-        if(func.isExternal()){
-            if(jit){
-                auto name = func.getName();
-
-                // resolve symbol
-                // TODO this is a very stupid way of getting a null terminated string from this
-                // TODO try if caching dlsym results improves performance
-                intptr_t symbolPtr = (intptr_t) checked_dlsym(name);
-
-                assert(symbolPtr && "Symbol not found");
-
-                // TODO make this a direct call
-                encodeRaw(FE_MOV64ri, FE_AX, symbolPtr);
-                return encodeRaw(FE_CALLr, FE_AX);
-            }else{
-                llvm::errs() << "Call to external function, relocations not implemented yet\n";
-                return true;
-            }
-        }
+        if(func.isExternal())
+            return handleCallToExternal();
 
         auto entryBB = &func.getBlocks().front();
         assert(entryBB && "Function has no entry block");
@@ -684,6 +692,7 @@ struct AbstractRegAllocerEncoder{
                         if(instr.getFeMnemonic() == FE_CALL) [[unlikely]]{
                             auto call = mlir::cast<amd64::CALL>(instr);
 
+                            // emit args
                             auto moveOperands = [&](auto&& argRegs){
                                 assert(call.getNumOperands() <= sizeof(argRegs)/sizeof(argRegs[0]) && "more than 6 args not supported yet");
                                 for(auto [i ,operand]: llvm::enumerate(instr->getOperands())){
