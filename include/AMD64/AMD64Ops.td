@@ -225,11 +225,13 @@ def AllocaOp : MemOp<"AllocaOp"> {
   ];
 }
 
-// TODO not ideal
+// TODO maybe we should have a generic meta op, which can define it's regalloc code inline in tablegen? A bit overcomplicated for our current purposes, but might be a nice feature for users
+// TODO both of these not ideal
 def AddrOfGlobal : AMD64_Op<"AddrOfGlobal">{
   let arguments = (ins FlatSymbolRefAttr:$name);
   let results = (outs gpr64:$addr);
 }
+// TODO maybe actually make this AddrOfBlock or something, to support blocks as well, through a union of function name and block pointer or something.
 def AddrOfFunc : AMD64_Op<"AddrOfFunc">{
   let arguments = (ins FlatSymbolRefAttr:$name);
   let results = (outs gpr64:$addr);
