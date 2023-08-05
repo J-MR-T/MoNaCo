@@ -581,7 +581,7 @@ struct AbstractRegAllocerEncoder{
 
     // === information for patching in stuff at the end ===
 
-    llvm::SmallVector<std::pair<uint8_t* /* where */, mlir::Block* /* function entry */>, 8> incompleteFunctionAddressMOVABS;
+    llvm::SmallVector<std::tuple<uint8_t* /* where */, mlir::Block* /* function entry */>, 8> incompleteFunctionAddressMOVABS;
 
     /// size of the stack of the current function, measured in bytes from the base pointer. Includes saving of callee-saved registers. This is for easy access to the current top of stack
     uint32_t stackSizeFromBP = 0;
@@ -792,15 +792,18 @@ struct AbstractRegAllocerEncoder{
 
                         // we will use a mov64ri to move various pointers/addresses into place, but we need to replace the original ops use
                         auto allocateEncodeMOV64ri = [&](intptr_t addr){
+                            assert((addr > std::numeric_limits<int32_t>::max() || addr < std::numeric_limits<int32_t>::min()) && "addr cannot be allowed to fit in 32 bit, we want to use the maximum width encoding");
                             // TODO maaaaybe merge with addrofglobal? has similar code
                             mlir::OpBuilder builder(&op);
                             auto mov64ri = builder.create<amd64::MOV64ri>(addrofFuncOp.getLoc(), addr);
                             addrofFuncOp.replaceAllUsesWith(mov64ri->getResult(0));
                             allocateEncodeValueDef(mov64ri);
-
                         };
 
                         auto handleExternal = [&](){
+                            // TODO at the moment this can't even be called with external things, so maybe remove this in the future
+                            llvm_unreachable("not tested with external funcs yet, should not be called");
+                            
                             if(encoder.jit){
                                 // try to find the function in the environment
                                 intptr_t fnPtr = (intptr_t) checked_dlsym(addrofFuncOp.getName());
@@ -812,14 +815,12 @@ struct AbstractRegAllocerEncoder{
                             }
                         };
 
-                        // TODO at the moment this can't even be called with external things, so maybe remove this in the future
                         // function has a declaration
                         if(maybeFunc){
                             auto func = mlir::cast<mlir::func::FuncOp>(maybeFunc);
                             if(func.isExternal()){
                                 handleExternal();
                             }else{
-
                                 mlir::Block* entryBlock = &func.getBody().front();
                                 assert(entryBlock && "function has no entry block");
 
@@ -829,6 +830,7 @@ struct AbstractRegAllocerEncoder{
                                 }else{
                                     // if we don't know it yet, generate a dummy instruction to be patched later
 
+                                    // TODO this is only luckily the right buf location, this is *actually* the location of the first load for the operands. In this case there *should be none*, but this is still not clean
                                     auto bufLocation = encoder.saveCur();
                                     allocateEncodeMOV64ri(0x0100000000000000 /* to reserve space for the 64bit pointer immediate */);
 
@@ -986,7 +988,10 @@ struct AbstractRegAllocerEncoder{
         auto cur = encoder.saveCur();
         for(auto [buf, entryBlock] : incompleteFunctionAddressMOVABS){
             encoder.restoreCur(buf);
-            encoder.encodeRaw(FE_MOV64ri, (intptr_t) encoder.blocksToBuffer[entryBlock]);
+            intptr_t addr = (intptr_t) encoder.blocksToBuffer[entryBlock];
+            assert((addr > std::numeric_limits<int32_t>::max() || addr < std::numeric_limits<int32_t>::min()) && "addr cannot be allowed to fit in 32 bit, we want to use the maximum width encoding");
+            // TODO this just uses FE_AX by convention/hardcoded, change it so that this is saved within the incompleteFunctionAddressMOVABS map
+            encoder.encodeRaw(FE_MOV64ri,  FE_AX, addr);
         }
         encoder.restoreCur(cur);
 
