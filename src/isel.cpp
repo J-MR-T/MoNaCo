@@ -951,7 +951,7 @@ struct LLVMCondBrPat : public mlir::OpConversionPattern<LLVM::CondBrOp> {
 struct CaseInfo{
     int64_t comparisonValue;
     mlir::Block* block;
-    mlir::OperandRange operands;
+    mlir::ValueRange operands;
 };
 
 // TODO maybe do this non-recursively at some point, but that's too annoying for now
@@ -1031,7 +1031,8 @@ auto switchMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
     // TODO would be nicer to have the right int type here, maybe template arg this?
     llvm::SmallVector<CaseInfo, 8> caseValuesIntSorted;
     caseValuesIntSorted.reserve(caseValues.size());
-    for(auto [caseValue, block, operands] : llvm::zip(caseValues, op.getCaseDestinations(), op.getCaseOperands()))
+    auto adaptedCaseOperands = adaptor.getCaseOperands();
+    for(auto [caseValue, block, operands] : llvm::zip(caseValues, op.getCaseDestinations(), adaptor.getCaseOperands()))
         caseValuesIntSorted.push_back({caseValue.getSExtValue(), block, operands});
 
     // TODO this might be super slow
@@ -1042,7 +1043,7 @@ auto switchMatchReplace = []<unsigned actualBitwidth, typename OpAdaptor,
 
     auto defaultCase = op.getDefaultDestination();
     assert(defaultCase && "switches without default cases are not allowed (I think)");
-    binarySearchSwitchLowering<CMPri, CMPrr, MOVri>(op->getLoc(), rewriter, adaptor.getValue(), {0, defaultCase, op.getDefaultOperands()}, pivotIndex, caseValuesIntSorted);
+    binarySearchSwitchLowering<CMPri, CMPrr, MOVri>(op->getLoc(), rewriter, adaptor.getValue(), {0, defaultCase, adaptor.getDefaultOperands()}, pivotIndex, caseValuesIntSorted);
 
     rewriter.eraseOp(op);
 
