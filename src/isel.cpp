@@ -847,12 +847,12 @@ struct LLVMGlobalPat : public mlir::OpConversionPattern<LLVM::GlobalOp>{
                 // TODO calling functions in global initializers would be even more difficult.
                 llvm::LLVMContext llvmCtx;
 
-                mlir::MLIRContext& mlirCtx = *op.getContext();
+                MLIRContext& mlirCtx = *op.getContext();
 
-                mlir::ModuleOp miniModule = mlir::ModuleOp::create(mlir::UnknownLoc::get(&mlirCtx));
-                miniModule.getBody()->push_back(op.clone());
+                auto miniModule = mlir::OwningOpRef<ModuleOp>(ModuleOp::create(UnknownLoc::get(&mlirCtx)));
+                miniModule->getBody()->push_back(op.clone());
 
-                auto llvmModule = translateModuleToLLVMIR(miniModule, llvmCtx);
+                auto llvmModule = translateModuleToLLVMIR(miniModule.get(), llvmCtx);
                 if(!llvmModule)
                     return fail("failed to translate global to llvm ir");
 
