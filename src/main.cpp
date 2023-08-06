@@ -75,9 +75,11 @@ int main(int argc, char *argv[]) {
         handleFeature((*args.featuresArg).size());
 
         DEBUGLOG("Features: ");
-        for(auto feature : features){
-            DEBUGLOG(feature.name << ": " << (features[feature.name] ? "true" : "false"));
-        }
+        IFDEBUG(
+            for(auto feature : features){
+                DEBUGLOG(feature.name << ": " << (features[feature.name] ? "true" : "false"));
+            }
+        )
     }
 
     if(args.print()){
@@ -131,6 +133,20 @@ int main(int argc, char *argv[]) {
     if(args.jit())
         prot |= PROT_EXEC;
 
+    llvm::TargetOptions fallbackTargetOpts;
+    fallbackTargetOpts.EnableFastISel = true;
+
+    llvm::LLVMContext fallbackLLVMCtx;
+    IFDEBUG(
+    // TODO maybe don't use stderr for this
+    // see https://www.llvm.org/docs/Remarks.html, we make use of setupLLVMOptimizationRemarks to count fast isel to selectionDAG fallbacks
+    // like -pass-remarks-missed=sdagisel, just the output ios a bit less readable
+
+    if(llvm::setupLLVMOptimizationRemarks(fallbackLLVMCtx, llvm::errs(), 
+        "sdagisel",
+        "yaml", false))
+        errx(EXIT_FAILURE, "Could not setup LLVM optimization remarks to count fallbacks from fast isel to selectionDAG");
+    )
 
     if(args.benchmark()){
         // TODO what happens if this throws an exception? Is that fine?
@@ -153,16 +169,10 @@ int main(int argc, char *argv[]) {
         }
 
         if(features["force-fallback"]){
-            llvm::TargetOptions opt;
-            opt.EnableFastISel = true;
-
-            // TODO:
-            // const char* myopt = "-pass-remarks-missed=sdagisel";
-
             MEASURE_TIME_START(totalLLVM);
             for(auto i = 0u; i < iterations; i++){
                 auto obj = llvm::SmallVector<char, 0>();
-                fallbackToLLVMCompilation(*modClones[i], obj, opt);
+                fallbackToLLVMCompilation(*modClones[i], obj, fallbackLLVMCtx, fallbackTargetOpts);
             }
 
             MEASURE_TIME_END(totalLLVM);
@@ -215,12 +225,18 @@ int main(int argc, char *argv[]) {
             llvm::outs() << "ISel + RegAlloc + encoding took " << MEASURED_TIME_AS_SECONDS(totalMLIR, iterations) << " seconds on average over "     << iterations                                         << " iterations\n";
             llvm::outs() << "ISel repeated "                   << iterations                                      << " times without RegAlloc took " << MEASURED_TIME_AS_SECONDS(iselMLIR,     iterations) << " seconds on average\n";
             llvm::outs() << "RegAlloc repeated "               << iterations                                      << " times without ISel took "     << MEASURED_TIME_AS_SECONDS(regallocMLIR, iterations) << " seconds on average\n";
-            llvm::outs() << "Combining these two times gives " << MEASURED_TIME_AS_SECONDS(iselMLIR, iterations) + MEASURED_TIME_AS_SECONDS(regallocMLIR, iterations) << " seconds on average, be aware that the last three measurements do not represent realistic use-case of these functions!\n";
+            llvm::outs() << "Combining these two times gives " << MEASURED_TIME_AS_SECONDS(iselMLIR, iterations) + MEASURED_TIME_AS_SECONDS(regallocMLIR, iterations) << " seconds on average, be aware that the last measurements combined do not represent realistic use-case of these functions!\n";
             llvm::outs() << "Experimental: Liveness analysis took " << MEASURED_TIME_AS_SECONDS(liveness, iterations) << " seconds on average over " << iterations << " iterations\n";
         }
-    }else if(args.forceFallback()){
+    }else if(features["force-fallback"]){
+        // TODO support JIT
+        if(args.jit()){
+            errx(EXIT_FAILURE, "JIT fallback to LLVM not implemented yet");
+        }
+
         auto obj = llvm::SmallVector<char, 0>();
-        if(fallbackToLLVMCompilation(*owningModRef, obj))
+        // TODO add option for fallback optimization level
+        if(fallbackToLLVMCompilation(*owningModRef, obj, fallbackLLVMCtx, fallbackTargetOpts))
             return EXIT_FAILURE;
 
         maybeWriteToFile(obj.data(), obj.size());
@@ -246,6 +262,7 @@ int main(int argc, char *argv[]) {
         // second pass: RegAlloc + encoding
         // - will need a third pass in between to do liveness analysis later
         auto* execStart = regallocEncode(start, end, *owningModRef, std::move(globals), printOpts & PRINT_ASM, args.jit(), "main");
+        // TODO maybe use jit argv[0] instead of main at some point
 
         if(args.jit()){
             if(execStart == nullptr || execStart == NULL)

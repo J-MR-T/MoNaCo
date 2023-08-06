@@ -69,8 +69,7 @@ inline bool lowerToLLVMDialect(mlir::ModuleOp mod) noexcept{
 }
 
 /// returns whether it failed
-template<llvm::CodeGenOpt::Level OptLevel = llvm::CodeGenOpt::None>
-bool llvmCompileMod(llvm::Module& mod, llvm::SmallVector<char, 0>& outputVec, llvm::TargetOptions opt = {}){
+inline bool llvmCompileMod(llvm::Module& mod, llvm::SmallVector<char, 0>& outputVec, llvm::TargetOptions TargetOpt = {}, llvm::CodeGenOpt::Level OptLevel = llvm::CodeGenOpt::None){
     // adapted from https://www.llvm.org/docs/tutorial/MyFirstLanguageFrontend/LangImpl08.html
     llvm::InitializeAllTargetInfos();
     //llvm::InitializeAllTargets();
@@ -103,7 +102,7 @@ bool llvmCompileMod(llvm::Module& mod, llvm::SmallVector<char, 0>& outputVec, ll
     auto RM = std::optional<llvm::Reloc::Model>();
 
     // For some reason, the targetMachine needs to be deleted manually, so encapsulate it in a unique_ptr
-    auto targetMachineUP = std::unique_ptr<llvm::TargetMachine>(target->createTargetMachine(targetTriple, CPU, features, opt, RM));
+    auto targetMachineUP = std::unique_ptr<llvm::TargetMachine>(target->createTargetMachine(targetTriple, CPU, features, TargetOpt, RM));
 
     auto DL = targetMachineUP->createDataLayout();
     mod.setDataLayout(DL);
@@ -136,8 +135,7 @@ bool llvmCompileMod(llvm::Module& mod, llvm::SmallVector<char, 0>& outputVec, ll
 }
 
 /// returns whether compilation failed
-template<llvm::CodeGenOpt::Level OptLevel = llvm::CodeGenOpt::None>
-bool fallbackToLLVMCompilation(mlir::ModuleOp mlirMod, llvm::SmallVector<char, 0>& obj, llvm::TargetOptions opt = {}){
+inline bool fallbackToLLVMCompilation(mlir::ModuleOp mlirMod, llvm::SmallVector<char, 0>& obj, llvm::LLVMContext& llvmCtx, llvm::TargetOptions TargetOpt = {}, llvm::CodeGenOpt::Level OptLevel = llvm::CodeGenOpt::None){
     // mlir mod -> llvm dialect mod
     if(lowerToLLVMDialect(mlirMod)){
         llvm::errs() << "Could not lower to LLVM dialect\n";
@@ -149,14 +147,13 @@ bool fallbackToLLVMCompilation(mlir::ModuleOp mlirMod, llvm::SmallVector<char, 0
     mlir::registerLLVMDialectTranslation(*mlirCtx);
 
     // llvm dialect mod -> llvm mod
-    llvm::LLVMContext llvmCtx;
     auto llvmModUP = mlir::translateModuleToLLVMIR(mlirMod, llvmCtx);
 
     if(!llvmModUP){
         llvm::errs() << "Could not translate MLIR module to LLVM IR\n";
     }
 
-    if(llvmCompileMod<OptLevel>(*llvmModUP, obj, opt) != 0){
+    if(llvmCompileMod(*llvmModUP, obj, TargetOpt, OptLevel) != 0){
         llvm::errs() << "Could not compile LLVM module\n";
         return true;
     }
