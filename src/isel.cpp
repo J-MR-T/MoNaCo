@@ -956,18 +956,19 @@ struct CaseInfo{
 
 // TODO maybe do this non-recursively at some point, but that's too annoying for now
 template<typename CMPri, typename CMPrr, typename MOVri>
-void binarySearchSwitchLowering(mlir::Location loc, mlir::ConversionPatternRewriter& rewriter, mlir::Value adaptedValue, CaseInfo defaultDest, size_t pivotIndex, std::span<CaseInfo> caseInfoSection){
-    DEBUGLOG("binarySearchSwitchLowering: pivotIndex = " << pivotIndex << ", caseInfoSection.size() = " << caseInfoSection.size());
+void binarySearchSwitchLowering(mlir::Location loc, mlir::ConversionPatternRewriter& rewriter, mlir::Value adaptedValue, CaseInfo defaultDest, std::span<CaseInfo> caseInfoSection){
+    DEBUGLOG("binarySearchSwitchLowering: pivotIndex = " << caseInfoSection.size()/2 << ", caseInfoSection.size() = " << caseInfoSection.size());
     auto* currentBlock = rewriter.getInsertionBlock();
 
     // TODO recursion end condition 1
-    if(caseInfoSection.empty() || pivotIndex >= caseInfoSection.size()){
+    if(caseInfoSection.empty()){
         // jump to default block on empty case section
         rewriter.replaceAllUsesWith(currentBlock, defaultDest.block);
         rewriter.eraseBlock(currentBlock);
         return;
     }
 
+    auto pivotIndex = caseInfoSection.size() / 2;
     auto pivotInfo = caseInfoSection[pivotIndex];
 
     // if the value is equal, jump to the block
@@ -1006,11 +1007,12 @@ void binarySearchSwitchLowering(mlir::Location loc, mlir::ConversionPatternRewri
     rewriter.create<amd64::JL>(loc, mlir::ValueRange(), mlir::ValueRange(), searchLowerHalf, searchUpperHalf);
 
     rewriter.setInsertionPointToEnd(searchLowerHalf);
-    binarySearchSwitchLowering<CMPri, CMPrr, MOVri>(loc, rewriter, adaptedValue, defaultDest, pivotIndex/2, caseInfoSection.first(pivotIndex));
+    binarySearchSwitchLowering<CMPri, CMPrr, MOVri>(loc, rewriter, adaptedValue, defaultDest, caseInfoSection.first(pivotIndex));
 
     rewriter.setInsertionPointToEnd(searchUpperHalf);
     // TODO check that this is modmod  done using a bitwise and with 1
-    binarySearchSwitchLowering<CMPri, CMPrr, MOVri>(loc, rewriter, adaptedValue, defaultDest, (pivotIndex % 2 == 1) ? (pivotIndex/2) : (pivotIndex/2 - 1) , caseInfoSection.last(caseInfoSection.size() - pivotIndex - 1 /* leave out the pivot itself */));
+    binarySearchSwitchLowering<CMPri, CMPrr, MOVri>(loc, rewriter, adaptedValue, defaultDest,
+        caseInfoSection.last(caseInfoSection.size() - pivotIndex - 1 /* leave out the pivot itself */));
 }
 
 
