@@ -22,6 +22,9 @@ int main(int argc, char *argv[]) {
 
 #define MEASURED_TIME_AS_SECONDS(point, iterations) std::chrono::duration_cast<std::chrono::duration<double>>(point ## _end - point ## _start).count()/(static_cast<double>(iterations))
 
+    // TODO would be nice to be able to disable leak sanitizer before JIT execution, to only detect host leaks. Maybe with suppresions? This doesn't work:
+    //setenv("ASAN_OPTIONS", "detect_leaks=0", 1);
+
     auto& features = ArgParse::features;
 
     ArgParse::parse(argc, argv);
