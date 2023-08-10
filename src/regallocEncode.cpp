@@ -1618,53 +1618,6 @@ private:
 };
 #endif
 
-/// gives every value in this op's region it's constraint, or rbx as first result register, r8 as second
-/// does not recurse into nested regions. i.e. call this on function ops, not on the module op
-/// doesn't handle block args at all atm
-void dummyRegalloc(mlir::Operation* op){
-    assert(op->getNumRegions() == 1); // TODO maybe support more later, lets see
-
-    for(auto& block : op->getRegions().front()){
-        for (auto& op : block.getOperations()){
-            // TODO block args
-            // then probably use more overloads of registerOf, to handle this a bit more generically
-
-            auto instrOp = mlir::dyn_cast<amd64::InstructionOpInterface>(op);
-            if(!instrOp) [[unlikely]] // memory op or similar
-                continue;
-
-            assert(instrOp->getNumResults() <= 2 && "more than 2 results not supported"); // TODO make proper failure
-
-            auto& instructionInfo = instrOp.instructionInfo();
-
-            // result registers
-            // TODO wait why am i not using setRegsFromConstraints anywhere else
-            bool maybeStillEmptyRegs = instructionInfo.setRegsFromConstraints(instrOp.getResultRegisterConstraints());
-            if(maybeStillEmptyRegs){
-                // TODO this isn't the cleanest solution, probably make some sort of Register wrapper which can be empty
-                if(instructionInfo.regs.reg1Empty())
-                    instructionInfo.regs.reg1 = FE_BX;
-
-                if(instructionInfo.regs.reg2Empty())
-                    instructionInfo.regs.reg2 = FE_R8;
-            }
-
-            // operand register constraints
-            auto opConstrs = instrOp.getOperandRegisterConstraints();
-            for(auto& opConstr : {opConstrs.first, opConstrs.second}){
-                if(opConstr.constrainsReg()){
-                    // set the result register of the operands defining instruction to the constrained register
-                    auto asOpResult = op.getOperand(opConstr.which).dyn_cast<mlir::OpResult>();
-                    assert(asOpResult && "operand register constraint on non-result operand");
-
-                    amd64::registerOf(asOpResult) = opConstr.reg;
-                }
-            }
-        }
-    }
-
-}
-
 
 // TODO parameters for optimization level (-> which regallocer to use)
 uint8_t* regallocEncode(uint8_t* buf, uint8_t* bufEnd, mlir::ModuleOp mod, GlobalsInfo&& globals, bool dumpAsm, bool jit, llvm::StringRef startSymbolIfJIT){
