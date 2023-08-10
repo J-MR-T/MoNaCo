@@ -42,6 +42,8 @@
 #include <llvm/Support/MemoryBufferRef.h>
 #include <llvm/MC/MCContext.h>
 
+#include <llvm/ExecutionEngine/ExecutionEngine.h>
+
 #include "util.h"
 
 // TODO to truly make it useful as a library, make the rewrite pattern set a parameter
@@ -69,19 +71,8 @@ inline bool lowerToLLVMDialect(mlir::ModuleOp mod) noexcept{
 }
 
 /// returns whether it failed
-inline bool llvmCompileMod(llvm::Module& mod, llvm::SmallVector<char, 0>& outputVec, llvm::TargetOptions TargetOpt = {}, llvm::CodeGenOpt::Level OptLevel = llvm::CodeGenOpt::None){
+inline bool llvmCompileMod(llvm::Module& mod, llvm::SmallVector<char, 0>& outputVec, llvm::TargetOptions TargetOpt, llvm::CodeGenOpt::Level OptLevel){
     // adapted from https://www.llvm.org/docs/tutorial/MyFirstLanguageFrontend/LangImpl08.html
-    llvm::InitializeAllTargetInfos();
-    //llvm::InitializeAllTargets();
-    //llvm::InitializeAllTargetMCs();
-    //llvm::InitializeAllAsmParsers();
-    //llvm::InitializeAllAsmPrinters();
-    llvm::InitializeNativeTarget();
-    llvm::InitializeNativeTargetAsmPrinter();
-    llvm::InitializeNativeTargetAsmParser();
-    llvm::InitializeNativeTargetDisassembler();
-
-
     auto targetTriple = llvm::sys::getDefaultTargetTriple();
     mod.setTargetTriple(targetTriple);
 
@@ -99,7 +90,8 @@ inline bool llvmCompileMod(llvm::Module& mod, llvm::SmallVector<char, 0>& output
     auto CPU         = "generic";
     auto features    = "";
 
-    auto RM = std::optional<llvm::Reloc::Model>();
+    // apparently, PIC is not the default
+    auto RM = std::optional<llvm::Reloc::Model>(llvm::Reloc::PIC_);
 
     // For some reason, the targetMachine needs to be deleted manually, so encapsulate it in a unique_ptr
     auto targetMachineUP = std::unique_ptr<llvm::TargetMachine>(target->createTargetMachine(targetTriple, CPU, features, TargetOpt, RM));
@@ -116,7 +108,7 @@ inline bool llvmCompileMod(llvm::Module& mod, llvm::SmallVector<char, 0>& output
         return -1;
     }
 
-    // old pass manager for backend
+    // old pass manager for back-end
     llvm::legacy::PassManager pass;
 
     llvm::MCContext mcctx(llvm::Triple(targetTriple), nullptr, nullptr, nullptr);
@@ -134,12 +126,42 @@ inline bool llvmCompileMod(llvm::Module& mod, llvm::SmallVector<char, 0>& output
     return 0;
 }
 
-/// returns whether compilation failed
-inline bool fallbackToLLVMCompilation(mlir::ModuleOp mlirMod, llvm::SmallVector<char, 0>& obj, llvm::LLVMContext& llvmCtx, llvm::TargetOptions TargetOpt = {}, llvm::CodeGenOpt::Level OptLevel = llvm::CodeGenOpt::None){
+inline void* llvmJITCompileMod(std::unique_ptr<llvm::Module> llvmModUP, llvm::TargetOptions TargetOpt, llvm::CodeGenOpt::Level OptLevel, llvm::StringRef entryPointName){
+    // don't let the linker throw away the file
+    LLVMLinkInMCJIT();
+
+    llvm::EngineBuilder builder(std::move(llvmModUP));
+    builder.setEngineKind(llvm::EngineKind::JIT);
+    std::string error;
+    builder.setErrorStr(&error);
+    builder.setOptLevel(OptLevel);
+    builder.setTargetOptions(TargetOpt);
+    builder.setRelocationModel(llvm::Reloc::PIC_);
+    builder.setCodeModel(llvm::CodeModel::Small);
+
+    // TODO probably need to deallocate this in some way or another
+    llvm::ExecutionEngine* engine = builder.create();
+    if (!engine)
+        err(1, "could not create engine: %s", error.c_str());
+
+    return reinterpret_cast<void*>(engine->getFunctionAddress(entryPointName.str()));
+}
+
+/// returns 0 on success, -1 on failure, whatever the JIT compiled program returns if jit is passed
+inline int fallbackToLLVMCompilation(mlir::ModuleOp mlirMod, llvm::LLVMContext& llvmCtx, llvm::SmallVector<char, 0>* obj, bool jit, bool executeJIT, llvm::TargetOptions TargetOpt = {}, llvm::CodeGenOpt::Level OptLevel = llvm::CodeGenOpt::None){
+    if(!obj && !jit){
+        llvm::errs() << "No output specified\n";
+        return -1;
+    }
+    if(!jit && executeJIT){
+        llvm::errs() << "JIT execution requested, but without JIT compilation\n";
+        return -1;
+    }
+
     // mlir mod -> llvm dialect mod
     if(lowerToLLVMDialect(mlirMod)){
         llvm::errs() << "Could not lower to LLVM dialect\n";
-        return true;
+        return -1;
     }
 
     auto* mlirCtx = mlirMod.getContext();
@@ -153,9 +175,31 @@ inline bool fallbackToLLVMCompilation(mlir::ModuleOp mlirMod, llvm::SmallVector<
         llvm::errs() << "Could not translate MLIR module to LLVM IR\n";
     }
 
-    if(llvmCompileMod(*llvmModUP, obj, TargetOpt, OptLevel) != 0){
+    llvm::InitializeAllTargetInfos();
+    //llvm::InitializeAllTargets();
+    //llvm::InitializeAllTargetMCs();
+    //llvm::InitializeAllAsmParsers();
+    //llvm::InitializeAllAsmPrinters();
+    llvm::InitializeNativeTarget();
+    llvm::InitializeNativeTargetAsmPrinter();
+    llvm::InitializeNativeTargetAsmParser();
+    llvm::InitializeNativeTargetDisassembler();
+    
+    if(jit){
+        auto [jitArgc, jitArgv] = ArgParse::parseJITArgv();
+
+        auto main = reinterpret_cast<main_t>(llvmJITCompileMod(std::move(llvmModUP), TargetOpt, OptLevel, "main"));
+        if(!main){
+            llvm::errs() << "Could not JIT compile LLVM module\n";
+            return -1;
+        }
+        if(executeJIT)
+            return main(jitArgc, jitArgv);
+        else
+            return 0;
+    }else if(llvmCompileMod(*llvmModUP, *obj, TargetOpt, OptLevel) != 0){
         llvm::errs() << "Could not compile LLVM module\n";
-        return true;
+        return -1;
     }
     return false;
 }

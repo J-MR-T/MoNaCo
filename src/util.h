@@ -3,6 +3,7 @@
 #include <concepts>
 #include <dlfcn.h>
 #include <map>
+#include <regex>
 #include <string>
 #include <err.h>
 #include <sys/mman.h>
@@ -381,9 +382,61 @@ namespace ArgParse{
     //unordered_map doesnt work because of hash reasons (i think), so just define <, use ordered
     InsertBeforeQueryMap<Arg, std::string>& parse(int argc, char *argv[]);
 
+    inline std::pair<int, char**> parseJITArgv(){
+        if(!args.jit())
+            errx(EXIT_FAILURE, "Trying to parse JIT argv, but no JIT argv has been set");
+
+        // TODO this is totally ugly, but thats what Cpp gets for not including a proper string split function
+        // split jit argv with spaces
+        const auto jitArgvStr = std::string{*args.jit};
+        std::regex regexz("[ ]+");
+        // static to avoid dangling pointer
+        static std::vector<std::string> split(std::sregex_token_iterator(jitArgvStr.begin(), jitArgvStr.end(), regexz, -1), std::sregex_token_iterator());
+        static std::vector<char*> jitArgv(split.size() + 1);
+        for(unsigned i = 0; i < split.size(); i++){
+            // TODO this is probably UB, find out if theres a better way
+            jitArgv[i] = const_cast<char*>(split[i].c_str());
+        }
+        jitArgv[split.size()] = nullptr;
+
+        return {split.size(), jitArgv.data()};
+    }
+
+    inline void parseFeatures(){
+        auto charRange = llvm::make_range(std::begin(*args.featuresArg), std::end(*args.featuresArg));
+        auto charIndexRange = llvm::enumerate(charRange);
+        unsigned lastStart = 0;
+
+        auto handleFeature = [&](auto index){
+            auto feature_strv = std::string_view{charRange.begin() + lastStart, charRange.begin() + index};
+            if(feature_strv.starts_with("no-"))
+                features[feature_strv.substr(3)] = false;
+            else
+                features[feature_strv] = true;
+            lastStart = index + 1;
+        };
+
+        for(auto it = charIndexRange.begin(); it != charIndexRange.end(); ++it){
+            auto [index, c] = *it;
+            // look for ','
+            if(c == ',')
+                handleFeature(index);
+        }
+        handleFeature((*args.featuresArg).size());
+
+        DEBUGLOG("Features: ");
+        IFDEBUG(
+            for(auto feature : features){
+                DEBUGLOG(feature.name << ": " << (features[feature.name] ? "true" : "false"));
+            }
+        )
+    }
+
 } // end namespace ArgParse
 
 // === misc ===
+
+using main_t = int(*)(int, char**);
 
 inline void* checked_dlsym(llvm::StringRef name){
     // TODO do this in a better way, without construcing a std::string in between

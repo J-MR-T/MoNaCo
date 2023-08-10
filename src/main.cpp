@@ -1,13 +1,13 @@
 #include <chrono>
-#include <llvm/Support/CommandLine.h>
 #include <string>
+
+#include <llvm/IR/LLVMRemarkStreamer.h>
 
 #include <mlir/Dialect/ControlFlow/IR/ControlFlow.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 #include <mlir/Analysis/Liveness.h>
-#include <regex>
 
 #include "AMD64/AMD64Dialect.h"
 #include "AMD64/AMD64Ops.h"
@@ -45,8 +45,6 @@ int main(int argc, char *argv[]) {
         errx(EXIT_FAILURE, "Output file cannot be empty");
     }else if(args.iterations() && (*args.iterations).empty()){
         errx(EXIT_FAILURE, "Iterations cannot be empty");
-    }else if(args.jit() && args.benchmark()){
-        errx(EXIT_FAILURE, "Benchmarking the JIT execution time is not yet supported");
     }else if(args.jit() && *args.jit == ""){
         errx(EXIT_FAILURE, "Cannot JIT without arguments");
     }
@@ -56,33 +54,7 @@ int main(int argc, char *argv[]) {
 
     // parse features
     if(args.featuresArg()){
-        auto charRange = llvm::make_range(std::begin(*args.featuresArg), std::end(*args.featuresArg));
-        auto charIndexRange = llvm::enumerate(charRange);
-        unsigned lastStart = 0;
-
-        auto handleFeature = [&](auto index){
-            auto feature_strv = std::string_view{charRange.begin() + lastStart, charRange.begin() + index};
-            if(feature_strv.starts_with("no-"))
-                features[feature_strv.substr(3)] = false;
-            else
-                features[feature_strv] = true;
-            lastStart = index + 1;
-        };
-
-        for(auto it = charIndexRange.begin(); it != charIndexRange.end(); ++it){
-            auto [index, c] = *it;
-            // look for ','
-            if(c == ',')
-                handleFeature(index);
-        }
-        handleFeature((*args.featuresArg).size());
-
-        DEBUGLOG("Features: ");
-        IFDEBUG(
-            for(auto feature : features){
-                DEBUGLOG(feature.name << ": " << (features[feature.name] ? "true" : "false"));
-            }
-        )
+        ArgParse::parseFeatures();
     }
 
     if(args.print()){
@@ -138,6 +110,7 @@ int main(int argc, char *argv[]) {
 
     llvm::TargetOptions fallbackTargetOpts;
     fallbackTargetOpts.EnableFastISel = true;
+    llvm::CodeGenOpt::Level fallbackOptLevel = llvm::CodeGenOpt::Level::None;
 
     llvm::LLVMContext fallbackLLVMCtx;
     IFDEBUG(
@@ -150,6 +123,11 @@ int main(int argc, char *argv[]) {
         "yaml", false))
         errx(EXIT_FAILURE, "Could not setup LLVM optimization remarks to count fallbacks from fast isel to selectionDAG");
     )
+
+    auto wrapFl = [](auto&& f) {
+        llvm::write_double(llvm::outs(), std::move(f), llvm::FloatStyle::Fixed, 8);
+        return "";
+    };
 
     if(args.benchmark()){
         // TODO what happens if this throws an exception? Is that fine?
@@ -171,16 +149,28 @@ int main(int argc, char *argv[]) {
             modClones[i] = mlir::OwningOpRef<mlir::ModuleOp>(owningModRef->clone());
         }
 
+        bool jit = args.jit();
         if(features["force-fallback"]){
+            std::vector<llvm::LLVMContext*> fallbackLLVMCtxs;
+            fallbackLLVMCtxs.resize(iterations);
+            for(auto i = 0u; i < iterations; i++){
+                // don't know how to clone a context, but atm this doesn't have any options or anything except the optimization remarks, and those are only used in debug mode, so just create a new one
+                fallbackLLVMCtxs[i] = new llvm::LLVMContext();
+            }
+
             MEASURE_TIME_START(totalLLVM);
             for(auto i = 0u; i < iterations; i++){
                 auto obj = llvm::SmallVector<char, 0>();
-                fallbackToLLVMCompilation(*modClones[i], obj, fallbackLLVMCtx, fallbackTargetOpts);
+                fallbackToLLVMCompilation(*modClones[i], *fallbackLLVMCtxs[i], &obj, jit, /* execute */ false, fallbackTargetOpts, fallbackOptLevel);
             }
 
             MEASURE_TIME_END(totalLLVM);
 
-            llvm::outs() << "LLVM Fallback compilation took " << MEASURED_TIME_AS_SECONDS(totalLLVM, iterations) << " seconds on average over " << iterations << " iterations\n";
+            for(auto i = 0u; i < iterations; i++){
+                delete fallbackLLVMCtxs[i];
+            }
+
+            llvm::outs() << "LLVM Fallback compilation took " << wrapFl(MEASURED_TIME_AS_SECONDS(totalLLVM, iterations)) << " seconds on average over " << iterations << " iterations\n";
         }else{
             // allocate 2 GiB (small code model)
             auto [start, end] = mmapSpace(2ll*1024ll*1024ll*1024ll, prot);
@@ -198,7 +188,7 @@ int main(int argc, char *argv[]) {
 
                 // second pass: RegAlloc + encoding
                 // - will need a third pass in between to do liveness analysis later
-                regallocEncodeRepeated(start, end, *modClones[i], std::move(globals));
+                regallocEncode(start, end, *modClones[i], std::move(globals), false, jit, "main");
             }
 
             MEASURE_TIME_END(totalMLIR);
@@ -221,25 +211,20 @@ int main(int argc, char *argv[]) {
 
             MEASURE_TIME_START(regallocMLIR);
             for(unsigned i = iterations; i < 2*iterations; i++){
-                regallocEncodeRepeated(start, end, *modClones[i], std::move(globalsClones[i-iterations]));
+                regallocEncode(start, end, *modClones[i], std::move(globalsClones[i-iterations]), false, jit, "main");
             }
             MEASURE_TIME_END(regallocMLIR);
 
-            llvm::outs() << "ISel + RegAlloc + encoding took " << MEASURED_TIME_AS_SECONDS(totalMLIR, iterations) << " seconds on average over "     << iterations                                         << " iterations\n";
-            llvm::outs() << "ISel repeated "                   << iterations                                      << " times without RegAlloc took " << MEASURED_TIME_AS_SECONDS(iselMLIR,     iterations) << " seconds on average\n";
-            llvm::outs() << "RegAlloc repeated "               << iterations                                      << " times without ISel took "     << MEASURED_TIME_AS_SECONDS(regallocMLIR, iterations) << " seconds on average\n";
-            llvm::outs() << "Combining these two times gives " << MEASURED_TIME_AS_SECONDS(iselMLIR, iterations) + MEASURED_TIME_AS_SECONDS(regallocMLIR, iterations) << " seconds on average, be aware that the last measurements combined do not represent realistic use-case of these functions!\n";
-            llvm::outs() << "Experimental: Liveness analysis took " << MEASURED_TIME_AS_SECONDS(liveness, iterations) << " seconds on average over " << iterations << " iterations\n";
+            llvm::outs() << "ISel + RegAlloc + encoding took " << wrapFl(MEASURED_TIME_AS_SECONDS(totalMLIR, iterations)) << " seconds on average over "     << iterations                                         << " iterations\n";
+            llvm::outs() << "ISel repeated "                   << iterations                                      << " times without RegAlloc took " << wrapFl(MEASURED_TIME_AS_SECONDS(iselMLIR,     iterations)) << " seconds on average\n";
+            llvm::outs() << "RegAlloc repeated "               << iterations                                      << " times without ISel took "     << wrapFl(MEASURED_TIME_AS_SECONDS(regallocMLIR, iterations)) << " seconds on average\n";
+            llvm::outs() << "Combining these two times gives " << wrapFl(MEASURED_TIME_AS_SECONDS(iselMLIR, iterations) + MEASURED_TIME_AS_SECONDS(regallocMLIR, iterations)) << " seconds on average, be aware that the last measurements combined do not represent realistic use-case of these functions!\n";
+            llvm::outs() << "Experimental: Liveness analysis took " << wrapFl(MEASURED_TIME_AS_SECONDS(liveness, iterations)) << " seconds on average over " << iterations << " iterations\n";
         }
     }else if(features["force-fallback"]){
-        // TODO support JIT
-        if(args.jit()){
-            errx(EXIT_FAILURE, "JIT fallback to LLVM not implemented yet");
-        }
-
         auto obj = llvm::SmallVector<char, 0>();
         // TODO add option for fallback optimization level
-        if(fallbackToLLVMCompilation(*owningModRef, obj, fallbackLLVMCtx, fallbackTargetOpts))
+        if(fallbackToLLVMCompilation(*owningModRef, fallbackLLVMCtx, &obj, args.jit(), /* execute */ true, fallbackTargetOpts, fallbackOptLevel))
             return EXIT_FAILURE;
 
         maybeWriteToFile(obj.data(), obj.size());
@@ -271,28 +256,16 @@ int main(int argc, char *argv[]) {
             if(execStart == nullptr || execStart == NULL)
                 errx(EXIT_FAILURE, "Could not find main function");
 
-            // TODO this is totally ugly, but thats what Cpp gets for not including a proper string split function
-            // split jit argv with spaces
-            const auto jitArgvStr = std::string{*args.jit};
-            std::regex regexz("[ ]+");
-            std::vector<std::string> split(std::sregex_token_iterator(jitArgvStr.begin(), jitArgvStr.end(), regexz, -1), std::sregex_token_iterator());
-
-            std::vector<char*> jitArgv(split.size() + 1);
-            for(unsigned i = 0; i < split.size(); i++){
-                // TODO this is probably UB, find out if theres a better way
-                jitArgv[i] = const_cast<char*>(split[i].c_str());
-            }
-            jitArgv[split.size()] = nullptr;
-
-            using main_t = int(*)(int, char**);
             auto main = reinterpret_cast<main_t>(execStart);
+
+            auto [jitArgc, jitArgv] = ArgParse::parseJITArgv();
 
             if(printOpts != PRINT_NONE)
                 llvm::outs() << termcolor::make(termcolor::red, "JIT execution output:\n");
 
             fflush(stdout);
 
-            auto ret =  main(split.size(), jitArgv.data());
+            auto ret =  main(jitArgc, jitArgv);
             return ret;
         }
 
