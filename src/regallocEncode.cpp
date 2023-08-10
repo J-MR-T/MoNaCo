@@ -1465,7 +1465,7 @@ private:
     }
 };
 
-
+// start of better regalloc deleted in 5672526, if I ever need it again
 
 // TODO parameters for optimization level (-> which regallocer to use)
 uint8_t* regallocEncode(uint8_t* buf, uint8_t* bufEnd, mlir::ModuleOp mod, GlobalsInfo&& globals, bool dumpAsm, bool jit, llvm::StringRef startSymbolIfJIT){
