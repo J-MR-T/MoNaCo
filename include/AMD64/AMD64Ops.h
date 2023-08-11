@@ -4,7 +4,9 @@
 // TODO depending on if this is changed, remove this include here
 #include "fadec-enc.h"
 
+// note: this fixed "OpAsmOpInterface not found" errors... (because OpImplementation.h defines AsmParser, the implementation of which includes the OpAsmOpInterface)
 #include "mlir/IR/OpDefinition.h"
+#include "mlir/IR/OpImplementation.h"
 
 #include "mlir/IR/Dialect.h"
 // predefined interfaces
@@ -13,8 +15,9 @@
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 
-// note: this fixed "OpAsmOpInterface not found" errors... (because OpImplementation.h defines AsmParser, the implementation of which includes the OpAsmOpInterface)
-#include "mlir/IR/OpImplementation.h"
+// TODO needed for newer mlir, not yet
+//#include "mlir/Bytecode/BytecodeOpInterface.h"
+
 
 #include "mlir/IR/Builders.h"
 
@@ -36,8 +39,7 @@ namespace amd64{
 /// Get the register of an OpResult of any instruction.
 /// The result number is used to figure out which register the result belongs to.
 inline FeReg& registerOf(mlir::OpResult result){
-    auto instr = mlir::dyn_cast<amd64::InstructionOpInterface>(result.getDefiningOp());
-    assert(instr && "expected an instruction op");
+    auto instr = mlir::cast<amd64::InstructionOpInterface>(result.getDefiningOp());
 
     auto& regs = instr.instructionInfo().regs;
     if(result.getResultNumber() == 0){
@@ -62,17 +64,30 @@ inline FeReg& registerOf(mlir::Operation* op){
     return registerOf(instr);
 }
 
-inline FeReg& registerOf(mlir::Value value){
+/// Get the register of a block argument
+inline FeReg& registerOf(mlir::BlockArgument& arg, mlir::DenseMap<mlir::BlockArgument, FeReg>& blockArgToReg){
+    return blockArgToReg[arg];
+}
+
+inline FeReg& registerOf(mlir::Value value, mlir::DenseMap<mlir::BlockArgument, FeReg>* blockArgToReg = nullptr){
     if (auto result = value.dyn_cast<mlir::OpResult>()) {
         return registerOf(result);
-    } else {
+    } else if(auto blockArg = value.dyn_cast<mlir::BlockArgument>()){
+        assert(blockArgToReg && "blockArgToReg must be provided if value is a block argument");
+        return registerOf(blockArg, *blockArgToReg);
+    } else { // TODO I think this is impossible, right?
         return registerOf(value.getDefiningOp());
     }
 }
 
-/// Get the register of a block argument
-inline FeReg& registerOf(mlir::BlockArgument& arg, mlir::DenseMap<mlir::BlockArgument, FeReg>& blockArgToReg){
-    return blockArgToReg[arg];
+inline bool isFPReg(const FeReg& reg){
+    // TODO this is neither nice nor API stable, but it works
+    return (reg - FE_XMM0) >= 0;
+}
+
+inline bool isGPReg(const FeReg& reg){
+    // TODO this is neither nice nor API stable, but it works
+    return reg >= FE_AX && reg <= FE_BH;
 }
 
 } // end namespace amd64

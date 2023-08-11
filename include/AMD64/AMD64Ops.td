@@ -22,9 +22,21 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 include "AMD64/AMD64OpInterfaces.td"
 include "AMD64/AMD64TypeInterfaces.td"
 
+// not currently in use, just as a reference
+/*  TEST, TODO remove later
 include "mlir/IR/EnumAttr.td"
 
-// TODO add op traits, like commutative and pure, to the ops
+def Case1: I64EnumAttrCase<"Case1", 0x55aaff>;
+
+def MyIntEnum : I64EnumAttr<"MyIntEnum", "example", [Case1]>{
+  let cppNamespace = "::amd64";
+  let stringToSymbolFnName = "ConvertToEnum";
+  let symbolToStringFnName = "ConvertToString";
+}
+
+*/
+
+// TODO add op traits, like commutative and pure, to the ops, as well as interfaces, like copy op interface, memory effects, MemAlloc, ...
 
 // === traits ===
 
@@ -38,18 +50,6 @@ class SpecialCase<string kind>
 
 // === types ===
 
-/*  TEST, TODO remove later
-
-def Case1: I64EnumAttrCase<"Case1", 0x55aaff>;
-
-def MyIntEnum : I64EnumAttr<"MyIntEnum", "example", [Case1]>{
-  let cppNamespace = "::amd64";
-  let stringToSymbolFnName = "ConvertToEnum";
-  let symbolToStringFnName = "ConvertToString";
-}
-
-*/
-
 // base type
 class AMD64_Type<string name, list<Trait> traits = [], string baseCppClass = "::mlir::Type">
     : TypeDef<AMD64_Dialect, name, traits, baseCppClass> {
@@ -59,14 +59,18 @@ class AMD64_Type<string name, list<Trait> traits = [], string baseCppClass = "::
 def memLoc : AMD64_Type<"memLoc">;
 
 class AMD64_RegisterType<string name, list<Trait> traits = [], string baseCppClass = "::mlir::Type">
-    : AMD64_Type<name, traits # [RegisterTypeInterface], baseCppClass> {
+    : AMD64_Type<name, traits, baseCppClass> {
   int bitwidth = ?;
   
   let extraClassDeclaration = "inline static unsigned getBitwidth() { return " # bitwidth # "; }";
 }
 
 // to get the register of a value of AMD64_GPRegisterType, use `registerOf()`.
-class AMD64_GPRegisterType<string name, list<Trait> traits = [], string baseCppClass = "::mlir::Type">
+class AMD64_GPRegisterType<string name, list<Trait> traits = [GPRegisterTypeInterface], string baseCppClass = "::mlir::Type">
+    : AMD64_RegisterType<name, traits, baseCppClass> {
+}
+
+class AMD64_FPRegisterType<string name, list<Trait> traits = [FPRegisterTypeInterface], string baseCppClass = "::mlir::Type">
     : AMD64_RegisterType<name, traits, baseCppClass> {
 }
 
@@ -76,9 +80,16 @@ foreach bitwidth = [8, 16, 32, 64] in {
   def gpr#bitwidth : AMD64_GPRegisterType<"gpr"#bitwidth>;
 }
 
+// FP types
+
+foreach bitwidth = [32, 64] in {
+  def fpr#bitwidth : AMD64_FPRegisterType<"fpr"#bitwidth>;
+}
+
 // TODO this doesn't seem optimal
 // type constraint vs using the type interface as the return value?
 def anygprType: TypeConstraint<Or<[gpr8.predicate, gpr16.predicate, gpr32.predicate, gpr64.predicate]>>;
+def anyfprType: TypeConstraint<Or<[fpr32.predicate, fpr64.predicate]>>;
 
 // === memory ops ===
 class MemOp<string mnemonic, list<Trait> traits = []>: AMD64_Op<mnemonic, traits # [EncodeOpInterface]>{
@@ -86,7 +97,7 @@ class MemOp<string mnemonic, list<Trait> traits = []>: AMD64_Op<mnemonic, traits
   code getBaseGeneric = "return std::nullopt;";
   code getIndexGeneric = "return std::nullopt;";
   let extraClassDeclaration = [{
-    inline FeOp encode() {
+    inline FeOp encode(mlir::DenseMap<mlir::BlockArgument, FeReg>* blockArgToReg = nullptr) {
       }] # encoding # [{
     }
     inline std::optional<mlir::Value> getBaseGeneric() {
@@ -124,10 +135,10 @@ class MemSIBD_subset<string mnemonic, list<Trait> traits = []>: MemOp<mnemonic, 
   // TODO I'm pretty sure the encoding for just displacement won't make much sense, test that later
   let encoding = [{
     return FE_MEM( }]
-      # !if(hasBase, "registerOf(mlir::dyn_cast<mlir::OpResult>(getBase())),", "FE_NOREG,")
+      # !if(hasBase, "registerOf(getBase(), blockArgToReg),", "FE_NOREG,")
       # !if(hasScaleIndex, [{
       getProperties().scale,
-      registerOf(mlir::dyn_cast<mlir::OpResult>(getIndex())),
+      registerOf(getIndex(), blockArgToReg),
       }], "0, FE_NOREG, ")
       # !if(hasDisplacement, "getProperties().displacement", "0")
       # [{
@@ -147,7 +158,7 @@ class MemSIBD_subset<string mnemonic, list<Trait> traits = []>: MemOp<mnemonic, 
         !if(hasScaleIndex,   (ins "uint8_t":$scaleArg, "::mlir::Value":$index), (ins)),
         // displacement
         !if(hasDisplacement, (ins "int64_t":$displacementArg),                  (ins))
-      ), [{
+      ), /* TODO: the properties might be wrong here, as they are always of MemSIBD, not the actual current class */ [{
       auto& prop = $_state.getOrAddProperties<MemSIBD::Properties>();
       (void) prop;
       }]
@@ -225,11 +236,13 @@ def AllocaOp : MemOp<"AllocaOp"> {
   ];
 }
 
-// TODO not ideal
+// TODO maybe we should have a generic meta op, which can define it's regalloc code inline in tablegen? A bit overcomplicated for our current purposes, but might be a nice feature for users
+// TODO both of these not ideal
 def AddrOfGlobal : AMD64_Op<"AddrOfGlobal">{
   let arguments = (ins FlatSymbolRefAttr:$name);
   let results = (outs gpr64:$addr);
 }
+// TODO maybe actually make this AddrOfBlock or something, to support blocks as well, through a union of function name and block pointer or something.
 def AddrOfFunc : AMD64_Op<"AddrOfFunc">{
   let arguments = (ins FlatSymbolRefAttr:$name);
   let results = (outs gpr64:$addr);
@@ -243,9 +256,14 @@ def InstructionInfoProp : Property<"InstructionInfo"> {
   let convertToAttribute = "$_storage.asAttribute($_ctxt)";
   let convertFromAttribute = "return InstructionInfo::setFromAttr($_storage, $_attr, $_diag);";
   let hashProperty = "$_storage.hash();";
+
+  // TODO needed for newer mlir, not yet
+  // because we don't really care about the bytecode
+  //let writeToMlirBytecode = writeMlirBytecodeWithConvertToAttribute;
+  //let readFromMlirBytecode = readMlirBytecodeUsingConvertFromAttribute;
 }
 
-// === ops (= instructions) ===
+// === int instructions ===
 
 // use the InstructionOpInterface to inject generic functionality into all instructions
 class Instruction<string mnemonic, list<Trait> traits = []> :
@@ -276,7 +294,7 @@ class Instruction<string mnemonic, list<Trait> traits = []> :
   list<code> extraExtraClassDeclarations = [];
   let extraClassDeclaration = "static constexpr FeMnem getFeMnemonic() { return FE_" # mnemonic # "; }" /* declaration, because getFeMnemonic is inline */ #
     "static constexpr amd64::OperandRegisterConstraints getOperandRegisterConstraints () { return {" # operandConstraint1 # "," # operandConstraint2 # "}; } " #
-    "static constexpr amd64::ResultRegisterConstraints getResultRegisterConstraints () {   return {" # resultConstraint1  # "," # resultConstraint2  # "}; } " #
+    "static constexpr amd64::ResultRegisterConstraints  getResultRegisterConstraints  () { return {" # resultConstraint1  # "," # resultConstraint2  # "}; } " #
     "InstructionInfo& instructionInfo();" #
     !interleave(extraExtraClassDeclarations, "\n");
 
@@ -374,7 +392,7 @@ defm AND : Instr8_16_32_64_rmi<"AND", [Pure, Operand0IsDestN<0>]>;
 defm OR  : Instr8_16_32_64_rmi<"OR",  [Pure, Operand0IsDestN<0>]>;
 defm XOR : Instr8_16_32_64_rmi<"XOR", [Pure, Operand0IsDestN<0>]>;
 
-// miscellaneous 'special' instructions dependent on bitwidth
+// miscellaneous 'special' instructions dependent of bitwidth
 foreach bitwidth = ["8", "16", "32", "64"] in {
   defvar gprType = !cast<AMD64_GPRegisterType>("gpr"#bitwidth);
 
@@ -420,7 +438,7 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
     defm MOV # bitwidth # "m" : Instr_i<"MOV" # bitwidth # "m">;
 
     // normal MOVrr, MOVrm, but without the destination operand as the first operand, just one operand each.
-    // also MOVrr accepts any gprType, to allow truncating
+    // also MOVrr accepts any gprType, to allow truncating TODO rethink that
     let operands = (ins anygprType:$src1) in
     def MOV # bitwidth # "rr" : Instruction<"MOV" # bitwidth # "rr", [Pure]>;
 
@@ -502,7 +520,7 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
   }
 }
 
-// special instructions independent of bitwidth
+// === special instructions ===
 
 let results = (outs gpr64:$dst), operands = (ins gpr64:$src1) in
 defm IMUL64rr : Instr_i<"IMUL64rr", [Pure]>;
@@ -569,7 +587,7 @@ foreach cond = ["Z" /* == E */, "NZ" /* == NE */, "L", "GE", "LE", "G", "C" /* =
 // similar to llvm.call, model the indirect call as a call with a pointer operand
 def CALL : Instruction<"CALL">{
   // Either has a callee (could theoretically be a direct call) or a ptr (has to be indirect call), which is then the first operand
-  let operands = (ins OptionalAttr<FlatSymbolRefAttr>:$callee, DefaultValuedAttr<BoolAttr, "false">:$isGuaranteedExternal, Variadic<AnyType>:$operands);
+  let operands = (ins OptionalAttr<FlatSymbolRefAttr>:$callee, /* TODO convert to property */ DefaultValuedAttr<BoolAttr, "false">:$isGuaranteedExternal, Variadic<AnyType>:$operands);
   let results = (outs Optional<RegisterTypeInterface>:$ret); // single return value, or none
   // TODO we will need some info about what size the callee returns, see RET
   // technically this is an ABI thing, not an architecture thing, but it doesn't really matter
@@ -590,5 +608,47 @@ let operandConstraint1 = "{.which = 0, .reg = FE_AX}" in
 // TODO maybe add a verifier check, to check all returns have types matching the function return type
 let operands = (ins anygprType:$ret) in 
 def RET : Instruction<"RET", [Terminator]>;
+
+// === float instructions === 
+
+foreach suffix = ["S", "D"] in {
+  defvar fprType = !cast<AMD64_FPRegisterType>(!if(!eq(suffix, "S"), "fpr32", "fpr64"));
+
+  // arithmetic
+  // TODO define rrm variants
+  let results = (outs fprType:$dst), operands = (ins fprType:$src1, fprType:$src2) in {
+    def ADDS # suffix # "rr": Instruction<"SSE_ADDS" # suffix # "rr", [Pure, Operand0IsDestN<0>]>;
+    def SUBS # suffix # "rr": Instruction<"SSE_SUBS" # suffix # "rr", [Pure, Operand0IsDestN<0>]>;
+    def MULS # suffix # "rr": Instruction<"SSE_MULS" # suffix # "rr", [Pure, Operand0IsDestN<0>]>;
+    def DIVS # suffix # "rr": Instruction<"SSE_DIVS" # suffix # "rr", [Pure, Operand0IsDestN<0>]>;
+  }
+
+
+  // move/load/store
+  let results = (outs fprType:$dst) in {
+    let operands = (ins fprType:$src) in
+    // for some reason i cant name them SSE_MOVS..., so I'm just omitting the SSE prefix
+    def MOVS # suffix # "rr": Instruction<"SSE_MOVS" # suffix # "rr", [Pure]>;
+
+    let operands = (ins memLoc:$src) in
+    def MOVS # suffix # "rm": Instruction<"SSE_MOVS" # suffix # "rm">;
+  }
+
+  let results = (outs) in {
+    let operands = (ins fprType:$src) in
+    def MOVS # suffix # "mr": Instruction<"SSE_MOVS" # suffix # "mr">;
+  }
+
+  // convert stuff
+  foreach intBitwidth = ["32", "64"] in {
+    defvar gprType = !cast<AMD64_GPRegisterType>("gpr"#intBitwidth);
+
+    let results = (outs fprType:$dst), operands = (ins gprType:$src) in
+    def CVTSI2S # suffix # intBitwidth # "rr": Instruction<"SSE_CVTSI2S" # suffix # intBitwidth # "rr", [Pure]>;
+
+    let results = (outs gprType:$dst), operands = (ins fprType:$src) in
+    def CVTS # suffix # 2SI # intBitwidth # "rr": Instruction<"SSE_CVTS" # suffix # "2SI" # intBitwidth # "rr", [Pure]>;
+  }
+}
 
 #endif

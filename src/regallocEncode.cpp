@@ -68,7 +68,7 @@ private:
     // NOTE: Fadec uses relative jumps by default, which is what we want
 
     /// if we already know the target block is in the blocksToBuffer map, use that, otherwise, register an unresolved branch, and encode a placeholder
-    auto encodeJump(mlir::Block* targetBB, FeMnem mnemonic) -> int {
+    int encodeJump(mlir::Block* targetBB, FeMnem mnemonic) {
         if(auto it = blocksToBuffer.find(targetBB); it != blocksToBuffer.end()){
             // TODO no FE_JMPL needed, right? the encoding can be as small as possible
             return encodeRaw(mnemonic, (intptr_t) it->second);
@@ -80,7 +80,7 @@ private:
         }
     };
     /// if the jump is to the next instruction/block, don't encode it
-    auto maybeEncodeJump(mlir::Block* targetBB, FeMnem mnemonic, mlir::Block* nextBB) -> int {
+    int maybeEncodeJump(mlir::Block* targetBB, FeMnem mnemonic, mlir::Block* nextBB) {
         if (targetBB == nextBB)
             return 0;
 
@@ -262,25 +262,17 @@ public:
                 operands[machineOperandsCovered++] = instrOp.instructionInfo().regs.reg1;
 
             // fadec only needs the dest1 == op1 once, so in this case we skip that first register operand
-            if(instrOp->hasTrait<Operand0IsDestN<0>::Impl>() && 
-                    /* first operand is register operand: */
-                    instrOp->getNumOperands() > 0 &&
-                    instrOp->getOperand(0).getType().isa<amd64::RegisterTypeInterface>()
+            if(instrOp->hasTrait<Operand0IsDestN<0>::Impl>() &&
+                // first operand is register operand:
+                instrOp->getNumOperands() > 0 &&
+                instrOp->getOperand(0).getType().isa<amd64::RegisterTypeInterface>()
             ){
                 mlirOpOperandsCovered++;
 
 #ifndef NDEBUG
                 // check that the operand register and the result register match
                 FeReg regOfOperand;
-                if(auto blockArg = dyn_cast<mlir::BlockArgument>(instrOp->getOperand(0))) [[unlikely]]{
-                    // this seems overcomplicated, but it makes the most sense to put all of this functionality into the registerOf method, such that ideally no other code has to ever touch the way registers are stored.
-                    regOfOperand = amd64::registerOf(blockArg, blockArgToReg);
-                }else if(auto asOpResult = dyn_cast<mlir::OpResult>(instrOp->getOperand(0))){
-                    // as long as there are no 'op-result' interfaces in mlir, this is probably the only way to do it
-                    regOfOperand = amd64::registerOf(asOpResult);
-                }else{
-                    llvm_unreachable("Operand 0 is neither a block argument nor an op result");
-                }
+                regOfOperand = amd64::registerOf(instrOp->getOperand(0), &blockArgToReg);
                 // either all operands are the same, or the first operand is the destination register
                 // TODO this is just a temporary solution to catch more bugs. In actuality, it's not okay if an op has multiple equal operands and the result register differs, because if we use that value, we will use it from the wrong point
                 assert(((instrOp->getOperands().size() >= 2 && llvm::all_equal(instrOp->getOperands())) || regOfOperand == instrOp.instructionInfo().regs.reg1) && "Operand 0 is constrained to the destination register, but operand 0 register and destination register differ");
@@ -291,17 +283,18 @@ public:
                 assert(machineOperandsCovered < 4 && "Something went deeply wrong, there are more than 4 operands");
 
                 auto operandValue = instrOp->getOperand(mlirOpOperandsCovered);
+                // TODO performance test the ordering here, try to get the op result closer to the start
                 if(auto blockArg = dyn_cast<mlir::BlockArgument>(operandValue)) [[unlikely]]{
+                    // first check if its a block arg, otherwise it has to be an op result
                     // this seems overcomplicated, but it makes the most sense to put all of this functionality into the registerOf method, such that ideally no other code has to ever touch the way registers are stored.
                     operands[machineOperandsCovered] = amd64::registerOf(blockArg, blockArgToReg);
-                }else if(auto encodeInterface = dyn_cast<amd64::EncodeOpInterface>(operandValue.getDefiningOp())){
-                    // first check encode op interface, because everything that's not a blockarg is an op result, so we need to check that last
-                    operands[machineOperandsCovered] = encodeInterface.encode();
-                }else if(auto asOpResult = dyn_cast<mlir::OpResult>(operandValue)){
+                }else if(auto encodeInterface = dyn_cast<amd64::EncodeOpInterface>(operandValue.getDefiningOp())) [[unlikely]]{
+                    // first check encode op interface, because everything that's not a blockarg is an op result
+                    operands[machineOperandsCovered] = encodeInterface.encode(&blockArgToReg);
+                }else{
+                    auto asOpResult = mlir::cast<mlir::OpResult>(operandValue);
                     // as long as there are no 'op-result' interfaces in mlir, this is probably the only way to do it
                     operands[machineOperandsCovered] = amd64::registerOf(asOpResult);
-                }else{
-                    llvm_unreachable("Operand is neither block argument, nor op result, nor memory op");
                 }
             }
 
@@ -333,8 +326,8 @@ public:
             // then encode the div normally
             failed |= encodeNormally();
         }else if(instrOp->hasTrait<SpecialCase<Special::IDIV>::Impl>()) [[unlikely]] {
-            auto resultType = instrOp->getResult(0).getType().cast<amd64::RegisterTypeInterface>();
-            assert(resultType && "Result of div like instruction is not a register type");
+            auto resultType = instrOp->getResult(0).getType().cast<amd64::GPRegisterTypeInterface>();
+            assert(resultType && "Result of div like instruction is not a gp register type");
 
             // the CQO family is FE_C_SEPxx, CBW (which we need for 8 bit div) is FE_C_EX16
 
@@ -376,7 +369,9 @@ public:
             assert(it != blocksToBuffer.end() && "Unresolved branch target has not been visited");
 
             uint8_t* whereToJump = it->second;
-            fe_enc64(&whereToEncode, kind, (uintptr_t) whereToJump);
+            auto ret = fe_enc64(&whereToEncode, kind, (uintptr_t) whereToJump);
+            (void) ret;
+            assert(ret == 0 && "Failed to resolve branch target");
         }
         return true;
     }
@@ -557,6 +552,11 @@ struct ValueSlot{
                 return true;
         }
     }
+
+    [[nodiscard]] inline bool isFPReg() const {
+        assert(kind == Register && "only registers can be FP");
+        return amd64::isFPReg(reg);
+    }
 };
 
 template<typename Derived>
@@ -603,6 +603,7 @@ struct AbstractRegAllocerEncoder{
 
     static consteval unsigned operandRegValueIndex(FeReg reg){
         // AX, CX, DX are operand registers
+        // XMM0 to XMM2 as well
         if (reg == FE_AX)      return 0;
         else if (reg == FE_CX) return 1;
         else if (reg == FE_DX) return 2;
@@ -697,6 +698,8 @@ struct AbstractRegAllocerEncoder{
                         // for a call: handle things differently, load all operands directly into the correct registers
                         if(instr.getFeMnemonic() == FE_CALL) [[unlikely]]{
                             auto call = mlir::cast<amd64::CALL>(instr);
+                            // TODO currently only supports integer arguments, float args are necessary tho
+                            // TODO might be avoidable through inlining?
 
                             // emit args
                             auto moveOperands = [&](auto&& argRegs){
@@ -717,10 +720,12 @@ struct AbstractRegAllocerEncoder{
                             }
 
                             // TODO this needs to be factored out to a kind of "allocated but dont spill or encode" function. Alternatively template variants (either with boolean template arguments, or as specializations) of the allocateEncodeValueDef function that don't do that.
-                            encoder.encodeCall(mod, call);
+                            // TODO remove the assert, once the rework of encoding failure is done
+                            auto ret = encoder.encodeCall(mod, call);
+                            assert(ret == false && "encoding call failed");
                             if(call.getNumResults() > 0){
                                 auto result = call.getResult(0);
-                                auto resultBw = mlir::cast<amd64::RegisterTypeInterface>(result.getType()).getBitwidth();
+                                auto resultBw = mlir::cast<amd64::GPRegisterTypeInterface>(result.getType()).getBitwidth();
                                 assert(resultBw < std::numeric_limits<uint8_t>::max() && "bitwidth too high");
                                 auto& slot = valueToSlot[result] = ValueSlot{.kind = ValueSlot::Stack, .mem = allocateNewStackslot(resultBw), .bitwidth = static_cast<uint8_t>(resultBw)};
                                 moveFromOperandRegToSlot(result, slot, FE_AX);
@@ -730,7 +735,7 @@ struct AbstractRegAllocerEncoder{
 
                         // ignore the instruction, if it's pure and it's uses are empty
                         // TODO might cost performance, maybe remove for quick allocer
-                        // TODO also check that the enabled check doesn't cost performance. But it should really only be a single bool comparison, as the rest of that is constexpr, and that comparison will always be predicted correctly after the first branch miss
+                        // TODO also check that the 'codegen-dce enabled' check doesn't cost performance. But it should really only be a single bool comparison, as the rest of that is constexpr, and that comparison will always be predicted correctly after the first branch miss
                         if(ArgParse::features["codegen-dce"] && mlir::isOpTriviallyDead(&op)) [[unlikely]]
                             continue;
 
@@ -739,6 +744,7 @@ struct AbstractRegAllocerEncoder{
                         assert(instr->getNumOperands() <= 2);
                         for(auto [i, operand] : llvm::enumerate(instr->getOperands())){
                             // TODO BIIIIG problem: We're setting the register of the value (via registerOf) to be the one it's moved to, which makes sense for the most part, we can overwrite it because it's only needed once, but not if the operation has the same SSA value as input multiple times. The encoder will then get the idea that all operands are in the same register. This is correct for their values, but as that register might get overwritten in the result, we have a huge mess on our hands in that case.
+                            // its probably alright, if we just assume that all 'same as first' operands get killed, then use operand registers for that
 
                             // TODO is this enough?
                             assert((!operand.isa<mlir::OpResult>() || !mlir::isa<amd64::AddrOfGlobal>(operand.getDefiningOp())) && "AddrOfGlobal should have been replaced at the time of use");
@@ -746,7 +752,7 @@ struct AbstractRegAllocerEncoder{
                             auto operandRegConstraint = instr.getOperandRegisterConstraints()[i];
 
                             // for memloc operands, we have to load all register values, the base and the index, into registers
-                            if(mlir::isa<mlir::OpResult>(operand)) /* && */ if(auto memOp = mlir::dyn_cast<amd64::EncodeOpInterface>(operand.getDefiningOp())){
+                            if(mlir::isa<mlir::OpResult>(operand)) /* && */ if(auto memOp = mlir::dyn_cast<amd64::EncodeOpInterface>(operand.getDefiningOp())) [[unlikely]]{
                                 if(auto base = memOp.getBaseGeneric().value_or(nullptr)){
                                     loadValueForUse(base, 0, operandRegConstraint);
                                     if(auto index = memOp.getIndexGeneric().value_or(nullptr))
@@ -999,14 +1005,6 @@ struct AbstractRegAllocerEncoder{
     }
 
 protected:
-    FeReg& registerOf(mlir::Value val){
-        if(auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(val)){
-            return amd64::registerOf(blockArg, blockArgToReg);
-        }else{
-            return amd64::registerOf(val);
-        }
-    }
-
     /// overload to save a map lookup, if the slot is already known
     bool moveFromOperandRegToSlot(mlir::Value val){
         return moveFromOperandRegToSlot(val, valueToSlot[val]);
@@ -1016,19 +1014,31 @@ protected:
     /// move from the register the value is currently in, to the slot, or from the operand register override, if it is set
     bool moveFromOperandRegToSlot(mlir::Value fromVal, const ValueSlot& toSlot, const FeReg operandRegOverride = (FeReg) FE_NOREG){
         /// the register the value is currently in
-        FeReg& fromValReg = registerOf(fromVal);
+        FeReg& fromValReg = amd64::registerOf(fromVal, &blockArgToReg);
 
         if(operandRegOverride != (FeReg) FE_NOREG)
             fromValReg = operandRegOverride;
 
+        bool sourceIsFPReg = amd64::isFPReg(fromValReg);
+
         if(toSlot.kind == ValueSlot::Register){
+            bool destIsFPReg = toSlot.isFPReg();
+
+            // TODO for now, we don't allow moves between int and float regs using this method
+            assert(iff(destIsFPReg, sourceIsFPReg) && "moves between int and float regs not supported in moveFromOperandRegToSlot");
+
             FeMnem mnem;
-            switch(toSlot.bitwidth){
+
+            switch(toSlot.bitwidth + (static_cast<uint32_t>(sourceIsFPReg) << 8)){
                 // TODO try to eliminate partial register deps
                 case 8:  mnem = FE_MOV8rr;  break;
                 case 16: mnem = FE_MOV16rr; break;
                 case 32: mnem = FE_MOV32rr; break;
                 case 64: mnem = FE_MOV64rr; break;
+
+                case 0x0100 + 32: mnem = FE_SSE_MOVSSrr; break;
+                case 0x0100 + 64: mnem = FE_SSE_MOVSDrr; break;
+
                 default: llvm_unreachable("invalid bitwidth");
             }
             bool failed = encoder.encodeRaw(mnem, toSlot.reg, fromValReg);
@@ -1041,61 +1051,82 @@ protected:
         }else{
             assert(toSlot.kind == ValueSlot::Stack && "slot neither register nor stack");
             FeMnem mnem;
-            switch(toSlot.bitwidth){
+            switch(toSlot.bitwidth + (static_cast<uint32_t>(sourceIsFPReg) << 8)){
                 // TODO try to eliminate partial register deps
                 case 8:  mnem = FE_MOV8mr;  break;
                 case 16: mnem = FE_MOV16mr; break;
                 case 32: mnem = FE_MOV32mr; break;
                 case 64: mnem = FE_MOV64mr; break;
+
+                case 0x0100 + 32: mnem = FE_SSE_MOVSSmr; break;
+                case 0x0100 + 64: mnem = FE_SSE_MOVSDmr; break;
+
                 default: llvm_unreachable("invalid bitwidth");
             }
             return encoder.encodeRaw(mnem, toSlot.mem, fromValReg);
         }
     }
 
+    // TODO the fp reg checks could also slow this down quite a lot
     // TODO the case distinction depending on the slot kind can be avoided for allocateEncodeValueDef, by using a template and if constexpr, but see if that actually makes the code faster first
     bool moveFromSlotToOperandReg(mlir::Value val, ValueSlot slot, FeReg reg){
         // TODO can probably avoid re-moving the same value to the same operand register, but we need more information for this, registerOf(val) == reg is not enough, because the register of a value does not get overwritten, when another value gets moved there. So we need a register -> value map (vector) to do this
         bool failed;
+        bool destIsFPReg = amd64::isFPReg(reg);
 
         if (slot.kind == ValueSlot::Register){
+            bool sourceIsFPReg = slot.isFPReg();
+
+            // TODO for now, we don't allow moves between int and float regs using this method
+            assert(iff(destIsFPReg, sourceIsFPReg) && "moves between int and float regs not supported in moveFromSlotToOperandReg");
+
             FeMnem mnem;
-            switch(slot.bitwidth){
+            // TODO idk, is this more or less ugly than an additional if around it?
+            switch(slot.bitwidth + (static_cast<uint32_t>(destIsFPReg) << 8)){
                 // TODO try to eliminate partial register deps
                 case 8:  mnem = FE_MOV8rr;  break;
                 case 16: mnem = FE_MOV16rr; break;
                 case 32: mnem = FE_MOV32rr; break;
                 case 64: mnem = FE_MOV64rr; break;
+
+                case 0x0100 + 32: mnem = FE_SSE_MOVSSrr; break;
+                case 0x0100 + 64: mnem = FE_SSE_MOVSDrr; break;
+
                 default: llvm_unreachable("invalid bitwidth");
             }
             failed = encoder.encodeRaw(mnem, reg, slot.reg);
         }else{
             FeMnem mnem;
-            switch(slot.bitwidth){
+            switch(slot.bitwidth + (static_cast<uint32_t>(destIsFPReg) << 8)){
                 // TODO try to eliminate partial register deps
                 case 8:  mnem = FE_MOV8rm;  break;
                 case 16: mnem = FE_MOV16rm; break;
                 case 32: mnem = FE_MOV32rm; break;
                 case 64: mnem = FE_MOV64rm; break;
+
+                case 0x0100 + 32: mnem = FE_SSE_MOVSSrm; break;
+                case 0x0100 + 64: mnem = FE_SSE_MOVSDrm; break;
+
                 default: llvm_unreachable("invalid bitwidth");
             }
             failed = encoder.encodeRaw(mnem, reg, slot.mem);
         }
 
         // we're moving into some operand register -> set the val to be in that register
-        registerOf(val) = reg;
+        amd64::registerOf(val, &blockArgToReg) = reg;
         // TODO return whether it failed
         return failed;
     }
 
-    bool moveFromSlotToOperandReg(mlir::Value val, FeReg reg){
+    bool moveFromSlotToOperandReg(mlir::Value val, const FeReg reg){
         assert(valueToSlot.contains(val));
         return moveFromSlotToOperandReg(val, valueToSlot[val], reg);
     }
 
     /// only use: moving phis
     /// returns whether it failed
-    bool moveFromSlotToSlot(mlir::Value from, mlir::Value to, FeReg memMemMoveReg){
+    bool moveFromSlotToSlot(mlir::Value from, mlir::Value to, const FeReg memMemMoveReg){
+        assert(!amd64::isFPReg(memMemMoveReg) && "mem-mem moves with fp regs not supported yet");
         assert(valueToSlot.contains(to));
         // TODO maybe do a case for when the slot is the same
 
@@ -1109,7 +1140,8 @@ protected:
 
     /// only use: conditionally moving phis
     // TODO failure etc.
-    void condMoveFromSlotToSlot(ValueSlot fromSlot, mlir::Value conditionallyMoveTo, FeReg memMemMoveReg, amd64::conditional::predicate cmovPredicate){
+    void condMoveFromSlotToSlot(ValueSlot fromSlot, mlir::Value conditionallyMoveTo, const FeReg memMemMoveReg, amd64::conditional::predicate cmovPredicate){
+        assert(!amd64::isFPReg(memMemMoveReg) && "(conditional) mem-mem moves with fp regs not supported yet");
         // this is not the most efficient way in terms of result code, but to keep complexity down at the start, this is fine
         // TODO -> improve this later
 
@@ -1153,7 +1185,7 @@ protected:
         // TODO return if something went wrong
 
         // need to break memory memory moves with a temp register
-        FeReg memMemMoveReg = FE_AX;
+        const FeReg memMemMoveReg = FE_AX;
 
         if constexpr(isCriticalEdge)
             assert(cmovPredicateIfCriticalJcc != amd64::conditional::predicate::NONE);
@@ -1261,9 +1293,11 @@ protected:
         // Because we're traversing in RPO, we know that the block args are already allocated.
         auto tryAllocateSlotsForBlockArgsOfSuccessor = [this](mlir::Block::BlockArgListType blockArgs){
             for(auto arg : blockArgs){
+                // TODO float block args currently not supported
+
                 // allocate a slot for the block arg
                 // TODO this needs to be functionality of a concrete regallocer implementation, not the abstract one, because it decides where to put block args
-                uint8_t bitwidth = arg.getType().cast<amd64::RegisterTypeInterface>().getBitwidth();
+                uint8_t bitwidth = arg.getType().cast<amd64::GPRegisterTypeInterface>().getBitwidth();
                 valueToSlot.try_emplace(arg, ValueSlot{.kind = ValueSlot::Stack, .mem = allocateNewStackslot(bitwidth), .bitwidth = bitwidth});
                 // TODO a possible optimization would be to use another map for blocks whose blockargs have already been allocated, and skip this loop entirely. Might be worth it for blocks with a lot of args. But might cost performance otherwise
             }
@@ -1336,12 +1370,27 @@ public:
             // TODO allocating the registers in this fixed way has the advantage of compile speed and simplicity, but it is quite error prone...
             // strategy: the first op can always have AX, because it isn't needed as the constraint for any second op
             //           the second operand can always have CX
-            if(useOperandNumber == 0)
-                whichReg = FE_AX;
-            else if (useOperandNumber == 1)
-                whichReg = FE_CX;
-            else
-                llvm_unreachable("more than 2 operands not supported yet");
+
+            if(mlir::isa<amd64::GPRegisterTypeInterface>(val.getType())){
+                if(useOperandNumber == 0)
+                    whichReg = FE_AX;
+                else if (useOperandNumber == 1)
+                    whichReg = FE_CX;
+                else if (useOperandNumber == 2)
+                    whichReg = FE_DX;
+                else
+                    llvm_unreachable("more than 3 int operands not supported yet");
+            }else{
+                assert(mlir::isa<amd64::FPRegisterTypeInterface>(val.getType()) && "unknown register type");
+                if(useOperandNumber == 0)
+                    whichReg = FE_XMM0;
+                else if (useOperandNumber == 1)
+                    whichReg = FE_XMM1;
+                else if (useOperandNumber == 2)
+                    whichReg = FE_XMM2;
+                else
+                    llvm_unreachable("more than 3 float operands not supported yet");
+            }
         }
 
         moveFromSlotToOperandReg(val, slot, whichReg);
@@ -1362,24 +1411,44 @@ public:
         llvm::SmallVector<std::tuple<mlir::OpResult, ValueSlot, FeReg>, 2> resultInfoForSpilling(def->getNumResults());
 
         for(auto [i, result] : llvm::enumerate(def->getResults())){
-            std::get<0>(resultInfoForSpilling[i]) = result;
+            auto& [spillResult, spillSlot, spillReg] = resultInfoForSpilling[i];
+            spillResult = result;
 
-            uint8_t bitwidth = mlir::dyn_cast<amd64::RegisterTypeInterface>(result.getType()).getBitwidth();
+            auto resultAsRegType = mlir::dyn_cast<amd64::RegisterTypeInterface>(result.getType());
+            uint8_t bitwidth = resultAsRegType.getBitwidth();
             FeOp memLoc = allocateNewStackslot(bitwidth);
-            std::get<1>(resultInfoForSpilling[i]) = valueToSlot[result] = ValueSlot{.kind = ValueSlot::Kind::Stack, .mem = memLoc, .bitwidth = bitwidth};
+            spillSlot = valueToSlot[result] = ValueSlot{.kind = ValueSlot::Kind::Stack, .mem = memLoc, .bitwidth = bitwidth};
+
+            // TODO handle float results
 
             // allocate registers for the result
-            if(i == 0){
-                // always assign AX to the first result
-                std::get<2>(resultInfoForSpilling[i]) = instructionInfo.regs.reg1 = FE_AX;
-                assert((!resConstr1.constrainsReg() || resConstr1.which != 0 || resConstr1.reg == FE_AX) && "constraint doesn't match result");
-            }else if(i == 1){
-                // always assign DX to the second result
-                std::get<2>(resultInfoForSpilling[i]) = instructionInfo.regs.reg2 = FE_DX;
-                assert((!resConst2.constrainsReg() || resConst2.which != 1 || resConst2.reg == FE_DX) && "constraint doesn't match result");
+            if(mlir::isa<amd64::GPRegisterTypeInterface>(resultAsRegType)){
+                if(i == 0){
+                    // always assign AX to the first result
+                    spillReg = instructionInfo.regs.reg1 = FE_AX;
+                    assert(implies(resConstr1.constrainsReg(), resConstr1.which != 0 || resConstr1.reg == FE_AX) && "constraint doesn't match result");
+                }else if(i == 1){
+                    // always assign DX to the second result
+                    spillReg = instructionInfo.regs.reg2 = FE_DX;
+                    assert(implies(resConst2.constrainsReg(), resConst2.which != 1 || resConst2.reg == FE_DX) && "constraint doesn't match result");
+                }else{
+                    // TODO this doesn't need to be a proper failure for now, right? Because we only define instrs with at most 2 results
+                    llvm_unreachable("more than 2 int results not supported yet");
+                }
             }else{
-                // TODO this doesn't need to be a proper failure for now, right? Because we only define instrs with at most 2 results
-                llvm_unreachable("more than 2 results not supported yet");
+                assert(mlir::isa<amd64::FPRegisterTypeInterface>(resultAsRegType) && "result is neither GP nor FP register type");
+                if(i == 0){
+                    // always assign XMM0 to the first result
+                    spillReg = instructionInfo.regs.reg1 = FE_XMM0;
+                    assert(implies(resConstr1.constrainsReg(), resConstr1.which != 0 || resConstr1.reg == FE_XMM0) && "constraint doesn't match result");
+                }else if(i == 1){
+                    // always assign XMM1 to the second result
+                    spillReg = instructionInfo.regs.reg2 = FE_XMM1;
+                    assert(implies(resConst2.constrainsReg(), resConst2.which != 1 || resConst2.reg == FE_XMM1) && "constraint doesn't match result");
+                }else{
+                    // TODO this doesn't need to be a proper failure for now, right? Because we only define instrs with at most 2 results
+                    llvm_unreachable("more than 2 float results not supported yet");
+                }
             }
 
             // spill store after the instruction
@@ -1427,7 +1496,9 @@ public:
 
         for(auto [i, arg] : llvm::enumerate(func.getArguments())){
             if(i < 6){
-                auto argAsRegType = mlir::cast<amd64::RegisterTypeInterface>(arg.getType());
+                // TODO float function args not supported yet 
+
+                auto argAsRegType = mlir::cast<amd64::GPRegisterTypeInterface>(arg.getType());
                 uint8_t bitwidth = argAsRegType.getBitwidth();
                 auto slot = valueToSlot[arg] = ValueSlot{.kind = ValueSlot::Stack, .mem = allocateNewStackslot(bitwidth), .bitwidth = bitwidth};
 

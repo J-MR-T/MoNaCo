@@ -193,10 +193,9 @@ int main(int argc, char *argv[]) {
 
             MEASURE_TIME_END(totalMLIR);
 
-            MEASURE_TIME_START(iselMLIR);
-
-            // TODO does this slow it down?
             std::vector<amd64::GlobalsInfo> globalsClones(iterations);
+
+            MEASURE_TIME_START(iselMLIR);
             for(unsigned i = iterations; i < 2*iterations; i++){
                 maximalIsel(*modClones[i], globalsClones[i-iterations]);
             }

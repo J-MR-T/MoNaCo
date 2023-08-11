@@ -21,7 +21,7 @@ def AMD64_Dialect : Dialect {
   let useDefaultTypePrinterParser = 1;
 
   // TODO performance test this later
-  let usePropertiesForAttributes = 0;
+  let usePropertiesForAttributes = 1;
 }
 
 class AMD64_Op<string mnemonic, list<Trait> traits = []> :

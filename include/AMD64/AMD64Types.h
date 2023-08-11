@@ -218,6 +218,10 @@ struct InstructionInfo{
 	inline llvm::hash_code hash() const {
 		return llvm::hash_combine(regs.hash(), imm);
 	}
+
+    inline bool operator==(const InstructionInfo& other) const{
+        return regs.combined() == other.regs.combined() && imm == other.imm;
+    }
 };
 
 // === traits ===

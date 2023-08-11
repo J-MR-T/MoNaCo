@@ -16,7 +16,22 @@ def RegisterTypeInterface : TypeInterface<"RegisterTypeInterface">{
   ];
 
   let cppNamespace = "::amd64";
+}
 
+def GPRegisterTypeInterface : TypeInterface<"GPRegisterTypeInterface", [RegisterTypeInterface]>{
+  let description = [{
+    TODO
+  }];
+
+  let cppNamespace = "::amd64";
+}
+
+def FPRegisterTypeInterface : TypeInterface<"FPRegisterTypeInterface", [RegisterTypeInterface]>{
+  let description = [{
+    TODO
+  }];
+
+  let cppNamespace = "::amd64";
 }
 
 #endif

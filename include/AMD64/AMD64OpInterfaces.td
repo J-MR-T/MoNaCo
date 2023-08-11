@@ -31,7 +31,7 @@ def EncodeOpInterface : OpInterface<"EncodeOpInterface">{
   }];
 
   let methods = [
-    InterfaceMethod<"TODO", "FeOp", "encode">,
+    InterfaceMethod<"TODO", "FeOp", "encode", (ins "mlir::DenseMap<mlir::BlockArgument, FeReg>*":$blockArgToReg)>, // this whole passing blockArgToReg around is such terrible design, but I don't knwo how to do it in a better way, until we can save stuff directly on block arguments
     InterfaceMethod<"TODO", "std::optional<mlir::Value>", "getBaseGeneric">,
     InterfaceMethod<"TODO", "std::optional<mlir::Value>", "getIndexGeneric">,
   ];
@@ -51,6 +51,7 @@ def PredicateInterface : OpInterface<"PredicateInterface">{
   let cppNamespace = "::amd64";
 }
 
+// TODO can maybe simplify this, by also extending MLIRs built-in branch op interface
 def ConditionalJumpInterface : OpInterface<"ConditionalJumpInterface", [InstructionOpInterface, PredicateInterface]>{
   let description = [{
     This is an interface for AMD64 Jump Ops. They can specify how they are inverted using this interface, and their destinations and destination arguments can be queried.
