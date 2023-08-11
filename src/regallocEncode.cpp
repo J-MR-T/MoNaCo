@@ -698,38 +698,87 @@ struct AbstractRegAllocerEncoder{
                         // for a call: handle things differently, load all operands directly into the correct registers
                         if(instr.getFeMnemonic() == FE_CALL) [[unlikely]]{
                             auto call = mlir::cast<amd64::CALL>(instr);
-                            // TODO currently only supports integer arguments, float args are necessary tho
-                            // TODO might be avoidable through inlining?
+
+                            llvm::SmallVector<mlir::Value, 8> stackArgs;
 
                             // emit args
-                            auto moveOperands = [&](auto&& argRegs){
-                                assert(call.getNumOperands() <= sizeof(argRegs)/sizeof(argRegs[0]) && "more than 6 args not supported yet");
-                                for(auto [i ,operand]: llvm::enumerate(instr->getOperands())){
-                                    moveFromSlotToOperandReg(operand, valueToSlot[operand], argRegs[i]);
+                            auto moveOperands = [&]<auto intArgRegs, unsigned numIntRegArgs, auto floatArgRegs, unsigned numFloatRegArgs>(){
+                                auto intOperandIndex   = 0u;
+                                auto floatOperandIndex = 0u;
+
+                                for(auto operand: instr->getOperands()){
+                                    bool opIsInt = operand.getType().isa<amd64::GPRegisterTypeInterface>();
+                                    if(opIsInt){
+                                        if(intOperandIndex < numIntRegArgs)
+                                            moveFromSlotToOperandReg(operand, valueToSlot[operand], intArgRegs[intOperandIndex++]);
+                                        else
+                                            // stack args are passed in reverse order. So we have to PUSHr/PUSHm the values in reverse order, so we collect them here first, then iterate over them afterwards
+                                            stackArgs.push_back(operand);
+                                        
+                                    }else{
+                                        assert(floatOperandIndex < numFloatRegArgs && "remove once float stack args have been tested");
+
+                                        moveFromSlotToOperandReg(operand, valueToSlot[operand], floatArgRegs[floatOperandIndex++]);
+                                        // the current approach for ints cant work, because 
+                                    }
+                                }
+
+                                // if there is an uneven number of stack args, we have to 'push' an additional 8 bytes to keep the stack 16-byte aligned
+                                if(stackArgs.size() % 2 == 1)
+                                    encoder.encodeRaw(FE_SUB64ri, FE_SP, 8);
+
+                                // now push all the stack args, in reverse order
+                                // don't forget to pop them again afterwards
+                                for(int i = stackArgs.size() - 1; i >= 0; i--){
+                                    auto& arg = stackArgs[i];
+                                    auto& slot = valueToSlot[arg];
+
+                                    // using 8 byte PUSHes here should be correct, because the ABI specifies sizes get rounded up to 8 bytes (page 23)
+                                    if(slot.kind == ValueSlot::Register)
+                                        encoder.encodeRaw(FE_PUSHr, slot.reg);
+                                    else
+                                        encoder.encodeRaw(FE_PUSHm, slot.mem);
                                 }
                             };
 
+                            static constexpr FeReg floatArgRegs[] = {FE_XMM0, FE_XMM1, FE_XMM2, FE_XMM3, FE_XMM4, FE_XMM5, FE_XMM6, FE_XMM7};
                             if(call.getCallee()){
                                 // direct call
-                                static constexpr FeReg argRegs[] = {FE_DI, FE_SI, FE_DX, FE_CX, FE_R8, FE_R9};
-                                moveOperands(argRegs);
+                                static constexpr FeReg intArgRegs[] = {FE_DI, FE_SI, FE_DX, FE_CX, FE_R8, FE_R9};
+                                moveOperands.template operator()<intArgRegs, comptimeArraySize(intArgRegs), floatArgRegs, comptimeArraySize(floatArgRegs)>();
                             }else{
                                 // indirect call, first operand is the pointer to what to call, rest is the same
-                                static constexpr FeReg argRegs[] = {FE_AX, FE_DI, FE_SI, FE_DX, FE_CX, FE_R8, FE_R9};
-                                moveOperands(argRegs);
+                                static constexpr FeReg intArgRegs[] = {FE_AX, FE_DI, FE_SI, FE_DX, FE_CX, FE_R8, FE_R9};
+                                moveOperands.template operator()<intArgRegs, comptimeArraySize(intArgRegs), floatArgRegs, comptimeArraySize(floatArgRegs)>();
                             }
 
-                            // TODO this needs to be factored out to a kind of "allocated but dont spill or encode" function. Alternatively template variants (either with boolean template arguments, or as specializations) of the allocateEncodeValueDef function that don't do that.
+                            // TODO part of this needs to be factored out to a kind of "allocated but dont spill or encode" function. Alternatively template variants (either with boolean template arguments, or as specializations) of the allocateEncodeValueDef function that don't do that.
                             // TODO remove the assert, once the rework of encoding failure is done
                             auto ret = encoder.encodeCall(mod, call);
                             assert(ret == false && "encoding call failed");
                             if(call.getNumResults() > 0){
+                                assert(call.getNumResults() == 1 && "multiple results not supported yet");
+
                                 auto result = call.getResult(0);
-                                auto resultBw = mlir::cast<amd64::GPRegisterTypeInterface>(result.getType()).getBitwidth();
+                                auto resultBw = mlir::cast<amd64::RegisterTypeInterface>(result.getType()).getBitwidth();
                                 assert(resultBw < std::numeric_limits<uint8_t>::max() && "bitwidth too high");
                                 auto& slot = valueToSlot[result] = ValueSlot{.kind = ValueSlot::Stack, .mem = allocateNewStackslot(resultBw), .bitwidth = static_cast<uint8_t>(resultBw)};
-                                moveFromOperandRegToSlot(result, slot, FE_AX);
+                                bool resultIsInt = result.getType().isa<amd64::GPRegisterTypeInterface>();
+                                if(resultIsInt)
+                                    moveFromOperandRegToSlot(result, slot, FE_AX);
+                                else
+                                    moveFromOperandRegToSlot(result, slot, FE_XMM0);
                             }
+
+                            // now 'pop' all the stack args. We don't care about what happened to them, so we can just do a single big ADD64ri
+                            auto addsize = stackArgs.size() * 8;
+                            // if there is an uneven number of stack args, we have to 'push' an additional 8 bytes to keep the stack 16-byte aligned
+                            if(stackArgs.size() % 2 == 1)
+                                addsize += 8;
+
+                            if(addsize != 0)
+                                encoder.encodeRaw(FE_ADD64ri, FE_SP, addsize);
+
                             continue;
                         }
 
@@ -766,6 +815,8 @@ struct AbstractRegAllocerEncoder{
                             loadValueForUse(operand, i, operandRegConstraint);
                         }
 
+                        // TODO this is alright for the moment, as it always allocates AX to the first int result and XMM0 to the first float result, which is what we want for a call. But as soon as there is a more complex register allocator, this need sto change
+                        // there is a static assertion elsewhere (because StackRegAllocer is not declared yet) to check this, but the problem is here
                         allocateEncodeValueDef(instr);
                     }else if(auto addrofGlobalOp = mlir::dyn_cast<amd64::AddrOfGlobal>(&op)) [[unlikely]]{
                         // TODO this is not very nice
@@ -1541,6 +1592,9 @@ private:
 // TODO parameters for optimization level (-> which regallocer to use)
 uint8_t* regallocEncode(uint8_t* buf, uint8_t* bufEnd, mlir::ModuleOp mod, GlobalsInfo&& globals, bool dumpAsm, bool jit, llvm::StringRef startSymbolIfJIT){
     StackRegAllocer regallocer(mod, buf, bufEnd, std::move(globals), jit, startSymbolIfJIT);
+
+    // just to again ensure that this is not changed without caution
+    static_assert(std::is_same<decltype(regallocer), StackRegAllocer>::value, "You need to change handling in the abstract reg allocer, like how calls are encoded (implicit reg constraints), and more, before you use a new reg allocer!");
     regallocer.run();
     if(dumpAsm)
         regallocer.encoder.dumpAfterEncodingDone(mod, regallocer.globals);

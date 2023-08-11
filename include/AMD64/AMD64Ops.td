@@ -590,8 +590,7 @@ def CALL : Instruction<"CALL">{
   let operands = (ins OptionalAttr<FlatSymbolRefAttr>:$callee, /* TODO convert to property */ DefaultValuedAttr<BoolAttr, "false">:$isGuaranteedExternal, Variadic<AnyType>:$operands);
   let results = (outs Optional<RegisterTypeInterface>:$ret); // single return value, or none
   // TODO we will need some info about what size the callee returns, see RET
-  // technically this is an ABI thing, not an architecture thing, but it doesn't really matter
-  let resultConstraint1 = "{.which = 0, .reg = FE_AX}";
+  // no register constraint, this is special cased in the encoder, because we need to take care of ABI stuff, with int/float returns etc.
 
   let extraExtraClassDeclarations = [[{
     /// Return the callee of this operation.
@@ -603,10 +602,11 @@ def CALL : Instruction<"CALL">{
 
 // return
 let results = (outs) in
+// TODO also change this, needs to be FE_AX/XMM0 depending on return type
 let operandConstraint1 = "{.which = 0, .reg = FE_AX}" in
 // the burden is on the caller to use this correctly
 // TODO maybe add a verifier check, to check all returns have types matching the function return type
-let operands = (ins anygprType:$ret) in 
+let operands = (ins AnyType:$ret) in 
 def RET : Instruction<"RET", [Terminator]>;
 
 // === float instructions === 

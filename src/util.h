@@ -508,3 +508,6 @@ inline void memcpyToLittleEndianBuffer(void* bufStart, std::integral auto value,
 [[nodiscard]] inline bool implies(bool a, bool b){
     return !a || b;
 }
+
+template<std::size_t N, class T>
+consteval std::size_t comptimeArraySize(T(&)[N]) { return N; }

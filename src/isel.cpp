@@ -973,7 +973,7 @@ struct LLVMGlobalPat : public mlir::OpConversionPattern<LLVM::GlobalOp>{
 };
 
 #define CALL_PAT(bitwidth) \
-    using LLVMCallPat ## bitwidth = Match<LLVM::CallOp, bitwidth, callMatchReplace, defaultBitwidthMatchLambda<amd64::GPRegisterTypeInterface, true>, 1, amd64::MOV ## bitwidth ## rr, amd64::gpr ## bitwidth ## Type>
+    using LLVMCallPat ## bitwidth = Match<LLVM::CallOp, bitwidth, callMatchReplace, /* match ints, floats, and zero res */ defaultBitwidthMatchLambda<amd64::RegisterTypeInterface, true>, 1, amd64::MOV ## bitwidth ## rr, amd64::gpr ## bitwidth ## Type>
 
 CALL_PAT(8); CALL_PAT(16); CALL_PAT(32); CALL_PAT(64);
 
