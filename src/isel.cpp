@@ -1358,8 +1358,6 @@ struct LLVMConstantFloatPat : public mlir::OpConversionPattern<LLVM::ConstantOp>
 
             globals[str] = GlobalSymbolInfo{.bytes = SmallVector<uint8_t, 8>(bytesPtr, bytesPtr + 4), .alignment = 4};
 
-            // TODO
-            //FE_SSE_MOVSSrm
             rewriter.replaceOpWithNewOp<amd64::MOVSSrm>(op, 
                 rewriter.create<amd64::MemB>(op.getLoc(),
                     rewriter.create<amd64::AddrOfGlobal>(op.getLoc(), str)));
@@ -1369,9 +1367,9 @@ struct LLVMConstantFloatPat : public mlir::OpConversionPattern<LLVM::ConstantOp>
             auto str = twine.str();
             globals[str] = GlobalSymbolInfo{.bytes = SmallVector<uint8_t, 8>(bytesPtr, bytesPtr + 8), .alignment = 8};
 
-            // TODO
-            //FE_SSE_MOVSDrm
-            rewriter.replaceOpWithNewOp<amd64::MOVSDrm>(op, rewriter.create<amd64::AddrOfGlobal>(op.getLoc(), str));
+            rewriter.replaceOpWithNewOp<amd64::MOVSDrm>(op, 
+                rewriter.create<amd64::MemB>(op.getLoc(),
+                    rewriter.create<amd64::AddrOfGlobal>(op.getLoc(), str)));
         }
 
         return mlir::success();
