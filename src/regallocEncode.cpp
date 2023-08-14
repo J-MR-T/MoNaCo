@@ -623,15 +623,14 @@ struct AbstractRegAllocerEncoder{
 
     // TODO currently not in use
 #if 0
-    mlir::Value operandRegToValue[3] = {/* AX */nullptr, /* CX */ nullptr, /* DX */ nullptr};
+    mlir::Value operandRegisterContents[3] = {/* AX */ nullptr, /* CX */ nullptr, /* DX */ nullptr};
+    // AX, CX, DX are operand registers
+    // XMM0 to XMM2 as well, but they are not mapped here
 
-    static consteval unsigned operandRegValueIndex(FeReg reg){
-        // AX, CX, DX are operand registers
-        // XMM0 to XMM2 as well
-        if (reg == FE_AX)      return 0;
-        else if (reg == FE_CX) return 1;
-        else if (reg == FE_DX) return 2;
-        else static_assert(false, "invalid register");
+
+    static constexpr unsigned operandRegValueIndex(FeReg reg){
+        static_assert(FE_AX - 256 == 0 && FE_CX - 257 == 0 && FE_DX - 258 == 0, "register enum values changed, need to change this code");
+        return reg - 256;
     }
 #endif
 
@@ -657,7 +656,6 @@ struct AbstractRegAllocerEncoder{
         // write globals to sort of .data section
         for(auto sym : globals.keys()){
             DEBUGLOG("Writing global " << sym << " to data section");
-            auto& cur = encoder.cur;
 
             auto it = globals.find(sym);
             assert(it != globals.end() && "global not found in globals map");
@@ -668,6 +666,8 @@ struct AbstractRegAllocerEncoder{
                 DEBUGLOG("Global already written, skipping");
                 continue;
             }
+
+            auto& cur = encoder.cur;
 
             // align
             if(global.alignment != 0){
@@ -1088,11 +1088,11 @@ protected:
 
     // TODO the case distinction depending on the slot kind can be avoided for allocateEncodeValueDef, by using a template and if constexpr, but see if that actually makes the code faster first
     /// move from the register the value is currently in, to the slot, or from the operand register override, if it is set
-    bool moveFromOperandRegToSlot(mlir::Value fromVal, const ValueSlot& toSlot, const FeReg operandRegOverride = (FeReg) FE_NOREG){
+    bool moveFromOperandRegToSlot(mlir::Value fromVal, const ValueSlot& toSlot, const FeReg operandRegOverride = FE_NOREG){
         /// the register the value is currently in
         FeReg& fromValReg = amd64::registerOf(fromVal, &blockArgToReg);
 
-        if(operandRegOverride != (FeReg) FE_NOREG)
+        if(operandRegOverride != FE_NOREG)
             fromValReg = operandRegOverride;
 
         bool sourceIsFPReg = amd64::isFPReg(fromValReg);
@@ -1502,16 +1502,22 @@ public:
         auto& instructionInfo = def.instructionInfo();
 
         // TODO try if an array is more efficient
-        llvm::SmallVector<std::tuple<mlir::OpResult, ValueSlot, FeReg>, 2> resultInfoForSpilling(def->getNumResults());
+        llvm::SmallVector<std::tuple</* result*/ mlir::OpResult, /* slot */ ValueSlot, /* register to spill from */ FeReg, /* ignore */ bool>, 2> resultInfoForSpilling(def->getNumResults());
 
         for(auto [i, result] : llvm::enumerate(def->getResults())){
-            auto& [spillResult, spillSlot, spillReg] = resultInfoForSpilling[i];
+            auto& [spillResult, spillSlot, spillReg, dontSpill] = resultInfoForSpilling[i];
             spillResult = result;
 
             auto resultAsRegType = mlir::dyn_cast<amd64::RegisterTypeInterface>(result.getType());
-            uint8_t bitwidth = resultAsRegType.getBitwidth();
-            FeOp memLoc = allocateNewStackslot(bitwidth);
-            spillSlot = valueToSlot[result] = ValueSlot{.kind = ValueSlot::Kind::Stack, .mem = memLoc, .bitwidth = bitwidth};
+            if(!result.use_empty()){
+                dontSpill = false;
+
+                uint8_t bitwidth = resultAsRegType.getBitwidth();
+                FeOp memLoc = allocateNewStackslot(bitwidth);
+                spillSlot = valueToSlot[result] = ValueSlot{.kind = ValueSlot::Kind::Stack, .mem = memLoc, .bitwidth = bitwidth};
+            }else{
+                dontSpill = true;
+            }
 
             // TODO handle float results
 
@@ -1555,8 +1561,9 @@ public:
 
 
         // now do the spilling
-        for(auto [result, slot, reg] : resultInfoForSpilling){
-            moveFromOperandRegToSlot(result, slot, reg);
+        for(auto [result, slot, reg, dontSpill] : resultInfoForSpilling){
+            if(!dontSpill)
+                moveFromOperandRegToSlot(result, slot, reg);
         }
     }
 
