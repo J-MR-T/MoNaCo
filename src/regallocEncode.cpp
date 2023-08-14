@@ -597,6 +597,30 @@ struct AbstractRegAllocerEncoder{
     /// the number of bytes we need to allocate at the end doesn't include the preallocated stack bytes (specialStackBytes + what is needed for saving callee saved regs), because they are already allocated, so these need to be saved, to be subtracted from the total
     uint8_t preAllocatedStackBytes = 0;
 
+    FeReg guaranteedAvailableStorageReg = resetGuaranteedAvailableStorageReg();
+
+    static_assert(FE_BX - 0x103 == 0);
+    static_assert(FE_SI == FE_BX + 3) ;
+    static_assert(FE_SP > FE_BX && FE_SP < FE_SI && FE_BP > FE_BX && FE_BP < FE_SI);
+
+    FeReg resetGuaranteedAvailableStorageReg(){
+        return guaranteedAvailableStorageReg = FE_BX;
+    }
+
+    FeReg nextGuaranteedAvailableStorageReg(){
+        // TODO highly dependent on enum layout
+        if (guaranteedAvailableStorageReg==FE_IP || guaranteedAvailableStorageReg == FE_NOREG){
+            return guaranteedAvailableStorageReg = FE_NOREG;
+        }else if(guaranteedAvailableStorageReg == FE_BX){
+            guaranteedAvailableStorageReg = FE_R12; // first of the other callee saved registers, we could also use the other storage regs, but then we'd have to take care of saving them at calls etc.
+            return FE_BX;
+        }else{
+            auto cur = guaranteedAvailableStorageReg;
+            guaranteedAvailableStorageReg = static_cast<FeReg>(static_cast<int>(guaranteedAvailableStorageReg)+1);
+            return cur;
+        }
+    }
+
     // TODO currently not in use
 #if 0
     mlir::Value operandRegToValue[3] = {/* AX */nullptr, /* CX */ nullptr, /* DX */ nullptr};
@@ -1037,6 +1061,7 @@ struct AbstractRegAllocerEncoder{
             // this is not necessary, but can catch bugs with the assert above, so do it in debug builds
             stackAllocationInstruction = nullptr;
 #endif
+            resetGuaranteedAvailableStorageReg();
         }
 
         // resolve all things that need to know every block
@@ -1073,6 +1098,9 @@ protected:
         bool sourceIsFPReg = amd64::isFPReg(fromValReg);
 
         if(toSlot.kind == ValueSlot::Register){
+            if(fromValReg == toSlot.reg)
+                return false;
+
             bool destIsFPReg = toSlot.isFPReg();
 
             // TODO for now, we don't allow moves between int and float regs using this method
@@ -1126,6 +1154,9 @@ protected:
         bool destIsFPReg = amd64::isFPReg(reg);
 
         if (slot.kind == ValueSlot::Register){
+            if(reg == slot.reg)
+                goto success;
+
             bool sourceIsFPReg = slot.isFPReg();
 
             // TODO for now, we don't allow moves between int and float regs using this method
@@ -1162,6 +1193,8 @@ protected:
             }
             failed = encoder.encodeRaw(mnem, reg, slot.mem);
         }
+
+    success:
 
         // we're moving into some operand register -> set the val to be in that register
         amd64::registerOf(val, &blockArgToReg) = reg;
@@ -1342,14 +1375,24 @@ protected:
     void handleTerminator(mlir::Block::iterator instrIt, mlir::Block* nextBlock){
         // We need to deal with PHIs/block args here.
         // Because we're traversing in RPO, we know that the block args are already allocated.
-        auto tryAllocateSlotsForBlockArgsOfSuccessor = [this](mlir::Block::BlockArgListType blockArgs){
+        auto tryAllocateSlotsForBlockArgsOfSuccessor = [this, instrIt](mlir::Block::BlockArgListType blockArgs){
             for(auto arg : blockArgs){
                 // TODO float block args currently not supported
+                // TODO this needs to be functionality of a concrete regallocer implementation, not the abstract one, because it decides where to put block args
 
                 // allocate a slot for the block arg
-                // TODO this needs to be functionality of a concrete regallocer implementation, not the abstract one, because it decides where to put block args
+                // if we have storage registers free in this function, use them. Otherwise, allocate a stack slot
+
                 uint8_t bitwidth = arg.getType().cast<amd64::GPRegisterTypeInterface>().getBitwidth();
-                valueToSlot.try_emplace(arg, ValueSlot{.kind = ValueSlot::Stack, .mem = allocateNewStackslot(bitwidth), .bitwidth = bitwidth});
+
+                ValueSlot slot;
+                if(auto reg = nextGuaranteedAvailableStorageReg(); reg != FE_NOREG){
+                    slot = ValueSlot{.kind = ValueSlot::Register, .reg = reg, .bitwidth = bitwidth};
+                }else{
+                    slot = ValueSlot{.kind = ValueSlot::Stack, .mem = allocateNewStackslot(bitwidth), .bitwidth = bitwidth};
+                }
+
+                valueToSlot.try_emplace(arg, slot);
                 // TODO a possible optimization would be to use another map for blocks whose blockargs have already been allocated, and skip this loop entirely. Might be worth it for blocks with a lot of args. But might cost performance otherwise
             }
         };
@@ -1411,7 +1454,7 @@ public:
 #endif
 
         auto slot = valueToSlot[val];
-        assert(slot.kind == ValueSlot::Kind::Stack && "stack register allocator encountered a register slot");
+        assert(implies(slot.kind == ValueSlot::Kind::Register, mlir::isa<mlir::BlockArgument>(val)) && "stack register allocator encountered a register slot on a non-block arg");
 
         FeReg whichReg;
         if(constraint.constrainsReg()) [[unlikely]] {
@@ -1426,7 +1469,7 @@ public:
                 if(useOperandNumber == 0)
                     whichReg = FE_AX;
                 else if (useOperandNumber == 1)
-                    whichReg = FE_CX;
+                    whichReg = slot.kind == ValueSlot::Register ? slot.reg : FE_CX;
                 else if (useOperandNumber == 2)
                     whichReg = FE_DX;
                 else
@@ -1436,7 +1479,7 @@ public:
                 if(useOperandNumber == 0)
                     whichReg = FE_XMM0;
                 else if (useOperandNumber == 1)
-                    whichReg = FE_XMM1;
+                    whichReg = slot.kind == ValueSlot::Register ? slot.reg : FE_XMM1;
                 else if (useOperandNumber == 2)
                     whichReg = FE_XMM2;
                 else
