@@ -105,7 +105,7 @@ struct ResultRegisters{
     FeReg reg1;
     FeReg reg2;
 
-    ResultRegisters(): reg1((FeReg)FE_NOREG), reg2((FeReg)FE_NOREG){}
+    ResultRegisters(): reg1(FE_NOREG), reg2(FE_NOREG){}
 
     ResultRegisters(FeReg reg1, FeReg reg2): reg1(reg1), reg2(reg2){
         // assert this, because the combine methods would otherwise fail

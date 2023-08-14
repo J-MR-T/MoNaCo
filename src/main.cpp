@@ -67,7 +67,7 @@ int main(int argc, char *argv[]) {
             errx(EXIT_FAILURE, "Invalid argument for --print: %s", std::string{print_sv}.c_str());
     }
     
-    if(args.debug()){
+    if(args.debugMore()){
         llvm::DebugFlag = true;
         printOpts |= PRINT_INPUT | PRINT_ISEL | PRINT_ASM;
     }

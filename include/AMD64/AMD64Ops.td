@@ -270,7 +270,7 @@ class Instruction<string mnemonic, list<Trait> traits = []> :
   AMD64_Op<mnemonic, traits # [InstructionOpInterface]> {
 
   // these are assumed to be filled in order, i.e. if the first doesn't constrain anything, the second cannot constrain anything either.
-  defvar noConstraint = "{.which = -1, .reg = (FeReg)FE_NOREG}";
+  defvar noConstraint = "{.which = -1, .reg = FE_NOREG}";
 
   string operandConstraint1 = noConstraint;
   string operandConstraint2 = noConstraint;
