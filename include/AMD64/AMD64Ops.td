@@ -91,6 +91,21 @@ foreach bitwidth = [32, 64] in {
 def anygprType: TypeConstraint<Or<[gpr8.predicate, gpr16.predicate, gpr32.predicate, gpr64.predicate]>>;
 def anyfprType: TypeConstraint<Or<[fpr32.predicate, fpr64.predicate]>>;
 
+// === properties ===
+
+// this is heavily based on mlir/test/lib/Dialect/Test/TestOps.td|cpp|h
+// one big instruction info property, so that the tablegen doesn't have to change, when new info is added
+def InstructionInfoProp : Property<"InstructionInfo"> {
+  let convertToAttribute = "$_storage.asAttribute($_ctxt)";
+  let convertFromAttribute = "return InstructionInfo::setFromAttr($_storage, $_attr, $_diag);";
+  let hashProperty = "$_storage.hash();";
+
+  // TODO needed for newer mlir, not yet
+  // because we don't really care about the bytecode
+  //let writeToMlirBytecode = writeMlirBytecodeWithConvertToAttribute;
+  //let readFromMlirBytecode = readMlirBytecodeUsingConvertFromAttribute;
+}
+
 // === memory ops ===
 class MemOp<string mnemonic, list<Trait> traits = []>: AMD64_Op<mnemonic, traits # [EncodeOpInterface]>{
   code encoding = ?;
@@ -246,21 +261,6 @@ def AddrOfGlobal : AMD64_Op<"AddrOfGlobal">{
 def AddrOfFunc : AMD64_Op<"AddrOfFunc">{
   let arguments = (ins FlatSymbolRefAttr:$name);
   let results = (outs gpr64:$addr);
-}
-
-// === properties ===
-
-// this is heavily based on mlir/test/lib/Dialect/Test/TestOps.td|cpp|h
-// one big instruction info property, so that the tablegen doesn't have to change, when new info is added
-def InstructionInfoProp : Property<"InstructionInfo"> {
-  let convertToAttribute = "$_storage.asAttribute($_ctxt)";
-  let convertFromAttribute = "return InstructionInfo::setFromAttr($_storage, $_attr, $_diag);";
-  let hashProperty = "$_storage.hash();";
-
-  // TODO needed for newer mlir, not yet
-  // because we don't really care about the bytecode
-  //let writeToMlirBytecode = writeMlirBytecodeWithConvertToAttribute;
-  //let readFromMlirBytecode = readMlirBytecodeUsingConvertFromAttribute;
 }
 
 // === int instructions ===
