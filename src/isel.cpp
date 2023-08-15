@@ -195,11 +195,11 @@ auto binOpAndImmMatchReplace = []<unsigned actualBitwidth,
 
 // TODO think about whether to define different patterns with this or not etc.
 // TODO this binOpAndImmMatchReplace could be split up into multiple patterns, but that might be slower
-PATTERN_INT(AddIPat, mlir::arith::AddIOp, amd64::ADD, binOpAndImmMatchReplace, intBitwidthMatchLambda, 2);
-PATTERN_INT(SubIPat, mlir::arith::SubIOp, amd64::SUB, binOpMatchReplace);
-PATTERN_INT(AndIPat, mlir::arith::AndIOp, amd64::AND, binOpMatchReplace);
-PATTERN_INT(OrIPat,  mlir::arith::OrIOp,  amd64::OR,  binOpMatchReplace);
-PATTERN_INT(XOrIPat, mlir::arith::XOrIOp, amd64::XOR, binOpMatchReplace);
+PATTERN_INT(AddIPat, arith::AddIOp, amd64::ADD, binOpAndImmMatchReplace, intBitwidthMatchLambda, 2);
+PATTERN_INT(SubIPat, arith::SubIOp, amd64::SUB, binOpMatchReplace);
+PATTERN_INT(AndIPat, arith::AndIOp, amd64::AND, binOpMatchReplace);
+PATTERN_INT(OrIPat,  arith::OrIOp,  amd64::OR,  binOpMatchReplace);
+PATTERN_INT(XOrIPat, arith::XOrIOp, amd64::XOR, binOpMatchReplace);
 
 auto cmpIBitwidthMatcher =
     []<unsigned innerBitwidth>(auto thiis, auto op, auto, mlir::ConversionPatternRewriter&){
