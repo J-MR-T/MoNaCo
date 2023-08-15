@@ -848,7 +848,6 @@ struct AbstractRegAllocerEncoder{
                     }else if(auto addrofFuncOp = mlir::dyn_cast<amd64::AddrOfFunc>(&op)) [[unlikely]]{
                         // TODO this is not very nice
                         mlir::CallInterfaceCallable callable = addrofFuncOp.getNameAttr();
-                        auto maybeFunc = getFuncForCall(mod, callable, encoder.symbolrefToFuncCache);
 
                         // we will use a mov64ri to move various pointers/addresses into place, but we need to replace the original ops use
                         auto allocateEncodeMOV64ri = [&](intptr_t addr){
@@ -861,13 +860,10 @@ struct AbstractRegAllocerEncoder{
                         };
 
                         auto handleExternal = [&](){
-                            // TODO at the moment this can't even be called with external things, so maybe remove this in the future
-                            llvm_unreachable("not tested with external funcs yet, should not be called");
-                            
                             if(encoder.jit){
                                 // try to find the function in the environment
                                 intptr_t fnPtr = (intptr_t) checked_dlsym(addrofFuncOp.getName());
-                                assert(fnPtr && "Symbol not found");
+                                assert(fnPtr && "this should always be checked by dlsym");
 
                                 allocateEncodeMOV64ri(fnPtr);
                             }else{
@@ -875,31 +871,33 @@ struct AbstractRegAllocerEncoder{
                             }
                         };
 
-                        // function has a declaration
-                        if(maybeFunc){
-                            auto func = mlir::cast<mlir::func::FuncOp>(maybeFunc);
-                            if(func.isExternal()){
-                                handleExternal();
-                            }else{
-                                mlir::Block* entryBlock = &func.getBody().front();
-                                assert(entryBlock && "function has no entry block");
+                        auto maybeFunc = getFuncForCall(mod, callable, encoder.symbolrefToFuncCache);
 
-                                // if we've already written this, we can just use the address we've written it to
-                                if(auto entryBlockAddrIt = encoder.blocksToBuffer.find(entryBlock); entryBlockAddrIt != encoder.blocksToBuffer.end()){
-                                    allocateEncodeMOV64ri((intptr_t)entryBlockAddrIt->second);
-                                }else{
-                                    // if we don't know it yet, generate a dummy instruction to be patched later
-
-                                    // TODO this is only luckily the right buf location, this is *actually* the location of the first load for the operands. In this case there *should be none*, but this is still not clean
-                                    auto bufLocation = encoder.saveCur();
-                                    allocateEncodeMOV64ri(0x0100000000000000 /* to reserve space for the 64bit pointer immediate */);
-
-                                    incompleteFunctionAddressMOVABS.emplace_back(bufLocation, entryBlock);
-                                }
-                            }
-                        }else{
-                            // its probably external
+                        if(!maybeFunc){
+                            // presumed external
                             handleExternal();
+                            continue;
+                        }
+
+                        auto func = mlir::cast<mlir::FunctionOpInterface>(maybeFunc);
+                        if(func.isExternal()){
+                            handleExternal();
+                        }else{
+                            mlir::Block* entryBlock = &func.getFunctionBody().front();
+                            assert(entryBlock && "function has no entry block");
+
+                            // if we've already written this, we can just use the address we've written it to
+                            if(auto entryBlockAddrIt = encoder.blocksToBuffer.find(entryBlock); entryBlockAddrIt != encoder.blocksToBuffer.end()){
+                                allocateEncodeMOV64ri((intptr_t)entryBlockAddrIt->second);
+                            }else{
+                                // if we don't know it yet, generate a dummy instruction to be patched later
+
+                                // TODO this is only luckily the right buf location, this is *actually* the location of the first load for the operands. In this case there *should be none*, but this is still not clean
+                                auto bufLocation = encoder.saveCur();
+                                allocateEncodeMOV64ri(0x0100000000000000 /* to reserve space for the 64bit pointer immediate */);
+
+                                incompleteFunctionAddressMOVABS.emplace_back(bufLocation, entryBlock);
+                            }
                         }
                     }
 
