@@ -707,19 +707,22 @@ struct AbstractRegAllocerEncoder{
                                 auto floatOperandIndex = 0u;
 
                                 for(auto operand: instr->getOperands()){
-                                    bool opIsInt = operand.getType().isa<amd64::GPRegisterTypeInterface>();
-                                    if(opIsInt){
+                                    if(auto floatOperandType = operand.getType().dyn_cast<amd64::FPRegisterTypeInterface>()){
+                                        assert(floatOperandIndex < numFloatRegArgs && "remove once float stack args have been tested");
+                                        // the current approach for ints cant work, that assumes ints
+
+                                        // always move to operand reg, extend to double if necessary (only doubles should ever be passed)
+                                        moveFromSlotToOperandReg(operand, valueToSlot[operand], floatArgRegs[floatOperandIndex++]);
+
+                                        if(floatOperandType.getBitwidth() == 32)
+                                            // if it's a float, we need to extend it to double
+                                            encoder.encodeRaw(FE_SSE_CVTSS2SDrr, floatArgRegs[floatOperandIndex - 1], floatArgRegs[floatOperandIndex - 1]);
+                                    }else{
                                         if(intOperandIndex < numIntRegArgs)
                                             moveFromSlotToOperandReg(operand, valueToSlot[operand], intArgRegs[intOperandIndex++]);
                                         else
                                             // stack args are passed in reverse order. So we have to PUSHr/PUSHm the values in reverse order, so we collect them here first, then iterate over them afterwards
                                             stackArgs.push_back(operand);
-                                        
-                                    }else{
-                                        assert(floatOperandIndex < numFloatRegArgs && "remove once float stack args have been tested");
-
-                                        moveFromSlotToOperandReg(operand, valueToSlot[operand], floatArgRegs[floatOperandIndex++]);
-                                        // the current approach for ints cant work, because 
                                     }
                                 }
 
@@ -772,7 +775,7 @@ struct AbstractRegAllocerEncoder{
 
                             // now 'pop' all the stack args. We don't care about what happened to them, so we can just do a single big ADD64ri
                             auto addsize = stackArgs.size() * 8;
-                            // if there is an uneven number of stack args, we have to 'push' an additional 8 bytes to keep the stack 16-byte aligned
+                            // if there is an uneven number of stack args, we have to pop an additional 8 bytes to keep the stack 16-byte aligned
                             if(stackArgs.size() % 2 == 1)
                                 addsize += 8;
 
