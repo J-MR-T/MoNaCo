@@ -1,4 +1,4 @@
-// RUN: %RunC main | FileCheck --match-full-lines %s
+// RUN: %CRun main | FileCheck --match-full-lines %s
 
 void v(int a){
     char* aPtr = &a;

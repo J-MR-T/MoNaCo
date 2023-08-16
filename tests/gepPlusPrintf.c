@@ -1,4 +1,4 @@
-// RUN: %RunC "abc def ghi jkl" | FileCheck %s
+// RUN: %CRun "abc def ghi jkl" | FileCheck %s
 
 // CHECK: as_size = 2. argc: 4
 // CHECK-NEXT: argv[0]: abc

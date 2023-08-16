@@ -1,4 +1,4 @@
-//RUN: %RunC main | FileCheck %s
+//RUN: %CRun main | FileCheck %s
 
 #include <inttypes.h>
 int main(){

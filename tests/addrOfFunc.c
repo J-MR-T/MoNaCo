@@ -1,4 +1,4 @@
-// RUN: %RunC main | FileCheck --match-full-lines %s
+// RUN: %CRun main | FileCheck --match-full-lines %s
 #include <stdio.h>
 
 void test(void){

@@ -1,5 +1,5 @@
-// RUN: %RunC 'main' | FileCheck %s
-// RUN: %RunC 'main' -pasm 2>&1 | FileCheck --ignore-case --check-prefix ASM %s
+// RUN: %CRun 'main' | FileCheck %s
+// RUN: %CRun 'main' -pasm 2>&1 | FileCheck --ignore-case --check-prefix ASM %s
 
 // ASM-NOT: warning: global gloooob is not at the expected address
 // ASM: warning: global printf is not at the expected address{{.*}}could be external

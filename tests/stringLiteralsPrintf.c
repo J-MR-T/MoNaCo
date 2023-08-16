@@ -1,4 +1,4 @@
-// RUN: %RunC argv0 | FileCheck %s
+// RUN: %CRun argv0 | FileCheck %s
 
 // CHECK: as_size = 2. argv[0]: argv0
 

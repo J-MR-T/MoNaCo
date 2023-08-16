@@ -1,4 +1,4 @@
-// RUN: %RunC 'main' | FileCheck --allow-empty %s
+// RUN: %CRun 'main' | FileCheck --allow-empty %s
 // CHECK-NOT: {{.+}}
 
 typedef struct {
