@@ -438,9 +438,16 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
     defm MOV # bitwidth # "m" : Instr_i<"MOV" # bitwidth # "m">;
 
     // normal MOVrr, MOVrm, but without the destination operand as the first operand, just one operand each.
-    // also MOVrr accepts any gprType, to allow truncating TODO rethink that
-    let operands = (ins anygprType:$src1) in
-    def MOV # bitwidth # "rr" : Instruction<"MOV" # bitwidth # "rr", [Pure]>;
+
+    // 32 bit MOVs are special, because they are also used to zero extend to a 64 bit reg.
+    if !eq(bitwidth, "32") then
+      // TODO technically, MOV32rr could have 64/64 bit operands atm. But I suppose we can't help that.
+      let operands = (ins anygprType:$src1), results = (outs TypeConstraint<Or<[gpr32.predicate, gpr64.predicate]>>:$dst) in
+      def MOV # bitwidth # "rr" : Instruction<"MOV" # bitwidth # "rr", [Pure]>;
+    else
+      // also MOVrr accepts any gprType, to allow truncating
+      let operands = (ins anygprType:$src1) in
+      def MOV # bitwidth # "rr" : Instruction<"MOV" # bitwidth # "rr", [Pure]>;
 
     let operands = (ins memLoc:$src1) in
     def MOV # bitwidth # "rm" : Instruction<"MOV" # bitwidth # "rm">;

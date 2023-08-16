@@ -353,7 +353,7 @@ auto truncExtUiSiBitwidthMatcher = []<unsigned outBitwidth>(auto thiis, auto op,
 };
 
 template<unsigned inBitwidth, auto getIn, auto getOut>
-auto truncExtUiSiMatchReplace = []<unsigned actualBitwidth,
+auto truncExtUiSiMatchReplace = []<unsigned outBitwidth,
      typename MOVSZX, typename, typename, typename, typename
 >(auto szextOp, auto adaptor, mlir::ConversionPatternRewriter& rewriter) {
     // we need to take care to truncate an i1 to 0/1, before we 'actually' use it, i.e. do real computations with it on the other side of the MOVZX
@@ -371,7 +371,15 @@ auto truncExtUiSiMatchReplace = []<unsigned actualBitwidth,
         return mlir::success();
     }
 
-    rewriter.replaceOpWithNewOp<MOVSZX>(szextOp, getIn(adaptor));
+    if constexpr(std::is_same_v<MOVSZX, amd64::MOV32rr>) // use the mov to 64 version of MOV32rr
+        if constexpr(inBitwidth == 32 && outBitwidth == 64)
+            rewriter.replaceOpWithNewOp<MOVSZX>(szextOp, amd64::gpr64Type::get(rewriter.getContext()), getIn(adaptor));
+        else if constexpr(inBitwidth == 64 && outBitwidth == 32)
+            rewriter.replaceOpWithNewOp<MOVSZX>(szextOp, amd64::gpr32Type::get(rewriter.getContext()), getIn(adaptor));
+        else 
+            static_assert(false, "this pattern can not be used to translate between the same bitwidth");
+    else
+        rewriter.replaceOpWithNewOp<MOVSZX>(szextOp, getIn(adaptor));
     return mlir::success();
 };
 
