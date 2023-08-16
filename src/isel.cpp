@@ -807,6 +807,9 @@ struct LLVMFuncPat : public mlir::OpConversionPattern<LLVM::LLVMFuncOp>{
     LLVMFuncPat(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<LLVM::LLVMFuncOp>(tc, ctx, 1){}
 
     mlir::LogicalResult matchAndRewrite(LLVM::LLVMFuncOp func, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
+        if(func.isVarArg() && !func.isExternal())
+            return rewriter.notifyMatchFailure(func, "vararg functions are not supported yet");
+
         auto llvmFnType = func.getFunctionType();
 
         llvm::SmallVector<mlir::Type> convertedArgTypes;
