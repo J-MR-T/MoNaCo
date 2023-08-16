@@ -1155,7 +1155,7 @@ TRUNC_PAT(32, 64);
 
 #undef TRUNC_PAT
 
-PATTERN_INT(LLVMAddPat, LLVM::AddOp, amd64::ADD, binOpAndImmMatchReplace, intBitwidthMatchLambda, 2);
+PATTERN_INT(LLVMAddPat, LLVM::AddOp, amd64::ADD, binOpMatchReplace);
 PATTERN_INT(LLVMSubPat, LLVM::SubOp, amd64::SUB, binOpMatchReplace);
 PATTERN_INT(LLVMAndPat, LLVM::AndOp, amd64::AND, binOpMatchReplace);
 PATTERN_INT(LLVMOrPat,  LLVM::OrOp,  amd64::OR,  binOpMatchReplace);
