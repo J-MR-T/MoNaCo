@@ -126,7 +126,7 @@ inline bool llvmCompileMod(llvm::Module& mod, llvm::SmallVector<char, 0>& output
     return 0;
 }
 
-inline void* llvmJITCompileMod(std::unique_ptr<llvm::Module> llvmModUP, llvm::TargetOptions TargetOpt, llvm::CodeGenOpt::Level OptLevel, llvm::StringRef entryPointName){
+inline std::unique_ptr<llvm::ExecutionEngine> llvmJITCompileMod(std::unique_ptr<llvm::Module> llvmModUP, llvm::TargetOptions TargetOpt, llvm::CodeGenOpt::Level OptLevel){
     // don't let the linker throw away the file
     LLVMLinkInMCJIT();
 
@@ -140,11 +140,11 @@ inline void* llvmJITCompileMod(std::unique_ptr<llvm::Module> llvmModUP, llvm::Ta
     builder.setCodeModel(llvm::CodeModel::Small);
 
     // TODO probably need to deallocate this in some way or another
-    llvm::ExecutionEngine* engine = builder.create();
+    auto engine = std::unique_ptr<llvm::ExecutionEngine>(builder.create());
     if (!engine)
         err(1, "could not create engine: %s", error.c_str());
 
-    return reinterpret_cast<void*>(engine->getFunctionAddress(entryPointName.str()));
+    return engine;
 }
 
 /// returns 0 on success, -1 on failure, whatever the JIT compiled program returns if jit is passed
@@ -188,11 +188,13 @@ inline int fallbackToLLVMCompilation(mlir::ModuleOp mlirMod, llvm::LLVMContext& 
     if(jit){
         auto [jitArgc, jitArgv] = ArgParse::parseJITArgv();
 
-        auto main = reinterpret_cast<main_t>(llvmJITCompileMod(std::move(llvmModUP), TargetOpt, OptLevel, "main"));
+        auto engineUP = llvmJITCompileMod(std::move(llvmModUP), TargetOpt, OptLevel);
+        auto main = reinterpret_cast<main_t>(engineUP->getFunctionAddress("main"));
         if(!main){
             llvm::errs() << "Could not JIT compile LLVM module\n";
             return -1;
         }
+
         if(executeJIT)
             return main(jitArgc, jitArgv);
         else
