@@ -1551,19 +1551,37 @@ public:
         encoder.encodeRaw(FE_SUB64ri, FE_SP, 0x01000000); // 0x01000000 isn't the final value, just a placeholder that ensures that the operand size byte is it's maximum possible value -> we have space to encode a big allocation
 
         // spill args
-        static constexpr FeReg argRegs[] = {FE_DI, FE_SI, FE_DX, FE_CX, FE_R8, FE_R9};
+        static constexpr FeReg intArgRegs[] = {FE_DI, FE_SI, FE_DX, FE_CX, FE_R8, FE_R9};
+        static constexpr FeReg floatArgRegs[] = {FE_XMM0, FE_XMM1, FE_XMM2, FE_XMM3, FE_XMM4, FE_XMM5, FE_XMM6, FE_XMM7};
 
-        for(auto [i, arg] : llvm::enumerate(func.getArguments())){
-            if(i < 6){
-                // TODO float function args not supported yet 
+        unsigned intI = 0, floatI = 0;
+        for(auto arg : func.getArguments()){
+            if(auto argAsIntRegType = mlir::dyn_cast<amd64::GPRegisterTypeInterface>(arg.getType())){
+                uint8_t bitwidth = argAsIntRegType.getBitwidth();
+                if(intI < 6){
+                    auto slot = valueToSlot[arg] = ValueSlot{.kind = ValueSlot::Stack, .mem = allocateNewStackslot(bitwidth), .bitwidth = bitwidth};
 
-                auto argAsRegType = mlir::cast<amd64::GPRegisterTypeInterface>(arg.getType());
-                uint8_t bitwidth = argAsRegType.getBitwidth();
+                    // TODO might not work for f32 args
+                    moveFromOperandRegToSlot(arg, slot, intArgRegs[intI]);
+                }else{
+                    // the args are already on the stack, so just create a value slot for them. They should be at rbp+16, as the base pointer correctly points to the last one as ensured above (return address at rbp+8, then the stack args).
+                    // the only thing we have to watch out for, is that these stack slots are all 8 byte wide (in reality), but we have to consieder them the width of the type.
+                    valueToSlot[arg] = ValueSlot{.kind = ValueSlot::Stack, .mem = FE_MEM(FE_BP, 0, 0, 16 + (intI - 6)*8), .bitwidth = bitwidth};
+                }
+
+                intI++;
+            }else{
+                if(floatI >= 8)
+                    errx(EXIT_FAILURE, "More than 8 float arguments not supported yet\n");
+
+                auto argAsFloatRegType = mlir::cast<amd64::FPRegisterTypeInterface>(arg.getType());
+                uint8_t bitwidth = argAsFloatRegType.getBitwidth();
                 auto slot = valueToSlot[arg] = ValueSlot{.kind = ValueSlot::Stack, .mem = allocateNewStackslot(bitwidth), .bitwidth = bitwidth};
 
-                moveFromOperandRegToSlot(arg, slot, argRegs[i]);
-            }else{
-                EXIT_TODO_X("more than 6 args not implemented yet");
+                // TODO might not work for f32 args because they get passed as f64/double
+                moveFromOperandRegToSlot(arg, slot, floatArgRegs[floatI++]);
+
+                floatI++;
             }
         }
     }
@@ -1579,7 +1597,7 @@ public:
 
         // this instruction needs to be rewritten later
         stackDeallocationInstructions.push_back(encoder.saveCur());
-        encoder.encodeRaw(FE_ADD64ri, FE_SP, 0x01000000); // 0x01000000 isn't the final value, just a placeholder that ensures that the operand size byte is it's maximum possible value -> we have space to encode a big allocation
+        encoder.encodeRaw(FE_ADD64ri, FE_SP, 0x01000000); // 0x01000000 isn't the final value, just a placeholder that ensures that the operand size byte is it's maximum possible value (4 byte immediate operand) -> we have space to encode a big allocation
 
 
         for (auto reg : {FE_R15, FE_R14, FE_R13, FE_R12, FE_BX})
