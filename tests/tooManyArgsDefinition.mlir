@@ -1,5 +1,4 @@
-// RUN: diff <(%monaco %s --jit main -F) <(%monaco %s --jit main)
-
+// RUN: %MLIRCheckLLVM
 module{
   llvm.mlir.global private unnamed_addr constant @".str"("Wuhu %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\0A\00") {addr_space = 0 : i32, alignment = 1 : i64, dso_local}
   llvm.func @printf(!llvm.ptr {llvm.nocapture, llvm.noundef, llvm.readonly}, ...) -> (i32 {llvm.noundef}) attributes {passthrough = ["nofree", "nounwind", ["frame-pointer", "none"], ["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "x86-64"], ["target-features", "+cx8,+fxsr,+mmx,+sse,+sse2,+x87"], ["tune-cpu", "generic"]]}

@@ -25,6 +25,7 @@ config.substitutions.append(("%FileCheckExecReturnStatus", r"""%monaco --jit "ma
 # would be nice to be able to do this on all optimization levels
 config.substitutions.append(("%CRun", r"""clang -S -emit-llvm %s -o - 2>/dev/null | mlir-translate --import-llvm 2>/dev/null | %monaco /dev/stdin --jit """))
 config.substitutions.append(("%CCheckLLVM", r"""clang -S -emit-llvm %s -o - 2>/dev/null | mlir-translate --import-llvm 2>/dev/null > %t.mlir; diff <(ASAN_OPTS=detect_leaks=0 %monaco %t.mlir --jit main -F) <(%monaco %t.mlir --jit main)"""))
+config.substitutions.append(("%MLIRCheckLLVM", r"""diff <(%monaco %s --jit main -F) <(%monaco %s --jit main)"""))
 
 config.recursiveExpansionLimit = 3
 
