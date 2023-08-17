@@ -642,7 +642,7 @@ foreach suffix = ["S", "D"] in {
   }
 
   let results = (outs) in {
-    let operands = (ins fprType:$src) in
+    let operands = (ins memLoc:$memLoc, fprType:$src) in
     def MOVS # suffix # "mr": Instruction<"SSE_MOVS" # suffix # "mr">;
   }
 

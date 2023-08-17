@@ -699,9 +699,8 @@ struct LLVMGEPPattern : public mlir::OpConversionPattern<LLVM::GEPOp>{
     }
 };
 
-auto llvmLoadMatchReplace = []<unsigned actualBitwidth,
-     typename, typename, typename INSTrm, typename, typename
-     >(LLVM::LoadOp op, auto adaptor, mlir::ConversionPatternRewriter& rewriter) {
+template<typename INSTrm>
+auto llvmLoadMatchReplace = [](LLVM::LoadOp op, auto adaptor, mlir::ConversionPatternRewriter& rewriter) {
     // TODO this is an ugly hack, because this op gets unrealized conversion casts as args (ptr in this case), because the ptr type gets converted to an i64, instead of a memloc, so the alloca returning a memloc doesn't work
     auto ptr = adaptor.getAddr();
     if(ptr.template isa<mlir::OpResult>() && mlir::isa<amd64::LEA64rm>(ptr.getDefiningOp()) && 
@@ -715,11 +714,25 @@ auto llvmLoadMatchReplace = []<unsigned actualBitwidth,
     return mlir::success();
 };
 
-PATTERN_INT(LLVMLoadPat, LLVM::LoadOp, amd64::MOV, llvmLoadMatchReplace);
+auto llvmIntLoadMatchReplace = []<unsigned actualBitwidth,
+     typename, typename, typename INSTrm, typename, typename
+     >(LLVM::LoadOp op, auto adaptor, mlir::ConversionPatternRewriter& rewriter) {
+    return llvmLoadMatchReplace<INSTrm>(op, adaptor, rewriter);
+};
 
-auto llvmStoreMatchReplace = []<unsigned actualBitwidth,
-     typename, typename, typename, typename, typename INSTmr
-     >(LLVM::StoreOp op, auto adaptor, mlir::ConversionPatternRewriter& rewriter) {
+template<typename INSTrm>
+auto llvmFloatLoadMatchReplace = []<unsigned actualBitwidth,
+     typename, typename, typename, typename, typename
+     >(LLVM::LoadOp op, auto adaptor, mlir::ConversionPatternRewriter& rewriter) {
+    return llvmLoadMatchReplace<INSTrm>(op, adaptor, rewriter);
+};
+
+PATTERN_INT(LLVMIntLoadPat, LLVM::LoadOp, amd64::MOV, llvmIntLoadMatchReplace);
+using LLVMFloatLoadPat32 = Match<LLVM::LoadOp, 32, llvmFloatLoadMatchReplace<amd64::MOVSSrm>, floatBitwidthMatchLambda>;
+using LLVMFloatLoadPat64 = Match<LLVM::LoadOp, 64, llvmFloatLoadMatchReplace<amd64::MOVSDrm>, floatBitwidthMatchLambda>;
+
+template<typename INSTmr>
+auto llvmStoreMatchReplace = [](LLVM::StoreOp op, auto adaptor, mlir::ConversionPatternRewriter& rewriter) {
     // TODO this is an ugly hack, because this op gets unrealized conversion casts as args (ptr in this case), because the ptr type gets converted to an i64, instead of a memloc, so the alloca returning a memloc doesn't work
     auto ptr = adaptor.getAddr();
     auto val = adaptor.getValue();
@@ -734,20 +747,45 @@ auto llvmStoreMatchReplace = []<unsigned actualBitwidth,
     return mlir::success();
 };
 
-auto llvmStoreBitwidthMatcher = []<unsigned bitwidth>(auto thiis, LLVM::StoreOp op, auto, mlir::ConversionPatternRewriter& rewriter){ 
-    if(mlir::dyn_cast<amd64::GPRegisterTypeInterface>(thiis->getTypeConverter()->convertType(op.getValue().getType())).getBitwidth() == bitwidth)
-        return mlir::success();
-    return rewriter.notifyMatchFailure(op, "bitwidth mismatch");
+auto llvmIntStoreMatchReplace = []<unsigned actualBitwidth,
+     typename, typename, typename, typename, typename INSTmr
+     >(LLVM::StoreOp op, auto adaptor, mlir::ConversionPatternRewriter& rewriter) {
+    return llvmStoreMatchReplace<INSTmr>(op, adaptor, rewriter);
 };
-PATTERN_INT(LLVMStorePat, LLVM::StoreOp, amd64::MOV, llvmStoreMatchReplace, llvmStoreBitwidthMatcher);
+
+template<typename INSTmr>
+auto llvmFloatStoreMatchReplace = []<unsigned actualBitwidth,
+     typename, typename, typename, typename, typename
+     >(LLVM::StoreOp op, auto adaptor, mlir::ConversionPatternRewriter& rewriter) {
+    return llvmStoreMatchReplace<INSTmr>(op, adaptor, rewriter);
+};
+
+template <typename RegisterTy>
+requires MLIRInterfaceDerivedFrom<RegisterTy, amd64::RegisterTypeInterface>
+auto llvmStoreBitwidthMatcher = []<unsigned bitwidth>(auto thiis, LLVM::StoreOp op, auto, mlir::ConversionPatternRewriter& rewriter){ 
+    if(auto gprType = mlir::dyn_cast<RegisterTy>(thiis->getTypeConverter()->convertType(op.getValue().getType()))){
+        if(gprType.getBitwidth() == bitwidth)
+            return mlir::success();
+
+        return rewriter.notifyMatchFailure(op, "bitwidth mismatch");
+    }
+
+    return rewriter.notifyMatchFailure(op, "expected other register type");
+};
+PATTERN_INT(LLVMIntStorePat, LLVM::StoreOp, amd64::MOV, llvmIntStoreMatchReplace, llvmStoreBitwidthMatcher<amd64::GPRegisterTypeInterface>);
+using LLVMFloatStorePat32 = Match<LLVM::StoreOp, 32, llvmFloatStoreMatchReplace<amd64::MOVSSmr>, llvmStoreBitwidthMatcher<amd64::FPRegisterTypeInterface>>;
+using LLVMFloatStorePat64 = Match<LLVM::StoreOp, 64, llvmFloatStoreMatchReplace<amd64::MOVSDmr>, llvmStoreBitwidthMatcher<amd64::FPRegisterTypeInterface>>;
 
 struct LLVMAllocaPat : public mlir::OpConversionPattern<mlir::LLVM::AllocaOp>{
     LLVMAllocaPat(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<LLVM::AllocaOp>(tc, ctx, 1){}
 
-    mlir::LogicalResult matchAndRewrite(LLVM::AllocaOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
+    mlir::LogicalResult matchAndRewrite(LLVM::AllocaOp op, OpAdaptor, mlir::ConversionPatternRewriter& rewriter) const override {
         // TODO maybe this can be improved when considering that the alloca is only ever used as a ptr by GEP, load, store, and ptrtoint. In this case the lea is technically only needed for ptrtoint
         auto numElemsVal = op.getArraySize();
-        auto numElems = mlir::cast<LLVM::ConstantOp>(numElemsVal.getDefiningOp()).getValue().cast<mlir::IntegerAttr>().getValue().getSExtValue();
+        auto constantElemNumOp = mlir::dyn_cast<LLVM::ConstantOp>(numElemsVal.getDefiningOp());
+        if(!constantElemNumOp)
+            return rewriter.notifyMatchFailure(op, "only constant allocas supported for now");
+        auto numElems = constantElemNumOp.getValue().cast<mlir::IntegerAttr>().getValue().getSExtValue();
 
         // TODO AllocaOp::print does this a bit differently -> use that?
         auto  dl = mlir::DataLayout::closest(op);
@@ -1533,6 +1571,7 @@ void populateLLVMFloatArithmeticToAMD64ConversionPatterns(mlir::RewritePatternSe
         FP_PATTERN_BITWIDTHS(LLVMFMulPat),
         LLVMFPToSIPat32_to_32, LLVMFPToSIPat32_to_64, LLVMFPToSIPat64_to_32, LLVMFPToSIPat64_to_64,
         LLVMSIToFPPat32_to_32, LLVMSIToFPPat32_to_64, LLVMSIToFPPat64_to_32, LLVMSIToFPPat64_to_64,
+        FP_PATTERN_BITWIDTHS(LLVMFloatLoadPat), FP_PATTERN_BITWIDTHS(LLVMFloatStorePat),
         FP_PATTERN_BITWIDTHS(LLVMIntrFMulAddPat)
         >(tc, patterns.getContext());
 #undef FP_PATTERN_BITWIDTHS
@@ -1544,7 +1583,7 @@ void populateLLVMMiscToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns
         PATTERN_INT_BITWIDTHS(LLVMConstantIntPat),
         LLVMSelectPat16, LLVMSelectPat32, LLVMSelectPat64,
         LLVMNullPat, PATTERN_INT_BITWIDTHS(LLVMUndefPat), PATTERN_INT_BITWIDTHS(LLVMPoisonPat), LLVMEraseMetadataPat, LLVMUnreachablePat,
-        LLVMGEPPattern, LLVMAllocaPat, PATTERN_INT_BITWIDTHS(LLVMLoadPat), PATTERN_INT_BITWIDTHS(LLVMStorePat), LLVMPtrToIntPat, LLVMIntToPtrPat,
+        LLVMGEPPattern, LLVMAllocaPat, PATTERN_INT_BITWIDTHS(LLVMIntLoadPat), PATTERN_INT_BITWIDTHS(LLVMIntStorePat), LLVMPtrToIntPat, LLVMIntToPtrPat,
         LLVMReturnPat, LLVMFuncPat,
         LLVMConstantStringPat, LLVMAddrofPat,
         PATTERN_INT_BITWIDTHS(LLVMCallPat),
