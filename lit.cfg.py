@@ -23,8 +23,8 @@ config.substitutions.append(("%FileCheckAsm", r"%monaco -p asm %s | FileCheck"))
 # config.substitutions.append(("%FileCheckExecReturnStatus", r"""outfileName=$(basename -z %basename_t .mlir); %monaco %s $outfileName && objcopy --input-target=binary --output-target=elf64-x86-64 --rename-section '.data=.text' $outfileName %t_2 && gcc -c -x c <(echo "int main(int argc, char** argv){ return _binary_"$outfileName"_start(argc, argv); } ") -o %t_3 && gcc %t_2 %t_3 -o %t_4 && %t_4; echo $? | FileCheck"""))
 config.substitutions.append(("%FileCheckExecReturnStatus", r"""%monaco --jit "main" %s; echo $? | FileCheck"""))
 # would be nice to be able to do this on all optimization levels
-config.substitutions.append(("%CRun", r"""clang -S -emit-llvm %s -o - 2>/dev/null | mlir-translate --import-llvm 2>/dev/null | %monaco /dev/stdin --jit """))
-config.substitutions.append(("%CCheckLLVM", r"""clang -S -emit-llvm %s -o - 2>/dev/null | mlir-translate --import-llvm 2>/dev/null > %t.mlir; diff <(ASAN_OPTS=detect_leaks=0 %monaco %t.mlir --jit main -F) <(%monaco %t.mlir --jit main)"""))
+config.substitutions.append(("%CRun",          r"""clang -S -emit-llvm %s -o - 2>/dev/null | mlir-translate --import-llvm 2>/dev/null | %monaco /dev/stdin --jit """))
+config.substitutions.append(("%CCheckLLVM",    r"""clang -S -emit-llvm %s -o - 2>/dev/null | mlir-translate --import-llvm 2>/dev/null > %t.mlir && diff <(ASAN_OPTS=detect_leaks=0 %monaco %t.mlir --jit main -F) <(%monaco %t.mlir --jit main)"""))
 config.substitutions.append(("%MLIRCheckLLVM", r"""diff <(%monaco %s --jit main -F) <(%monaco %s --jit main)"""))
 
 config.recursiveExpansionLimit = 3
