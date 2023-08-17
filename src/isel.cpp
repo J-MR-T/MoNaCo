@@ -1438,7 +1438,7 @@ PATTERN_FLOAT(LLVMFDivPat, LLVM::FDivOp, amd64::DIVS, binOpMatchReplace, floatBi
     using LLVMFPToSIPat ## inBitwidth ## _to_ ## 32 = Match<LLVM::FPToSIOp, 32, llvmTruncExtUiSiMatchReplace<inBitwidth>, llvmTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::CVT ## SS ## 2 ## SI ## 32 ## rr>; \
     using LLVMFPToSIPat ## inBitwidth ## _to_ ## 64 = Match<LLVM::FPToSIOp, 64, llvmTruncExtUiSiMatchReplace<inBitwidth>, llvmTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::CVT ## SD ## 2 ## SI ## 64 ## rr>; \
     using LLVMSIToFPPat ## inBitwidth ## _to_ ## 32 = Match<LLVM::SIToFPOp, 32, llvmTruncExtUiSiMatchReplace<inBitwidth>, llvmTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::CVT ## SI ## 2 ## SS ## 32 ## rr>; \
-    using LLVMSIToFPPat ## inBitwidth ## _to_ ## 64 = Match<LLVM::SIToFPOp, 64, llvmTruncExtUiSiMatchReplace<inBitwidth>, llvmTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::CVT ## SI ## 2 ## SS ## 64 ## rr>;
+    using LLVMSIToFPPat ## inBitwidth ## _to_ ## 64 = Match<LLVM::SIToFPOp, 64, llvmTruncExtUiSiMatchReplace<inBitwidth>, llvmTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::CVT ## SI ## 2 ## SD ## 64 ## rr>;
 
 FLOAT_CVT_PAT(32);
 FLOAT_CVT_PAT(64);
