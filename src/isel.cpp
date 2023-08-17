@@ -799,8 +799,10 @@ struct LLVMAddrofPat : public mlir::OpConversionPattern<LLVM::AddressOfOp>{
             // TODO maybe pass globals and check if it's in there already to avoid making the extra op. Might also be slower, not sure
             rewriter.replaceOpWithNewOp<amd64::AddrOfGlobal>(op, adaptor.getGlobalNameAttr());
         } else {
+            // calling dlsym here is a mere optimization. It could also be left to AddrOfFunc, but that would require another symbol table look-up, and those are glacially slow already...
             auto funcOp = mlir::cast<mlir::FunctionOpInterface>(globalOrFunc);
-            if(funcOp)
+            if(!funcOp.isExternal())
+                // unknown until later
                 rewriter.replaceOpWithNewOp<amd64::AddrOfFunc>(op, adaptor.getGlobalNameAttr());
             else
                 rewriter.replaceOpWithNewOp<amd64::MOV64ri>(op, (intptr_t) checked_dlsym(adaptor.getGlobalName())); // TODO only do this if args.jit 
