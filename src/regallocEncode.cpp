@@ -1539,8 +1539,8 @@ public:
         encoder.encodeRaw(FE_PUSHr, FE_BP);
         encoder.encodeRaw(FE_MOV64rr, FE_BP, FE_SP);
 
-        for (auto reg : {FE_BX, FE_R12, FE_R13, FE_R14, FE_R15})
-            encoder.encodeRaw(FE_PUSHr, reg);
+        for (auto calleeSavedReg : {FE_BX, FE_R12, FE_R13, FE_R14, FE_R15})
+            encoder.encodeRaw(FE_PUSHr, calleeSavedReg);
 
         stackSizeFromBP = 5*8;
         specialStackBytes = 2*8; // return address and saved rbp
