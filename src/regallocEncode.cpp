@@ -401,7 +401,7 @@ public:
         for(auto func : mod.getOps<mlir::func::FuncOp>()){
             if(func.isExternal())
                 globalsSorted.push_back({func.getName(), amd64::GlobalSymbolInfo{
-                    .bytes = {},
+                    .bytes = llvm::SmallVector<uint8_t, 64>(0),
                     .alignment = 0,
                     .addrInDataSection = (intptr_t)checked_dlsym(func.getName())}});
         }
@@ -414,46 +414,54 @@ public:
         llvm::outs() << termcolor::make(termcolor::red, ".data") << "\n";
 
         uint8_t* cur = bufStart;
-        for(auto [sym, globalRef] : globalsSorted){
-            auto& global = globalRef;
-            if(global.alignment != 0)
+        for(auto& [sym, global] : globalsSorted){
+
+            assert(global.bytes.size() == global.bytes.size_in_bytes() && "Global has non-byte sized elements");
+
+            bool globalIsExternal = global.addrInDataSection < (intptr_t) bufStart || global.addrInDataSection >= (intptr_t) bufEnd;
+
+            if(global.alignment != 0 && !globalIsExternal)
                 cur = (uint8_t*) llvm::alignTo((intptr_t) cur, global.alignment);
 
             if(global.addrInDataSection != (intptr_t) cur){
                 DEBUGLOG("abnormal address: " << (void*) global.addrInDataSection << " vs " << (void*) cur);
                 llvm::errs() << termcolor::red << "Warning: Global " << sym << " is not at the expected address in the data section. Could be external\n" << termcolor::reset;
+
+                assert(implies(globalIsExternal, global.bytes.size() == 0) && "External global has size/bytes");
             }
             auto* start = cur;
             auto len = global.bytes.size();
 
             // hexdump the bytes:
             llvm::outs() << termcolor::make(termcolor::magenta, sym) << ": ";
-            for(uint8_t* cur = start; cur < start + len; cur++){
-                llvm::outs() << llvm::format_hex_no_prefix(*(cur++), 2);
-                if(cur < start + len)
-                    llvm::outs() << llvm::format_hex_no_prefix(*cur, 2) << " ";
+            for(uint8_t* innerCur = start; innerCur < start + len; innerCur++){
+                llvm::outs() << llvm::format_hex_no_prefix(*(innerCur++), 2);
+                if(innerCur < start + len)
+                    llvm::outs() << llvm::format_hex_no_prefix(*innerCur, 2) << " ";
             }
             // as string:
             llvm::outs() << "(\"";
-            for(uint8_t* cur = start; cur < start + len; cur++){
-                if(*cur >= ' ' && *cur <= '~'){
-                    llvm::outs() << *cur;
-                }else if(*cur == '\n'){
+            for(uint8_t* innerCur = start; innerCur < start + len; innerCur++){
+                if(*innerCur >= ' ' && *innerCur <= '~'){
+                    llvm::outs() << *innerCur;
+                }else if(*innerCur == '\n'){
                     llvm::outs() << "\\n";
-                }else if(*cur == '\t'){
+                }else if(*innerCur == '\t'){
                     llvm::outs() << "\\t";
                 }else{
                     llvm::outs() << ".";
                 }
             }
             llvm::outs() << "\")";
-            if(ArgParse::args.debug()){
+            if(ArgParse::args.debug())
                 llvm::outs() << "\t\t" << "#byte " << llvm::format_hex((cur - bufStart), 0);
-            }
+
             llvm::outs() << "\n";
 
-            cur += global.bytes.size();
+            cur += len;
         }
+
+        assert(cur == blockStartsSorted[0] && "First block doesn't start at the end of the data section, something went wrong");
 
         // .text section
         llvm::outs() << termcolor::make(termcolor::red, ".text") << "\n";
@@ -658,6 +666,8 @@ struct AbstractRegAllocerEncoder{
 
             cur += global.bytes.size();
         }
+
+        DEBUGLOG("Done writing globals to data section, wrote " << globals.size() << " globals with combined size of " << (encoder.cur - encoder.bufStart) << " bytes");
 
         // .text section
         bool failed = false; // TODO |= this in the right places
