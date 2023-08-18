@@ -514,7 +514,7 @@ struct CondBrPat : public mlir::OpConversionPattern<mlir::cf::CondBranchOp> {
 };
 
 auto callMatchReplace = []<unsigned actualBitwidth,
-     typename MOVrr, typename gprType, typename, typename, typename
+     typename RegisterTy, typename, typename, typename, typename
      >(auto callOp, auto adaptor, mlir::ConversionPatternRewriter& rewriter) {
     if(callOp.getNumResults() > 1)
         return rewriter.notifyMatchFailure(callOp, "multiple return values not supported");
@@ -523,15 +523,17 @@ auto callMatchReplace = []<unsigned actualBitwidth,
     if(callOp.getNumResults() == 0)
         rewriter.replaceOpWithNewOp<amd64::CALL>(callOp, TypeRange(),                        callOp.getCalleeAttr(), /* is guaranteed external */ false, adaptor.getOperands());
     else
-        rewriter.replaceOpWithNewOp<amd64::CALL>(callOp, gprType::get(callOp->getContext()), callOp.getCalleeAttr(), /* is guaranteed external */ false, adaptor.getOperands());
+        rewriter.replaceOpWithNewOp<amd64::CALL>(callOp, RegisterTy::get(callOp->getContext()), callOp.getCalleeAttr(), /* is guaranteed external */ false, adaptor.getOperands());
 
     return mlir::success();
 };
 
 #define CALL_PAT(bitwidth) \
-    using CallPat ## bitwidth = Match<mlir::func::CallOp, bitwidth, callMatchReplace, defaultBitwidthMatchLambda<amd64::GPRegisterTypeInterface, true>, 1, amd64::MOV ## bitwidth ## rr, amd64::gpr ## bitwidth ## Type>
+    using IntCallPat ## bitwidth = Match<mlir::func::CallOp, bitwidth, callMatchReplace, defaultBitwidthMatchLambda<amd64::GPRegisterTypeInterface, true>, 1, amd64::gpr ## bitwidth ## Type>
 
 CALL_PAT(8); CALL_PAT(16); CALL_PAT(32); CALL_PAT(64);
+using FloatCallPat32 = Match<mlir::func::CallOp, 32, callMatchReplace, defaultBitwidthMatchLambda<amd64::FPRegisterTypeInterface, true>, 1, amd64::fpr32Type>;
+using FloatCallPat64 = Match<mlir::func::CallOp, 64, callMatchReplace, defaultBitwidthMatchLambda<amd64::FPRegisterTypeInterface, true>, 1, amd64::fpr64Type>;
 
 #undef CALL_PAT
 
@@ -1019,9 +1021,11 @@ struct LLVMGlobalPat : public mlir::OpConversionPattern<LLVM::GlobalOp>{
 };
 
 #define CALL_PAT(bitwidth) \
-    using LLVMCallPat ## bitwidth = Match<LLVM::CallOp, bitwidth, callMatchReplace, /* match ints, floats, and zero res */ defaultBitwidthMatchLambda<amd64::RegisterTypeInterface, true>, 1, amd64::MOV ## bitwidth ## rr, amd64::gpr ## bitwidth ## Type>
+    using LLVMIntCallPat ## bitwidth = Match<LLVM::CallOp, bitwidth, callMatchReplace, /* match ints, floats, and zero res */ defaultBitwidthMatchLambda<amd64::GPRegisterTypeInterface, true>, 1, amd64::gpr ## bitwidth ## Type>
 
 CALL_PAT(8); CALL_PAT(16); CALL_PAT(32); CALL_PAT(64);
+using LLVMFloatCallPat32 = Match<LLVM::CallOp, 32, callMatchReplace, defaultBitwidthMatchLambda<amd64::FPRegisterTypeInterface, true>, 1, amd64::fpr32Type>;
+using LLVMFloatCallPat64 = Match<LLVM::CallOp, 64, callMatchReplace, defaultBitwidthMatchLambda<amd64::FPRegisterTypeInterface, true>, 1, amd64::fpr64Type>;
 
 #undef CALL_PAT
 
@@ -1505,6 +1509,7 @@ void populateDefaultTypesToAMD64TypeConversions(mlir::TypeConverter& tc){
 }
 
 #define PATTERN_INT_BITWIDTHS(patternName) patternName ## 8, patternName ## 16, patternName ## 32, patternName ## 64
+#define FP_PATTERN_BITWIDTHS(pat) pat ## 32, pat ## 64
 
 void populateArithToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns, mlir::TypeConverter& tc){
     auto* ctx = patterns.getContext();
@@ -1541,7 +1546,7 @@ void populateCFToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns, mlir
 
 void populateFuncToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns, mlir::TypeConverter& tc){
     auto* ctx = patterns.getContext();
-    patterns.add<PATTERN_INT_BITWIDTHS(CallPat)>(tc, ctx);
+    patterns.add<PATTERN_INT_BITWIDTHS(IntCallPat), FP_PATTERN_BITWIDTHS(FloatCallPat)>(tc, ctx);
     mlir::populateAnyFunctionOpInterfaceTypeConversionPattern(patterns, tc);
 }
 
@@ -1564,11 +1569,11 @@ void populateLLVMIntArithmeticToAMD64ConversionPatterns(mlir::RewritePatternSet&
 }
 
 void populateLLVMFloatArithmeticToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns, mlir::TypeConverter& tc, GlobalsInfo& globals){
-#define FP_PATTERN_BITWIDTHS(pat) pat ## 32, pat ## 64
     patterns.add<LLVMConstantFloatPat>(tc, patterns.getContext(), globals);
     patterns.add<
         FP_PATTERN_BITWIDTHS(LLVMFAddPat),
         FP_PATTERN_BITWIDTHS(LLVMFMulPat),
+        FP_PATTERN_BITWIDTHS(LLVMFloatCallPat),
         LLVMFPToSIPat32_to_32, LLVMFPToSIPat32_to_64, LLVMFPToSIPat64_to_32, LLVMFPToSIPat64_to_64,
         LLVMSIToFPPat32_to_32, LLVMSIToFPPat32_to_64, LLVMSIToFPPat64_to_32, LLVMSIToFPPat64_to_64,
         FP_PATTERN_BITWIDTHS(LLVMFloatLoadPat), FP_PATTERN_BITWIDTHS(LLVMFloatStorePat),
@@ -1586,7 +1591,7 @@ void populateLLVMMiscToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns
         LLVMGEPPattern, LLVMAllocaPat, PATTERN_INT_BITWIDTHS(LLVMIntLoadPat), PATTERN_INT_BITWIDTHS(LLVMIntStorePat), LLVMPtrToIntPat, LLVMIntToPtrPat,
         LLVMReturnPat, LLVMFuncPat,
         LLVMConstantStringPat, LLVMAddrofPat,
-        PATTERN_INT_BITWIDTHS(LLVMCallPat),
+        PATTERN_INT_BITWIDTHS(LLVMIntCallPat),
         LLVMBrPat, LLVMCondBrPat, PATTERN_INT_BITWIDTHS(LLVMSwitchPat),
         PATTERN_INT_BITWIDTHS(LLVMICmpPat),
         LLVMZExtPat8_to_16,  LLVMZExtPat8_to_32,  LLVMZExtPat8_to_64,  LLVMZExtPat16_to_32,  LLVMZExtPat16_to_64,  LLVMZExtPat32_to_64,
