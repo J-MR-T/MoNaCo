@@ -1,4 +1,5 @@
 // RUN: %CRun main | FileCheck --match-full-lines %s
+#include<stdio.h>
 
 void print(int n){
     switch(n){

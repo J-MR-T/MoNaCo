@@ -1,4 +1,5 @@
 // RUN: %CRun "abc def ghi jkl" | FileCheck %s
+#include<stdio.h>
 
 // CHECK: as_size = 2. argc: 4
 // CHECK-NEXT: argv[0]: abc

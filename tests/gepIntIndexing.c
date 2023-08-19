@@ -1,4 +1,5 @@
 // RUN: %CRun main | FileCheck --match-full-lines %s
+#include<stdio.h>
 
 void v(int a){
     char* aPtr = &a;
