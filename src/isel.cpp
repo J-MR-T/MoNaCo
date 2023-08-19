@@ -121,10 +121,10 @@ struct Match : public mlir::OpConversionPattern<OpTy>{
 };
 
 #define PATTERN_FOR_BITWIDTH_INT_MRI(bitwidth, patternName, OpTy, opPrefixToReplaceWith, lambda, ...) \
-    using patternName ##  bitwidth = Match<OpTy,  bitwidth,  lambda, ## __VA_ARGS__, \
+    using patternName ##  bitwidth = Match<OpTy,  bitwidth,  lambda, ## __VA_ARGS__,                  \
         opPrefixToReplaceWith ##  bitwidth ## rr, opPrefixToReplaceWith ##  bitwidth ## ri, opPrefixToReplaceWith ##  bitwidth ## rm, opPrefixToReplaceWith ##  bitwidth ## mi, opPrefixToReplaceWith ##  bitwidth ## mr>;
 
-#define PATTERN_INT_1(patternName, opTy, opPrefixToReplaceWith, lambda, matchLambda, benefit)                  \
+#define PATTERN_INT_1(patternName, opTy, opPrefixToReplaceWith, lambda, matchLambda, benefit)                \
     PATTERN_FOR_BITWIDTH_INT_MRI(8,  patternName, opTy, opPrefixToReplaceWith, lambda, matchLambda, benefit) \
     PATTERN_FOR_BITWIDTH_INT_MRI(16, patternName, opTy, opPrefixToReplaceWith, lambda, matchLambda, benefit) \
     PATTERN_FOR_BITWIDTH_INT_MRI(32, patternName, opTy, opPrefixToReplaceWith, lambda, matchLambda, benefit) \
@@ -674,6 +674,7 @@ struct LLVMGEPPattern : public mlir::OpConversionPattern<LLVM::GEPOp>{
                 // no dynamic struct indices please
                 assert(!mlir::isa<LLVM::LLVMStructType>(currentlyIndexedType) && "dynamic struct indices are not allowed, this should be fixed in the verification of GEP in the llvm dialect!");
 
+                //llvm::errs() << "value to be scaled in gep: "; op.dump(); llvm::errs() << "  original value: "; val.dump(); llvm::errs() << "  remapped value:"; rewriter.getRemappedValue(val).dump();
                 auto scaled = rewriter.create<amd64::IMUL64rri>(op.getLoc(), rewriter.getRemappedValue(val));
 
                 // we perform the computation analogously, but just for ptr/array types, so use 1 as the index
@@ -686,8 +687,8 @@ struct LLVMGEPPattern : public mlir::OpConversionPattern<LLVM::GEPOp>{
                 int64_t byteOffset;
                 std::tie(byteOffset, currentlyIndexedType) = getBytesOffsetAndType(currentlyIndexedType, indexInt);
 
-                // if the index is zero, we don't have to create an instruction, but we do need to change the indexed type
-                if(indexInt == 0)
+                // if the offset is zero, we don't have to create an instruction, but we do need to change the indexed type
+                if(byteOffset == 0)
                     continue;
 
                 auto addri = rewriter.create<amd64::ADD64ri>(op.getLoc(), currentIndexComputationValue);
@@ -896,6 +897,7 @@ struct LLVMGlobalPat : public mlir::OpConversionPattern<LLVM::GlobalOp>{
 
     mlir::LogicalResult matchAndRewrite(LLVM::GlobalOp op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
         // if its a declaration: handle specially, we can already look up the address of the symbol and write it there, or fail immediately
+        //llvm::errs() << "handling global: "; op.dump();
         GlobalSymbolInfo unfinishedGlobal;
         intptr_t& addr = unfinishedGlobal.addrInDataSection = (intptr_t) nullptr;
         auto& bytes = unfinishedGlobal.bytes = {};
@@ -913,12 +915,71 @@ struct LLVMGlobalPat : public mlir::OpConversionPattern<LLVM::GlobalOp>{
             return mlir::success();
         };
 
-        // TODO globals with initalization region
-        if(auto initBlock = op.getInitializerBlock()){
-            auto fail = [&](StringRef msg = "globals with complex initializer blocks are not supported yet"){
-                return rewriter.notifyMatchFailure(op, msg);
+        auto mlirGetTypeSize = [&](auto type){
+            return mlir::DataLayout::closest(op).getTypeSize(adaptor.getGlobalType());
+        };
+
+        auto fail = [&](StringRef msg = "globals with complex initializers are not supported yet"){
+            return rewriter.notifyMatchFailure(op, msg);
+        };
+
+        auto letLLVMDoIt = [&](){
+            // do the same thing that LLVM does itself (ModuleTranslation::convertGlobals), this is quite ugly, but can handle the most amount of cases
+            // TODO performance test if creating the module/context globally (or with `static` here)once is faster than locally every time
+            // TODO because globals (that might need to be translated by llvm) can cross reference each other, we can't create isolated modules only containing one global, we need to create one big llvm module containing all globals, to allow for that. But only do it if it actually happens 
+            // TODO calling functions in global initializers would be even more difficult.
+            llvm::LLVMContext llvmCtx;
+
+            MLIRContext& mlirCtx = *op.getContext();
+
+            auto miniModule = mlir::OwningOpRef<ModuleOp>(ModuleOp::create(UnknownLoc::get(&mlirCtx)));
+            miniModule->getBody()->push_back(op.clone());
+
+            auto llvmModule = translateModuleToLLVMIR(miniModule.get(), llvmCtx);
+            if(!llvmModule)
+                return fail("failed to translate global to llvm ir");
+
+            assert(!llvmModule->empty() && llvmModule->global_size() == 1 && "expected exactly one global in the module");
+
+            auto llvmGetTypeSize = [&](auto type){
+                return llvmModule->getDataLayout().getTypeSizeInBits(type) / 8;
             };
 
+            auto llvmConstant = llvmModule->globals().begin()->getInitializer();
+            if(!llvmConstant)
+                return fail("failed to get initializer of global");
+
+            unfinishedGlobal.alignment = op.getAlignment().value_or(0);
+
+            assert(llvm::isa<llvm::ConstantData>(llvmConstant));
+
+            assert(mlirGetTypeSize(adaptor.getGlobalType()) == llvmGetTypeSize(llvmConstant->getType()));
+
+            // get bytes from the constant
+            if(auto sequential = llvm::dyn_cast<llvm::ConstantDataSequential>(llvmConstant)){
+                DEBUGLOG("constant data sequential");
+                auto bytes = sequential->getRawDataValues();
+                assert(bytes.size() == mlirGetTypeSize(adaptor.getGlobalType()) && "global size mismatch");
+                unfinishedGlobal.bytes.resize(bytes.size());
+
+                memcpy(unfinishedGlobal.bytes.data(), bytes.data(), bytes.size());
+            }else if(auto zero = llvm::dyn_cast<llvm::ConstantAggregateZero>(llvmConstant)){
+                DEBUGLOG("constant aggregate zero");
+                unfinishedGlobal.bytes.resize(mlirGetTypeSize(adaptor.getGlobalType()));
+
+
+#ifndef NDEBUG
+                for(auto byte : unfinishedGlobal.bytes)
+                    assert(byte == 0 && "constant aggregate zero is not all 0s");
+#endif
+            }else{
+                return fail("failed to get raw data values of constant, TODO");
+            }
+            return mlir::success();
+        };
+
+        // TODO globals with initalization region
+        if(auto initBlock = op.getInitializerBlock()){
             if(initBlock->getOperations().size() == 2){
                 // TODO dyn cast operand as ptr?
                 // TODO this only remains, because it was there first, technically this case would be covered by the llvm-ir translation. But as that is probably quite slow, and this is a common case, let's leave it for now.
@@ -934,49 +995,11 @@ struct LLVMGlobalPat : public mlir::OpConversionPattern<LLVM::GlobalOp>{
                 assert(memcmp(bytes.data(), &nullptr_, byteSize) == 0 && "nullptr is not all 0s");
                 unfinishedGlobal.alignment = op.getAlignment().value_or(byteSize);
             }else{
-                // do the same thing that LLVM does itself (ModuleTranslation::convertGlobals), this is quite ugly, but can handle the most amount of cases
-                // TODO performance test if creating the module/context globally (or with `static` here)once is faster than locally every time
-                // TODO because globals (that might need to be translated by llvm) can cross reference each other, we can't create isolated modules only containing one global, we need to create one big llvm module containing all globals, to allow for that. But only do it if it actually happens 
-                // TODO calling functions in global initializers would be even more difficult.
-                llvm::LLVMContext llvmCtx;
-
-                MLIRContext& mlirCtx = *op.getContext();
-
-                auto miniModule = mlir::OwningOpRef<ModuleOp>(ModuleOp::create(UnknownLoc::get(&mlirCtx)));
-                miniModule->getBody()->push_back(op.clone());
-
-                auto llvmModule = translateModuleToLLVMIR(miniModule.get(), llvmCtx);
-                if(!llvmModule)
-                    return fail("failed to translate global to llvm ir");
-
-                assert(!llvmModule->empty() && llvmModule->global_size() == 1 && "expected exactly one global in the module");
-
-                auto llvmConstant = llvmModule->globals().begin()->getInitializer();
-                if(!llvmConstant)
-                    return fail("failed to get initializer of global");
-
-                unfinishedGlobal.alignment = op.getAlignment().value_or(0);
-
-                assert(llvm::isa<llvm::ConstantData>(llvmConstant));
-                // get bytes from the constant
-                if(auto sequential = llvm::dyn_cast<llvm::ConstantDataSequential>(llvmConstant)){
-                    auto bytes = sequential->getRawDataValues();
-                    unfinishedGlobal.bytes.resize(bytes.size());
-                    memcpy(unfinishedGlobal.bytes.data(), bytes.data(), bytes.size());
-                }else if(auto zero = llvm::dyn_cast<llvm::ConstantAggregateZero>(llvmConstant)){
-                    auto byteSize = llvmModule->getDataLayout().getTypeSizeInBits(zero->getType()) / 8;
-                    unfinishedGlobal.bytes.resize(byteSize);
-#ifndef NDEBUG
-                    for(auto byte : unfinishedGlobal.bytes)
-                        assert(byte == 0 && "constant aggregate zero is not all 0s");
-#endif
-                }else{
-                    return fail("failed to get raw data values of constant, TODO");
-                }
+                auto logResult =  letLLVMDoIt();
+                if(mlir::failed(logResult))
+                    return logResult;
             }
             return insertGlobalAndEraseOp();
-
-            return fail();
         }
 
 
@@ -984,11 +1007,27 @@ struct LLVMGlobalPat : public mlir::OpConversionPattern<LLVM::GlobalOp>{
         // heavily inspired by ModuleTranslation::convertGlobals/LLVM::detail:getLLVMConstant
         // TODO pointer type globals
         if(auto attr = op.getValueOrNull()){
+            DEBUGLOG("attr");
             // TODO maybe try to optimize the ordering?
             if(auto denseElementsAttr = attr.dyn_cast<mlir::DenseElementsAttr>()){
-                auto rawData = denseElementsAttr.getRawData();
-                bytes.resize(rawData.size());
-                memcpy(bytes.data(), rawData.data(), rawData.size());
+                auto maybeRange = denseElementsAttr.tryGetValues<uint8_t>();
+                if(static_cast<mlir::LogicalResult>(maybeRange).succeeded()){
+                    auto range = maybeRange.value();
+                    bytes.resize(range.size());
+                    for(auto [i, byte] : llvm::enumerate(range)){
+                        bytes[i] = byte;
+                    }
+                }else{
+                    auto logResult = letLLVMDoIt();
+                    if(mlir::failed(logResult))
+                        return logResult;
+
+                    return insertGlobalAndEraseOp();
+                }
+                //auto rawData = denseElementsAttr.getRawData();
+                //DEBUGLOG("denseElementsAttr, with size " << rawData.size());
+                //bytes.resize(rawData.size());
+                //memcpy(bytes.data(), rawData.data(), rawData.size());
             }else if(auto strAttr = attr.dyn_cast<mlir::StringAttr>()){
                 // TODO is this guaranteed to be null terminated, if it comes from a global?
                 bytes.resize(strAttr.getValue().size());
@@ -1013,7 +1052,7 @@ struct LLVMGlobalPat : public mlir::OpConversionPattern<LLVM::GlobalOp>{
             addr = (intptr_t) checked_dlsym(symbol);
         }
 
-        unfinishedGlobal.alignment = static_cast<unsigned>(adaptor.getAlignment().value_or(mlir::DataLayout::closest(op).getTypeSize(adaptor.getGlobalType())));
+        unfinishedGlobal.alignment = static_cast<unsigned>(adaptor.getAlignment().value_or(mlirGetTypeSize(adaptor.getGlobalType())));
 
         // TODO handle visibility
         return insertGlobalAndEraseOp();
@@ -1268,10 +1307,10 @@ auto ptrIntReplace =  [](auto op, auto adaptor, mlir::ConversionPatternRewriter&
 };
 using LLVMIntToPtrPat = SimplePat<LLVM::IntToPtrOp, ptrIntReplace>;
 using LLVMPtrToIntPat = SimplePat<LLVM::PtrToIntOp, ptrIntReplace>;
-using LLVMEraseMetadataPat = SimplePat<LLVM::MetadataOp, [](auto op, auto, mlir::ConversionPatternRewriter& rewriter){
-    rewriter.eraseOp(op);
-    return mlir::success();
-}>;
+//using LLVMEraseMetadataPat = SimplePat<LLVM::MetadataOp, [](auto op, auto, mlir::ConversionPatternRewriter& rewriter){
+//    rewriter.eraseOp(op);
+//    return mlir::success();
+//}>;
 
 using LLVMUnreachablePat = SimplePat<LLVM::UnreachableOp, [](auto op, auto, mlir::ConversionPatternRewriter& rewriter){
     if(ArgParse::features["unreachable-abort"])
@@ -1587,7 +1626,7 @@ void populateLLVMMiscToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns
     patterns.add<
         PATTERN_INT_BITWIDTHS(LLVMConstantIntPat),
         LLVMSelectPat16, LLVMSelectPat32, LLVMSelectPat64,
-        LLVMNullPat, PATTERN_INT_BITWIDTHS(LLVMUndefPat), PATTERN_INT_BITWIDTHS(LLVMPoisonPat), LLVMEraseMetadataPat, LLVMUnreachablePat,
+        LLVMNullPat, PATTERN_INT_BITWIDTHS(LLVMUndefPat), PATTERN_INT_BITWIDTHS(LLVMPoisonPat), /*LLVMEraseMetadataPat, */LLVMUnreachablePat,
         LLVMGEPPattern, LLVMAllocaPat, PATTERN_INT_BITWIDTHS(LLVMIntLoadPat), PATTERN_INT_BITWIDTHS(LLVMIntStorePat), LLVMPtrToIntPat, LLVMIntToPtrPat,
         LLVMReturnPat, LLVMFuncPat,
         LLVMConstantStringPat, LLVMAddrofPat,

@@ -104,10 +104,6 @@ int main(int argc, char *argv[]) {
         }
     };
 
-    int prot = PROT_READ|PROT_WRITE;
-    if(args.jit())
-        prot |= PROT_EXEC;
-
     llvm::TargetOptions fallbackTargetOpts;
     fallbackTargetOpts.EnableFastISel = true;
     llvm::CodeGenOpt::Level fallbackOptLevel = llvm::CodeGenOpt::Level::None;
@@ -173,7 +169,7 @@ int main(int argc, char *argv[]) {
             llvm::outs() << "LLVM Fallback compilation took " << wrapFl(MEASURED_TIME_AS_SECONDS(totalLLVM, iterations)) << " seconds on average over " << iterations << " iterations\n";
         }else{
             // allocate 2 GiB (small code model)
-            auto [start, end] = mmapSpace(2ll*1024ll*1024ll*1024ll, prot);
+            auto [start, end] = mmapSpace(2ll*1024ll*1024ll*1024ll, PROT_READ|PROT_WRITE /* execute will be added later, for security*/);
 
             if(!start || !end)
                 err(EXIT_FAILURE, "mmap");
@@ -229,7 +225,7 @@ int main(int argc, char *argv[]) {
         maybeWriteToFile(obj.data(), obj.size());
     }else{ // "normal" case
         // allocate 2 GiB (small code model)
-        auto [start, end] = mmapSpace(2ll*1024ll*1024ll*1024ll, prot);
+        auto [start, end] = mmapSpace(2ll*1024ll*1024ll*1024ll, PROT_READ|PROT_WRITE);
 
         if(!start || !end)
             err(EXIT_FAILURE, "mmap");
@@ -248,10 +244,14 @@ int main(int argc, char *argv[]) {
 
         // second pass: RegAlloc + encoding
         // - will need a third pass in between to do liveness analysis later
-        auto* execStart = regallocEncode(start, end, *owningModRef, std::move(globals), printOpts & PRINT_ASM, args.jit(), "main");
+        MCDescriptor codeInfo = regallocEncode(start, end, *owningModRef, std::move(globals), printOpts & PRINT_ASM, args.jit(), "main");
         // TODO maybe use jit argv[0] instead of main at some point
 
+		// TODO omg the new code for dhyrstone is for some reason modifying itself...
+		// to find out more, make r-x using mprotect, then it should segfault where the erroneous write to code is
+
         if(args.jit()){
+            auto execStart = codeInfo.startSymbolAddr;
             if(execStart == nullptr || execStart == NULL)
                 errx(EXIT_FAILURE, "Could not find main function");
 
@@ -262,7 +262,13 @@ int main(int argc, char *argv[]) {
             if(printOpts != PRINT_NONE)
                 llvm::outs() << termcolor::make(termcolor::red, "JIT execution output:\n");
 
+			DEBUGLOG("main is at: " << (void*)main);
+
             fflush(stdout);
+
+            // make the code non-writable, but executable
+            // regallocEncode asserts that the text section starts on a page boundary
+            mprotect(codeInfo.textSectionStart, codeInfo.bufEnd - codeInfo.textSectionStart, PROT_READ|PROT_EXEC);
 
             auto ret =  main(jitArgc, jitArgv);
             return ret;

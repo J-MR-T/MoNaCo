@@ -5,6 +5,7 @@
 
 #include <concepts>
 #include <cstdint>
+#include <err.h>
 
 #include <mlir/Support/LogicalResult.h>
 using mlir::success;
@@ -44,9 +45,38 @@ mlir::LogicalResult convertFromAttribute(T &storage,
   return success();
 }
 template<std::integral T>
-mlir::Attribute convertToAttribute(mlir::MLIRContext *ctx, T storage) {
+mlir::Attribute convertToAttribute(mlir::MLIRContext* ctx, T storage) {
   return mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, sizeof(T)*8), storage);
 }
+
+template<typename T>
+mlir::LogicalResult readFromMlirBytecode(mlir::DialectBytecodeReader&, T&) {
+    errx(EXIT_FAILURE, "Conversion to/from bytecode not implemented");
+    return mlir::failure();
+}
+
+template<typename T>
+void writeToMlirBytecode(::mlir::DialectBytecodeWriter&, T&) {
+    errx(EXIT_FAILURE, "Conversion to/from bytecode not implemented");
+}
+
+template<typename T>
+mlir::Attribute convertToAttribute(mlir::MLIRContext* ctx, T){
+    errx(EXIT_FAILURE, "Conversion to/from attribute not implemented");
+    return mlir::UnitAttr::get(ctx);
+}
+
+template<typename T>
+mlir::LogicalResult convertFromAttribute(T&, ::mlir::Attribute, ::mlir::InFlightDiagnostic*){
+    errx(EXIT_FAILURE, "Conversion to/from attribute not implemented");
+    return mlir::failure();
+}
+
+// someone didn't qualify their types in mlir-tblgen between 583d492c6 (where this wasn't necessary) and a403d75be7 (where it is)
+using namespace llvm;
+using namespace mlir;
+//template<typename T>
+//using ArrayRef = llvm::ArrayRef<T>;
 
 #define GET_OP_CLASSES
 #include "AMD64/AMD64Ops.cpp.inc"

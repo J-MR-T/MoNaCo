@@ -22,6 +22,9 @@ def AMD64_Dialect : Dialect {
 
   // TODO performance test this later
   let usePropertiesForAttributes = 1;
+
+  // TODO get this to work
+  //let isExtensible = 1;
 }
 
 class AMD64_Op<string mnemonic, list<Trait> traits = []> :

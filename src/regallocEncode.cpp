@@ -376,160 +376,172 @@ public:
         return true;
     }
 
-    void dumpAfterEncodingDone(mlir::ModuleOp mod, GlobalsInfo& globals){
-        // dump the entire buffer
-        // decode & print to test if it works
-        auto max = cur;
+};
 
-        llvm::outs() << termcolor::make(termcolor::red, "Decoded assembly:\n");
+void dumpAfterEncodingDone(mlir::ModuleOp mod, GlobalsInfo& globals, mlir::DenseMap<mlir::Block*, uint8_t*>& blocksToBuffer, MCDescriptor& codeInfo){
+    // dump the entire buffer
+    // decode & print to test if it works
+    auto max = codeInfo.bufStart + codeInfo.codeSize;
 
-        // this is a not-very-performant way to get the block boundaries and globals, but it serves its purpose, no need for optimization in dump output
-        // block boundaries
-        llvm::SmallVector<uint8_t*, 64> blockStartsSorted;
-        for(auto [block, buf] : blocksToBuffer){
-            blockStartsSorted.push_back(buf);
+    llvm::outs() << termcolor::make(termcolor::red, "Decoded assembly:\n");
+
+    // this is a not-very-performant way to get the block boundaries and globals, but it serves its purpose, no need for optimization in dump output
+    // block boundaries
+    llvm::SmallVector<uint8_t*, 64> blockStartsSorted;
+    for(auto [block, buf] : blocksToBuffer){
+        blockStartsSorted.push_back(buf);
+    }
+    std::sort(blockStartsSorted.begin(), blockStartsSorted.end());
+
+    // globals
+    llvm::SmallVector<std::pair<llvm::StringRef, amd64::GlobalSymbolInfo>, 64> globalsSorted;
+    for(auto sym : globals.keys()){
+        globalsSorted.push_back({sym, globals[sym]});
+    }
+
+    // also add external functions to the globals
+    for(auto func : mod.getOps<mlir::func::FuncOp>()){
+        if(func.isExternal())
+            globalsSorted.push_back({func.getName(), amd64::GlobalSymbolInfo{
+                .bytes = llvm::SmallVector<uint8_t, 64>(0),
+                .alignment = 0,
+                .addrInDataSection = (intptr_t)checked_dlsym(func.getName())}});
+    }
+
+    std::sort(globalsSorted.begin(), globalsSorted.end(), [](auto a, auto b){
+        return a.second.addrInDataSection < b.second.addrInDataSection;
+    });
+
+    // .data section
+    llvm::outs() << termcolor::make(termcolor::red, ".data") << "\n";
+
+    uint8_t* cur = codeInfo.bufStart;
+
+    for(auto& [sym, global] : globalsSorted){
+
+        assert(global.bytes.size() == global.bytes.size_in_bytes() && "Global has non-byte sized elements");
+
+        bool globalIsExternal = global.addrInDataSection < (intptr_t) codeInfo.bufStart || global.addrInDataSection >= (intptr_t) codeInfo.bufEnd;
+
+        if(global.alignment != 0 && !globalIsExternal)
+            cur = (uint8_t*) llvm::alignTo((intptr_t) cur, global.alignment);
+
+        if(global.addrInDataSection != (intptr_t) cur){
+            DEBUGLOG("abnormal address: " << (void*) global.addrInDataSection << " vs " << (void*) cur);
+            llvm::errs() << termcolor::red << "Warning: Global " << sym << " is not at the expected address in the data section. Could be external\n" << termcolor::reset;
+
+            assert(implies(globalIsExternal, global.bytes.size() == 0) && "External global has size/bytes");
         }
-        std::sort(blockStartsSorted.begin(), blockStartsSorted.end());
+        auto* start = cur;
+        auto len = global.bytes.size();
 
-        // globals
-        llvm::SmallVector<std::pair<llvm::StringRef, amd64::GlobalSymbolInfo>, 64> globalsSorted;
-        for(auto sym : globals.keys()){
-            globalsSorted.push_back({sym, globals[sym]});
+        // hexdump the bytes:
+        llvm::outs() << termcolor::make(termcolor::magenta, sym) << ": ";
+        for(uint8_t* innerCur = start; innerCur < start + len; innerCur++){
+            llvm::outs() << llvm::format_hex_no_prefix(*(innerCur++), 2);
+            if(innerCur < start + len)
+                llvm::outs() << llvm::format_hex_no_prefix(*innerCur, 2) << " ";
         }
-
-        // also add external functions to the globals
-        for(auto func : mod.getOps<mlir::func::FuncOp>()){
-            if(func.isExternal())
-                globalsSorted.push_back({func.getName(), amd64::GlobalSymbolInfo{
-                    .bytes = llvm::SmallVector<uint8_t, 64>(0),
-                    .alignment = 0,
-                    .addrInDataSection = (intptr_t)checked_dlsym(func.getName())}});
-        }
-
-        std::sort(globalsSorted.begin(), globalsSorted.end(), [](auto a, auto b){
-            return a.second.addrInDataSection < b.second.addrInDataSection;
-        });
-
-        // .data section
-        llvm::outs() << termcolor::make(termcolor::red, ".data") << "\n";
-
-        uint8_t* cur = bufStart;
-        for(auto& [sym, global] : globalsSorted){
-
-            assert(global.bytes.size() == global.bytes.size_in_bytes() && "Global has non-byte sized elements");
-
-            bool globalIsExternal = global.addrInDataSection < (intptr_t) bufStart || global.addrInDataSection >= (intptr_t) bufEnd;
-
-            if(global.alignment != 0 && !globalIsExternal)
-                cur = (uint8_t*) llvm::alignTo((intptr_t) cur, global.alignment);
-
-            if(global.addrInDataSection != (intptr_t) cur){
-                DEBUGLOG("abnormal address: " << (void*) global.addrInDataSection << " vs " << (void*) cur);
-                llvm::errs() << termcolor::red << "Warning: Global " << sym << " is not at the expected address in the data section. Could be external\n" << termcolor::reset;
-
-                assert(implies(globalIsExternal, global.bytes.size() == 0) && "External global has size/bytes");
+        // as string:
+        llvm::outs() << "(\"";
+        for(uint8_t* innerCur = start; innerCur < start + len; innerCur++){
+            if(*innerCur >= ' ' && *innerCur <= '~'){
+                llvm::outs() << *innerCur;
+            }else if(*innerCur == '\n'){
+                llvm::outs() << "\\n";
+            }else if(*innerCur == '\t'){
+                llvm::outs() << "\\t";
+            }else{
+                llvm::outs() << ".";
             }
-            auto* start = cur;
-            auto len = global.bytes.size();
+        }
+        llvm::outs() << "\")";
+        if(ArgParse::args.debug())
+            llvm::outs() << "\t\t" << "#byte " << llvm::format_hex((cur - codeInfo.bufStart), 0);
 
-            // hexdump the bytes:
-            llvm::outs() << termcolor::make(termcolor::magenta, sym) << ": ";
-            for(uint8_t* innerCur = start; innerCur < start + len; innerCur++){
-                llvm::outs() << llvm::format_hex_no_prefix(*(innerCur++), 2);
-                if(innerCur < start + len)
-                    llvm::outs() << llvm::format_hex_no_prefix(*innerCur, 2) << " ";
+        llvm::outs() << "\n";
+
+        cur += len;
+    }
+
+    cur = (uint8_t*) llvm::alignTo((intptr_t) cur, getpagesize());
+    assert(cur == blockStartsSorted[0] && "First block doesn't start at the start of .text section, something went wrong");
+    assert(cur == codeInfo.textSectionStart && "First block doesn't start at the start of .text section, something went wrong");
+
+    // .text section
+    llvm::outs() << termcolor::make(termcolor::red, ".text") << "\n";
+
+    uint32_t blockNum = 0;
+    for(; cur < max;){
+        FdInstr instr; 
+        auto numBytesEncoded = fd_decode(cur, max - cur, 64, 0, &instr);
+        if(numBytesEncoded < 0){
+            llvm::errs() << "Encoding resulted in non-decodable instruction :(. Trying to find next decodable instruction...\n";
+            cur++;
+        }else{
+            // while, because there multiple blocks can start at the same addr through optimizations
+            while(blockNum < blockStartsSorted.size() &&  blockStartsSorted[blockNum] == cur){
+                llvm::outs() << termcolor::red << "BB" << blockNum << ":" << termcolor::reset << "\n";
+                blockNum++;
             }
-            // as string:
-            llvm::outs() << "(\"";
-            for(uint8_t* innerCur = start; innerCur < start + len; innerCur++){
-                if(*innerCur >= ' ' && *innerCur <= '~'){
-                    llvm::outs() << *innerCur;
-                }else if(*innerCur == '\n'){
-                    llvm::outs() << "\\n";
-                }else if(*innerCur == '\t'){
-                    llvm::outs() << "\\t";
-                }else{
-                    llvm::outs() << ".";
+
+            static char fmtbuf[64];
+            fd_format(&instr, fmtbuf, sizeof(fmtbuf));
+            llvm::outs() <<  fmtbuf;
+            auto fdType = FD_TYPE(&instr);
+            // if its a jump/call, try to print which block it's to
+            if(fdType == FDI_JMP   ||
+                fdType == FDI_JC   ||
+                fdType == FDI_JNC  ||
+                fdType == FDI_JZ   ||
+                fdType == FDI_JNZ  ||
+                fdType == FDI_JA   ||
+                fdType == FDI_JBE  ||
+                fdType == FDI_JL   ||
+                fdType == FDI_JGE  ||
+                fdType == FDI_JLE  ||
+                fdType == FDI_JG   ||
+                fdType == FDI_JMPF || fdType == FDI_CALL){
+
+                auto target = cur + numBytesEncoded + FD_OP_IMM(&instr, 0);
+                auto it = std::lower_bound(blockStartsSorted.begin(), blockStartsSorted.end(), target);
+                if(it != blockStartsSorted.end() && *it == target){
+                    llvm::outs() << termcolor::red << " -> BB" << (it - blockStartsSorted.begin()) << termcolor::reset;
+                }
+
+            }else if(fdType == FDI_MOVABS && FD_OP_TYPE(&instr, 1) == FD_OT_IMM){
+                // probably mov loading global -> try to find symbol
+
+                auto globalAddr = (intptr_t) FD_OP_IMM(&instr, 1);
+                auto it = std::lower_bound(globalsSorted.begin(), globalsSorted.end(), globalAddr, [](auto a, auto b){
+                    return a.second.addrInDataSection < b;
+                });
+                if(it != globalsSorted.end() && it->second.addrInDataSection == globalAddr){
+                    llvm::outs() << termcolor::red << " -> sym: " << it->first << ", byte: ";
+
+                    if(it->second.addrInDataSection < (intptr_t) codeInfo.bufStart || it->second.addrInDataSection >= (intptr_t) codeInfo.bufEnd)
+                        llvm::outs() << "<external>" << termcolor::reset;
+                    else
+                        llvm::outs() << it->second.addrInDataSection - (intptr_t) codeInfo.bufStart << termcolor::reset;
                 }
             }
-            llvm::outs() << "\")";
-            if(ArgParse::args.debug())
-                llvm::outs() << "\t\t" << "#byte " << llvm::format_hex((cur - bufStart), 0);
+            if(ArgParse::args.debug()){
+                llvm::outs() << "\t\t" << "#byte " << llvm::format_hex((cur - codeInfo.bufStart), 0);
+            }
 
             llvm::outs() << "\n";
-
-            cur += len;
-        }
-
-        assert(cur == blockStartsSorted[0] && "First block doesn't start at the end of the data section, something went wrong");
-
-        // .text section
-        llvm::outs() << termcolor::make(termcolor::red, ".text") << "\n";
-
-        uint32_t blockNum = 0;
-        for(; cur < max;){
-            FdInstr instr; 
-            auto numBytesEncoded = fd_decode(cur, max - cur, 64, 0, &instr);
-            if(numBytesEncoded < 0){
-                llvm::errs() << "Encoding resulted in non-decodable instruction :(. Trying to find next decodable instruction...\n";
-                cur++;
-            }else{
-                if(blockNum < blockStartsSorted.size() &&  blockStartsSorted[blockNum] == cur){
-                    llvm::outs() << termcolor::red << "BB" << blockNum << ":" << termcolor::reset << "\n";
-                    blockNum++;
-                }
-
-                static char fmtbuf[64];
-                fd_format(&instr, fmtbuf, sizeof(fmtbuf));
-                llvm::outs() <<  fmtbuf;
-                auto fdType = FD_TYPE(&instr);
-                // if its a jump/call, try to print which block it's to
-                if(fdType == FDI_JMP   ||
-                    fdType == FDI_JC   ||
-                    fdType == FDI_JNC  ||
-                    fdType == FDI_JZ   ||
-                    fdType == FDI_JNZ  ||
-                    fdType == FDI_JA   ||
-                    fdType == FDI_JBE  ||
-                    fdType == FDI_JL   ||
-                    fdType == FDI_JGE  ||
-                    fdType == FDI_JLE  ||
-                    fdType == FDI_JG   ||
-                    fdType == FDI_JMPF || fdType == FDI_CALL){
-
-                    auto target = cur + numBytesEncoded + FD_OP_IMM(&instr, 0);
-                    auto it = std::lower_bound(blockStartsSorted.begin(), blockStartsSorted.end(), target);
-                    if(it != blockStartsSorted.end() && *it == target){
-                        llvm::outs() << termcolor::red << " -> BB" << (it - blockStartsSorted.begin()) << termcolor::reset;
-                    }
-
-                }else if(fdType == FDI_MOVABS && FD_OP_TYPE(&instr, 1) == FD_OT_IMM){
-                    // probably mov loading global -> try to find symbol
-
-                    auto globalAddr = (intptr_t) FD_OP_IMM(&instr, 1);
-                    auto it = std::lower_bound(globalsSorted.begin(), globalsSorted.end(), globalAddr, [](auto a, auto b){
-                        return a.second.addrInDataSection < b;
-                    });
-                    if(it != globalsSorted.end() && it->second.addrInDataSection == globalAddr){
-                        llvm::outs() << termcolor::red << " -> sym: " << it->first << ", byte: ";
-
-                        if(it->second.addrInDataSection < (intptr_t) bufStart || it->second.addrInDataSection >= (intptr_t) bufEnd)
-                            llvm::outs() << "<external>" << termcolor::reset;
-                        else
-                            llvm::outs() << it->second.addrInDataSection - (intptr_t) bufStart << termcolor::reset;
-                    }
-                }
-                if(ArgParse::args.debug()){
-                    llvm::outs() << "\t\t" << "#byte " << llvm::format_hex((cur - bufStart), 0);
-                }
-
-                llvm::outs() << "\n";
-                cur += numBytesEncoded;
-            }
+            cur += numBytesEncoded;
         }
     }
 
-};
+    // blocksToBuffer dump
+    llvm::outs() << termcolor::make(termcolor::red, "blocksToBuffer") << "\n";
+    for(auto [i, buf] : llvm::enumerate(blockStartsSorted)){
+
+        llvm::outs() << "BB" << i << " starts at: " << llvm::format_hex((intptr_t) buf, 0) << " (abs), #byte: " << (buf - codeInfo.bufStart) << " (rel)\n";
+    }
+}
+
 
 /// represents a ***permanent*** storage slot/location for a value. i.e. if a value gets moved there, it will always be there, as long as it's live
 struct ValueSlot{
@@ -581,7 +593,7 @@ struct AbstractRegAllocerEncoder{
     // We try to minimize coupling by only having the register allocator know about the encoder, and not also the other way around.
     Encoder encoder;
 
-    std::pair<llvm::StringRef /* start symbol */, uint8_t* /*address*/> startSymbolInfo;
+    MCDescriptor codeInfo;
 
     GlobalsInfo globals;
 
@@ -619,7 +631,15 @@ struct AbstractRegAllocerEncoder{
 #endif
 
     /// bufEnd works just like an end iterator, it points one *after* the last real byte of the buffer
-    AbstractRegAllocerEncoder(mlir::ModuleOp mod, uint8_t* buf, uint8_t* bufEnd, GlobalsInfo&& globals, bool jit, llvm::StringRef startSymbolIfJIT) : encoder(buf, bufEnd, blockArgToReg, jit), startSymbolInfo({startSymbolIfJIT, nullptr}), globals(std::move(globals)), mod(mod) {}
+    AbstractRegAllocerEncoder(mlir::ModuleOp mod, uint8_t* buf, uint8_t* bufEnd, GlobalsInfo&& globals, bool jit, llvm::StringRef startSymbolIfJIT) : encoder(buf, bufEnd, blockArgToReg, jit), codeInfo({
+        .startSymbol = startSymbolIfJIT,
+        .startSymbolAddr = nullptr,
+        .bufStart = buf,
+        .codeSize = 0,
+        .dataSectionStart = nullptr,
+        .textSectionStart = nullptr,
+        .bufEnd = bufEnd,
+    }), globals(std::move(globals)), mod(mod) {}
 
     // TODO also check this for blc, i think i forgot it there
 
@@ -638,6 +658,8 @@ struct AbstractRegAllocerEncoder{
     /// returns whether it failed
     bool run(){
         // write globals to sort of .data section
+        codeInfo.dataSectionStart = encoder.cur;
+
         for(auto sym : globals.keys()){
             DEBUGLOG("Writing global " << sym << " to data section");
 
@@ -669,15 +691,20 @@ struct AbstractRegAllocerEncoder{
 
         DEBUGLOG("Done writing globals to data section, wrote " << globals.size() << " globals with combined size of " << (encoder.cur - encoder.bufStart) << " bytes");
 
+        // to put the data section on its own page, with different permissions (managed by main), we need to align it to the page size
+        encoder.cur = (uint8_t*) llvm::alignTo((intptr_t) encoder.cur, getpagesize());
+
         // .text section
+        codeInfo.textSectionStart = encoder.cur;
+
         bool failed = false; // TODO |= this in the right places
         for(auto func : mod.getOps<mlir::func::FuncOp>()){
             if(func.isExternal())
                 continue;
 
             // try to save start symbol
-            if(encoder.jit && func.getName() == startSymbolInfo.first){
-                startSymbolInfo.second = encoder.cur;
+            if(encoder.jit && !codeInfo.startSymbolAddr && func.getName() == codeInfo.startSymbol){
+                codeInfo.startSymbolAddr = encoder.cur;
                 DEBUGLOG("Found start symbol!");
             }
 
@@ -1062,6 +1089,8 @@ struct AbstractRegAllocerEncoder{
             encoder.encodeRaw(FE_MOV64ri,  FE_AX, addr);
         }
         encoder.restoreCur(cur);
+
+        codeInfo.codeSize = encoder.cur - encoder.bufStart;
 
         return failed;
     }
@@ -1626,14 +1655,25 @@ private:
 // start of better regalloc deleted in 5672526, if I ever need it again
 
 // TODO parameters for optimization level (-> which regallocer to use)
-uint8_t* regallocEncode(uint8_t* buf, uint8_t* bufEnd, mlir::ModuleOp mod, GlobalsInfo&& globals, bool dumpAsm, bool jit, llvm::StringRef startSymbolIfJIT){
+MCDescriptor regallocEncode(uint8_t* buf, uint8_t* bufEnd, mlir::ModuleOp mod, GlobalsInfo&& globals, bool dumpAsm, bool jit, llvm::StringRef startSymbolIfJIT){
     StackRegAllocer regallocer(mod, buf, bufEnd, std::move(globals), jit, startSymbolIfJIT);
 
     // just to again ensure that this is not changed without caution
     static_assert(std::is_same<decltype(regallocer), StackRegAllocer>::value, "You need to change handling in the abstract reg allocer, like how calls are encoded (implicit reg constraints), and more, before you use a new reg allocer!");
     regallocer.run();
+    auto& codeInfo = regallocer.codeInfo;
+    assert(codeInfo.bufStart == codeInfo.dataSectionStart && ".data section should be at start of buffer");
+    assert(llvm::isAligned(llvm::Align(getpagesize()), (intptr_t)codeInfo.textSectionStart) && ".text section not page-aligned");
+    assert(llvm::isAligned(llvm::Align(getpagesize()), (intptr_t)codeInfo.dataSectionStart) && ".text section not page-aligned");
+    assert(codeInfo.dataSectionStart != nullptr && codeInfo.textSectionStart != nullptr && codeInfo.bufStart == buf && codeInfo.bufEnd == bufEnd && codeInfo.textSectionStart && codeInfo.codeSize != 0 && implies(jit, codeInfo.startSymbol == startSymbolIfJIT && codeInfo.startSymbolAddr != nullptr) && "one of various code integrity checks failed");
     if(dumpAsm)
-        regallocer.encoder.dumpAfterEncodingDone(mod, regallocer.globals);
+        dumpAfterEncodingDone(mod, regallocer.globals, regallocer.encoder.blocksToBuffer, codeInfo);
 
-    return regallocer.startSymbolInfo.second;
+    DEBUGLOG(".data section starts at absolute address: " << codeInfo.dataSectionStart);
+    if(codeInfo.startSymbolAddr)
+        DEBUGLOG("Start symbol \"" << codeInfo.startSymbol << "\" is at " << codeInfo.startSymbolAddr);
+
+    DEBUGLOG(".text section starts at absolute address: " << codeInfo.textSectionStart);
+
+    return std::move(codeInfo);
 }

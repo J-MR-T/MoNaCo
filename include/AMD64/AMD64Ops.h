@@ -15,8 +15,7 @@
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 
-// TODO needed for newer mlir, not yet
-//#include "mlir/Bytecode/BytecodeOpInterface.h"
+#include "mlir/Bytecode/BytecodeOpInterface.h"
 
 
 #include "mlir/IR/Builders.h"

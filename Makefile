@@ -3,7 +3,7 @@ LLVM_BUILD_DIR=~/programming/Libs/Cpp/llvm-project/build
 LLVM_RELEASE_BUILD_DIR=$(shell dirname $(LLVM_BUILD_DIR))/buildRelease
 MONACO_BUILD_DIR=build
 
-# just to jot it down somewhere: current llvm commit used: 583d492c6
+# just to jot it down somewhere: current llvm commit used: a403d75be7 (used to be 583d492c6)
 
 .phony: release debug makeCMakeBearable clean setup test relWithDebug
 

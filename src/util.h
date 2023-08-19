@@ -101,6 +101,17 @@ concept ordered_key = requires(T a, T b){
 
 // === datastructures ===
 
+struct MCDescriptor{
+    llvm::StringRef startSymbol;
+    uint8_t* startSymbolAddr;
+    uint8_t* bufStart;
+    size_t codeSize;
+    uint8_t* dataSectionStart;
+    uint8_t* textSectionStart;
+    /// points to where the first byte that doesn't belong to the *buffer* for the code, not where the actual code ends.
+    uint8_t* bufEnd;
+};
+
 // like https://www.llvm.org/docs/ProgrammersManual.html#dss-sortedvectormap recommends, use a sorted vector for strict insert then query map
 template<ordered_key K, typename V>
 struct InsertBeforeQueryMap{

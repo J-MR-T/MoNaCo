@@ -100,10 +100,9 @@ def InstructionInfoProp : Property<"InstructionInfo"> {
   let convertFromAttribute = "return InstructionInfo::setFromAttr($_storage, $_attr, $_diag);";
   let hashProperty = "$_storage.hash();";
 
-  // TODO needed for newer mlir, not yet
   // because we don't really care about the bytecode
-  //let writeToMlirBytecode = writeMlirBytecodeWithConvertToAttribute;
-  //let readFromMlirBytecode = readMlirBytecodeUsingConvertFromAttribute;
+  let writeToMlirBytecode = writeMlirBytecodeWithConvertToAttribute;
+  let readFromMlirBytecode = readMlirBytecodeUsingConvertFromAttribute;
 }
 
 // === memory ops ===
@@ -386,9 +385,9 @@ defm ADD : Instr8_16_32_64_rmi<"ADD">;
 // ops defined through multiclasses
 defm ADD : Instr8_16_32_64_rmi<"ADD", [Pure, Operand0IsDestN<0>]>;
 defm SUB : Instr8_16_32_64_rmi<"SUB", [Pure, Operand0IsDestN<0>]>;
-let results = (outs) in 
+let results = (outs) in
 defm CMP : Instr8_16_32_64_rmi<"CMP">; // not pure, because the flags aren't modeled as a result
-defm AND : Instr8_16_32_64_rmi<"AND", [Pure, Operand0IsDestN<0>]>;
+defm AND : Instr8_16_32_64_rmi<"AND", [Operand0IsDestN<0>]>; // not pure, because its sometimes used to compute flags
 defm OR  : Instr8_16_32_64_rmi<"OR",  [Pure, Operand0IsDestN<0>]>;
 defm XOR : Instr8_16_32_64_rmi<"XOR", [Pure, Operand0IsDestN<0>]>;
 
