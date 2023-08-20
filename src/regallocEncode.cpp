@@ -1113,7 +1113,7 @@ protected:
         bool sourceIsFPReg = amd64::isFPReg(fromValReg);
 
         if(toSlot.kind == ValueSlot::Register){
-            bool destIsFPReg = toSlot.isFPReg();
+            IFDEBUG(bool destIsFPReg = toSlot.isFPReg());
 
             // TODO for now, we don't allow moves between int and float regs using this method
             assert(iff(destIsFPReg, sourceIsFPReg) && "moves between int and float regs not supported in moveFromOperandRegToSlot");
@@ -1166,7 +1166,7 @@ protected:
         bool destIsFPReg = amd64::isFPReg(reg);
 
         if (slot.kind == ValueSlot::Register){
-            bool sourceIsFPReg = slot.isFPReg();
+            IFDEBUG(bool sourceIsFPReg = slot.isFPReg());
 
             // TODO for now, we don't allow moves between int and float regs using this method
             assert(iff(destIsFPReg, sourceIsFPReg) && "moves between int and float regs not supported in moveFromSlotToOperandReg");
@@ -1443,16 +1443,6 @@ public:
     using AbstractRegAllocerEncoder::AbstractRegAllocerEncoder;
 
     void loadValueForUseImpl(mlir::Value val, uint8_t useOperandNumber, amd64::OperandRegisterConstraint constraint){
-#ifndef NDEBUG
-        if(!valueToSlot.contains(val)){
-            llvm::errs() << "value not allocated: " << val << " (in use number #" << useOperandNumber<< ")\n";
-        }
-        assert(valueToSlot.contains(val) && "value not allocated");
-#endif
-
-        auto slot = valueToSlot[val];
-        assert(slot.kind == ValueSlot::Kind::Stack && "stack register allocator encountered a register slot");
-
         FeReg whichReg;
         if(constraint.constrainsReg()) [[unlikely]] {
             assert(constraint.which == useOperandNumber && "constraint doesn't match use");
@@ -1471,6 +1461,13 @@ public:
                     whichReg = FE_DX;
                 else
                     llvm_unreachable("more than 3 int operands not supported yet");
+
+                if(ArgParse::features["omit-one-use-value-spills"]) /* && */ if(auto asOpResult = val.dyn_cast<mlir::OpResult>(); asOpResult && asOpResult.getDefiningOp()->getNextNode() == *val.user_begin() && amd64::registerOf(asOpResult) == whichReg){
+                    // in this case, the value is still in the register it was defined in (it was exactly one instruction beforehand), and it's already the right one, we don't need to move it
+                    DEBUGLOG("skipping move of value to register " << whichReg << " because it's already there");
+                    return;
+                }
+
             }else{
                 assert(mlir::isa<amd64::FPRegisterTypeInterface>(val.getType()) && "unknown register type");
                 if(useOperandNumber == 0)
@@ -1483,6 +1480,17 @@ public:
                     llvm_unreachable("more than 3 float operands not supported yet");
             }
         }
+        
+#ifndef NDEBUG
+        if(!valueToSlot.contains(val)){
+            llvm::errs() << "value not allocated: " << val << " (in use number #" << useOperandNumber<< ")\n";
+        }
+        assert(valueToSlot.contains(val) && "value not allocated");
+#endif
+
+        auto slot = valueToSlot[val];
+        assert(slot.kind == ValueSlot::Kind::Stack && "stack register allocator encountered a register slot");
+
 
         moveFromSlotToOperandReg(val, slot, whichReg);
     }
@@ -1506,14 +1514,14 @@ public:
             spillResult = result;
 
             auto resultAsRegType = mlir::dyn_cast<amd64::RegisterTypeInterface>(result.getType());
-            if(!result.use_empty()){
+            if(ArgParse::features["codegen-dce"] && result.use_empty()){
+                dontSpill = true;
+            }else{
                 dontSpill = false;
 
                 uint8_t bitwidth = resultAsRegType.getBitwidth();
                 FeOp memLoc = allocateNewStackslot(bitwidth);
                 spillSlot = valueToSlot[result] = ValueSlot{.kind = ValueSlot::Kind::Stack, .mem = memLoc, .bitwidth = bitwidth};
-            }else{
-                dontSpill = true;
             }
 
             // TODO handle float results
