@@ -344,7 +344,7 @@ namespace ArgParse{
         }
     };
 
-    extern InsertBeforeQueryMap<Arg, std::string> parsedArgs;
+    extern InsertBeforeQueryMap<Arg, llvm::SmallVector<std::string, 4>> parsedArgs;
 
     // struct for all possible arguments
     const struct {
@@ -359,9 +359,9 @@ namespace ArgParse{
         const Arg jit{       "j",    "jit",            0, "JIT compile, i.e. JIT link and immediately execute the compiled code, with the given (space separated) argvs"};
         const Arg forceFallback{"F", "force-fallback", 0, "shorthand for adding 'force-fallback' to the list of features",                                                       FLAG};
         const Arg featuresArg{"f",   "features",       0, ([](){
-            std::string str = "Comma separated list of features:\n"s;
+            std::string str = "enable/disable given feature. Available features:\n"s;
             for(const auto& f: features)
-                str += "- " + std::string{f.name} + ": " + std::string{f.description} + "(default: " + (features[f.name] ? "true" : "false" ) + ")\n";
+                str += "- " + std::string{f.name} + ": " + std::string{f.description} + " (default: " + (features[f.name] ? "true" : "false" ) + ")\n";
 
             return str;
             })()
@@ -386,14 +386,14 @@ namespace ArgParse{
     }
 
     inline std::string_view Arg::operator*() const{
-        assert((required() || parsedArgs.contains(*this)) && "Trying to access optional argument that has not been set");
-        return parsedArgs[*this];
+        assert((parsedArgs.contains(*this) && parsedArgs[*this].size()>=1) && "Trying to access optional argument that has not been set");
+        return parsedArgs[*this].back(); // last element is the most recent one
     }
 
     void printHelp(const char *argv0);
 
     //unordered_map doesnt work because of hash reasons (i think), so just define <, use ordered
-    InsertBeforeQueryMap<Arg, std::string>& parse(int argc, char *argv[]);
+    void parse(int argc, char *argv[]);
 
     inline std::pair<int, char**> parseJITArgv(){
         if(!args.jit())
@@ -416,26 +416,17 @@ namespace ArgParse{
     }
 
     inline void parseFeatures(){
-        auto charRange = llvm::make_range(std::begin(*args.featuresArg), std::end(*args.featuresArg));
-        auto charIndexRange = llvm::enumerate(charRange);
-        unsigned lastStart = 0;
-
-        auto handleFeature = [&](auto index){
-            auto feature_strv = std::string_view{charRange.begin() + lastStart, charRange.begin() + index};
+        const auto& featuresArg = ArgParse::parsedArgs[ArgParse::args.featuresArg];
+        auto handleFeature = [&](std::string_view feature_strv){
             if(feature_strv.starts_with("no-"))
                 features[feature_strv.substr(3)] = false;
             else
                 features[feature_strv] = true;
-            lastStart = index + 1;
         };
 
-        for(auto it = charIndexRange.begin(); it != charIndexRange.end(); ++it){
-            auto [index, c] = *it;
-            // look for ','
-            if(c == ',')
-                handleFeature(index);
+        for(auto feature : featuresArg){
+            handleFeature(feature);
         }
-        handleFeature((*args.featuresArg).size());
 
         DEBUGLOG("Features: ");
         IFDEBUG(

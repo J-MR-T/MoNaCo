@@ -27,7 +27,7 @@ namespace termcolor{
 
 namespace ArgParse{
 
-InsertBeforeQueryMap<Arg, std::string> parsedArgs{};
+InsertBeforeQueryMap<Arg, llvm::SmallVector<std::string, 4>> parsedArgs{};
 
 std::array<bool, features.size> enabled = ([](){
     std::array<bool, features.size> arr;
@@ -73,10 +73,10 @@ void printHelp(const char *argv0) {
     llvm::errs() << "\nExamples: \n"
         << "  " << argv0 << " -i input.mlir\n"
         << "  " << argv0 << " input.mlir -fno-codegen-dce\n"
-        << "  " << argv0 << " -ffallback,no-force-fallback,unreachable-abort\n";
+        << "  " << argv0 << " -ffallback -fno-force-fallback -funreachable-abort -fomit-one-use-value-spills\n";
 }
 
-InsertBeforeQueryMap<Arg, std::string>& parse(int argc, char *argv[]) {
+void parse(int argc, char *argv[]) {
     using std::string;
 
     // REFACTOR this arg string generation is not very nice
@@ -117,19 +117,31 @@ cont:
             std::regex matchShort{separator + "-" + arg.shortOpt + "" + separator + "*([^" + separator + "]+)"};
             std::regex matchLong{separator + "--" + arg.longOpt + "(" + separator + "*|=)([^" + separator + "=]+)"};
             std::smatch match;
-            if (arg.shortOpt != "" &&
-                    std::regex_search(argString, match, matchShort)) {
-                parsedArgs.insert(arg, match[1]);
-            } else if (arg.longOpt != "" &&
-                    std::regex_search(argString, match, matchLong)) {
-                parsedArgs.insert(arg, match[2]);
+
+            llvm::SmallVector<std::string, 4> matches{};
+            if (arg.shortOpt != ""){
+                string::const_iterator searchStart(argString.cbegin());
+                while(std::regex_search(searchStart, argString.cend(), match, matchShort)){
+                    matches.push_back(match[1]);
+                    searchStart = match.suffix().first;
+                }
             }
+            if (arg.longOpt != ""){
+                string::const_iterator searchStart(argString.cbegin());
+                while(std::regex_search(searchStart, argString.cend(), match, matchLong)){
+                    matches.push_back(match[2]);
+                    searchStart = match.suffix().first;
+                }
+            }
+
+            if(matches.size() > 0)
+                parsedArgs.insert(arg, matches);
         } else {
             std::regex matchFlagShort{separator + "-[a-zA-z]*" + arg.shortOpt};
             std::regex matchFlagLong{separator + "--" + arg.longOpt};
             if (std::regex_search(argString, matchFlagShort) ||
                     std::regex_search(argString, matchFlagLong)) {
-                parsedArgs.insert(arg, ""); // empty string for flags, will just be checked using .contains
+                parsedArgs.insert(arg, {}); // empty string for flags, will just be checked using .contains
             }
         };
     }
@@ -141,7 +153,7 @@ cont:
         if (arg.pos != 0 && 
             // this is a positional arg
             parsedPositionalArgs.size() > arg.pos - 1)
-                parsedArgs.insert(arg, parsedPositionalArgs[arg.pos - 1]);
+                parsedArgs.insert(arg, {parsedPositionalArgs[arg.pos - 1]});
 
     parsedArgs.finalize(true);
 
@@ -155,7 +167,6 @@ cont:
         printHelp(argv[0]);
         exit(EXIT_FAILURE);
     }
-    return parsedArgs;
 }
 
 } // end namespace ArgParse
