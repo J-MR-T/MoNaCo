@@ -1282,6 +1282,7 @@ protected:
             assert(cmovPredicateIfCriticalJcc != amd64::conditional::predicate::NONE);
 
         auto handleChainElement = [this, memMemMoveReg, cmovPredicateIfCriticalJcc](mlir::Value from, mlir::Value to){
+            assert(from != nullptr && to != nullptr && "null block arg");
             if constexpr(!isCriticalEdge)
                 (void) cmovPredicateIfCriticalJcc,
                 moveFromSlotToSlot(from, to, memMemMoveReg);
@@ -1289,16 +1290,18 @@ protected:
                 condMoveFromSlotToSlot(valueToSlot[from], to, memMemMoveReg, cmovPredicateIfCriticalJcc);
         };
 
-        // TODO do the pointers make sense here?
         llvm::SmallVector<std::pair<mlir::BlockArgument, mlir::BlockArgument>, 8> mapArgNumberToArgAndArgItReads(blockArgs.size(), {nullptr, nullptr});
         llvm::SmallVector<int16_t, 8> numReaders(blockArgs.size(), 0); // indexed by the block arg number, i.e. the slots for the dependent args are empty/0 in here
 
         // find the args which are independent, and those which need a topological sorting
         for(auto [arg, operand] : llvm::zip(blockArgs, blockArgOperands)){
+            assert(arg != nullptr && "null block arg");
             if(auto operandArg = operand.dyn_cast<mlir::BlockArgument>(); operandArg && operandArg.getParentBlock() == arg.getParentBlock()){
-                if(operandArg == arg) { // if its a self-reference/edge, we can simply ignore it, because its SSA: the value only gets defined once, and a ValueSlot only ever holds exactly one value during that value's liveness. In this case this value is this phi, and it is obviously still live, by being used as a block arg, so we can just leave it where it is, don't need to emit any code for it
+                if(operandArg == arg) {
+                    // if its a self-reference/edge, we can simply ignore it, because its SSA: the value only gets defined once, and a ValueSlot only ever holds exactly one value during that value's liveness. In this case this value is this phi, and it is obviously still live, by being used as a block arg, so we can just leave it where it is, don't need to emit any code for it
                     continue;
                 } else /* otherwise we've found a dependant phi */ {
+                    assert(operandArg != nullptr && "null block arg as operand to another block arg");
                     mapArgNumberToArgAndArgItReads[arg.getArgNumber()] = {arg, operandArg};
 
                     assert(numReaders.size()> operandArg.getArgNumber());
@@ -1311,17 +1314,21 @@ protected:
             }
         }
 
-        // handle in tpoplogical order
+        // handle in toplogical order
         assert(mapArgNumberToArgAndArgItReads.size() < std::numeric_limits<int16_t>::max() && "too many dependent block args"); // TODO maybe make an actual failure?
         for(auto [arg, argThatItReads] : mapArgNumberToArgAndArgItReads){
             // this map contains all phis, so we can just skip the ones which are independent
             if(arg == nullptr)
                 continue;
 
+            assert(argThatItReads != nullptr && "this should never be inserted into the map");
+
             assert(arg != argThatItReads && "self-reference in phi, should have been handled earlier");
 
             // this handles the arg, if it has no dependencies anymore. It's a loop, because it might unblock new args, which then need to be handled
             while(numReaders[arg.getArgNumber()] == 0){
+                assert(arg != nullptr && "null block arg");
+
                 // found the start of a chain
 
                 handleChainElement(argThatItReads, arg); // need to move the value being read *from* its slot *to* the slot of the phi
@@ -1335,6 +1342,8 @@ protected:
                 // -> try if it's unblocked, by re-setting the arg and argThatItReads
                 arg = argThatItReads; // we're looking at the phi we just read now
                 argThatItReads = mapArgNumberToArgAndArgItReads[arg.getArgNumber()].second; // get what it reads from the map
+                if(argThatItReads == nullptr)
+                    break; // the chain has ended, because the arg we would handle now reads something that's not a dependent block arg
             }
         }
 

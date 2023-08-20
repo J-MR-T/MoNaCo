@@ -46,8 +46,7 @@ concept MLIRInterfaceDerivedFrom = requires(Derived d){
     { d } -> std::convertible_to<Base>;
 };
 
-template <typename RegisterTy, bool matchZeroResult = false>
-requires MLIRInterfaceDerivedFrom<RegisterTy, amd64::RegisterTypeInterface>
+template <MLIRInterfaceDerivedFrom<amd64::RegisterTypeInterface> RegisterTy, bool matchZeroResult = false>
 auto defaultBitwidthMatchLambda = []<unsigned bitwidth>(auto thiis, auto op, typename mlir::OpConversionPattern<decltype(op)>::OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter){
     using OpTy = decltype(op);
 
@@ -95,6 +94,10 @@ auto matchAllLambda = []<unsigned>(auto, auto, auto, mlir::ConversionPatternRewr
     return mlir::success();
 };
 
+template<typename T, typename OpTy, typename AdaptorTy>
+concept MatchReplaceLambda = requires(T lambda, OpTy op, AdaptorTy adaptor, mlir::ConversionPatternRewriter& rewriter){
+    { lambda.template operator()<8, NA, NA, NA, NA, NA>(op, adaptor, rewriter) } -> std::convertible_to<mlir::LogicalResult>;
+};
 
 /// somewhat generic pattern matching struct
 template<
@@ -107,6 +110,7 @@ template<
     int benefit = 1,
     typename INST1 = NA, typename INST2 = NA, typename INST3 = NA, typename INST4 = NA, typename INST5 = NA
 >
+//requires MatchReplaceLambda<decltype(lambda), OpTy, typename mlir::OpConversionPattern<OpTy>::OpAdaptor>
 struct Match : public mlir::OpConversionPattern<OpTy>{
     Match(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<OpTy>(tc, ctx, benefit){}
     using OpAdaptor = typename mlir::OpConversionPattern<OpTy>::OpAdaptor;
@@ -148,6 +152,18 @@ struct SimplePat : public mlir::OpConversionPattern<OpTy>{
 
     mlir::LogicalResult matchAndRewrite(OpTy op, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
         return matchAndRewriteInject(op, adaptor, rewriter);
+    }
+};
+
+template<typename OpTy>
+struct ErasePat : public mlir::OpConversionPattern<OpTy>{
+    using OpAdaptor = typename mlir::OpConversionPattern<OpTy>::OpAdaptor;
+
+    ErasePat(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<OpTy>(tc, ctx, 1){}
+
+    mlir::LogicalResult matchAndRewrite(OpTy op, OpAdaptor, mlir::ConversionPatternRewriter& rewriter) const override {
+        rewriter.eraseOp(op);
+        return mlir::success();
     }
 };
 
@@ -966,6 +982,7 @@ struct LLVMGlobalPat : public mlir::OpConversionPattern<LLVM::GlobalOp>{
             }else if(auto zero = llvm::dyn_cast<llvm::ConstantAggregateZero>(llvmConstant)){
                 DEBUGLOG("constant aggregate zero");
                 unfinishedGlobal.bytes.resize(mlirGetTypeSize(adaptor.getGlobalType()));
+                // TODO use `zero` to validate the size
 
 
 #ifndef NDEBUG
@@ -1034,12 +1051,20 @@ struct LLVMGlobalPat : public mlir::OpConversionPattern<LLVM::GlobalOp>{
                 memcpy(bytes.data(), strAttr.getValue().data(), strAttr.getValue().size());
                 assert(unfinishedGlobal.bytes.back() == '\0');
             }else if(auto intAttr = attr.dyn_cast<mlir::IntegerAttr>()){
+                assert((intAttr.getType().getIntOrFloatBitWidth() == 1 || intAttr.getType().getIntOrFloatBitWidth() == 8 || intAttr.getType().getIntOrFloatBitWidth() == 16 || intAttr.getType().getIntOrFloatBitWidth() == 32 || intAttr.getType().getIntOrFloatBitWidth() == 64) && "global of invalid bitwidth");
+
                 auto size = intAttr.getType().getIntOrFloatBitWidth()/8;
+                if(size == 0) // has to have been an i1 -> round up to 1 byte
+                    size = 1;
+
                 bytes.resize(size);
                 memcpyToLittleEndianBuffer(bytes.data(), intAttr.getValue().getSExtValue(), size);
             }else if(auto floatAttr = attr.dyn_cast<mlir::FloatAttr>()){
-                op.dump();
-                EXIT_TODO;
+                assert((floatAttr.getType().getIntOrFloatBitWidth() == 32 || floatAttr.getType().getIntOrFloatBitWidth() == 64) && "global of invalid bitwidth");
+
+                auto size = floatAttr.getType().getIntOrFloatBitWidth()/8;
+                bytes.resize(size);
+                memcpyToLittleEndianBuffer(bytes.data(), floatAttr.getValueAsDouble(), size);
             }else if(auto funcAttr = attr.dyn_cast<mlir::FlatSymbolRefAttr>()){
                 op.dump();
                 EXIT_TODO;
@@ -1288,17 +1313,25 @@ using LLVMNullPat = SimplePat<LLVM::NullOp, [](auto op, auto, mlir::ConversionPa
     return mlir::success();
 }>;
 
-auto zeroReplace = []<unsigned actualBitwidth,
+auto zeroReplace = [](auto op, auto, mlir::ConversionPatternRewriter& rewriter){
+    // TODO warn about this
+    //      actually maybe not, MLIR uses undefs so often in normal situations...
+    rewriter.replaceOpWithNewOp<amd64::MOV64ri>(op, 0);
+    return mlir::success();
+};
+
+auto zeroReplaceTemplated = []<unsigned actualBitwidth,
      typename, typename MOVri, typename, typename, typename
-     >(auto op, auto adaptor, mlir::ConversionPatternRewriter& rewriter){
+     >(auto op, auto, mlir::ConversionPatternRewriter& rewriter){
     // TODO warn about this
     //      actually maybe not, MLIR uses undefs so often in normal situations...
     rewriter.replaceOpWithNewOp<MOVri>(op, 0);
     return mlir::success();
 };
 
-PATTERN_INT(LLVMUndefPat,  LLVM::UndefOp,  amd64::MOV, zeroReplace, intOrFloatBitwidthMatchLambda);
-PATTERN_INT(LLVMPoisonPat, LLVM::PoisonOp, amd64::MOV, zeroReplace, intOrFloatBitwidthMatchLambda);
+PATTERN_INT(LLVMUndefPat,  LLVM::UndefOp,  amd64::MOV, zeroReplaceTemplated, intOrFloatBitwidthMatchLambda);
+PATTERN_INT(LLVMPoisonPat, LLVM::PoisonOp, amd64::MOV, zeroReplaceTemplated, intOrFloatBitwidthMatchLambda);
+PATTERN_INT(LLVMFreezePat, LLVM::FreezeOp, amd64::MOV, zeroReplaceTemplated, intOrFloatBitwidthMatchLambda);
 
 auto ptrIntReplace =  [](auto op, auto adaptor, mlir::ConversionPatternRewriter& rewriter){
     // TODO assert pointer/int bitwidths are 64
@@ -1390,6 +1423,49 @@ using LLVMIntrMemSetPat = SimplePat<LLVM::MemsetOp, [](auto op, auto adaptor, ml
     );
     return mlir::success();
 }, 2>;
+
+template<bool isMin>
+auto sminSmaxMatchReplace = []<unsigned,
+    typename, typename, typename, typename, typename
+    > (auto op, auto, mlir::ConversionPatternRewriter& rewriter){
+    LLVM::ICmpPredicate pred;
+    if constexpr(isMin)
+        pred = LLVM::ICmpPredicate::slt;
+    else
+        pred = LLVM::ICmpPredicate::sgt;
+    auto icmp = rewriter.create<LLVM::ICmpOp>(op.getLoc(), pred, op.getA(), op.getB());
+    rewriter.replaceOpWithNewOp<LLVM::SelectOp>(op, icmp, op.getA(), op.getB());
+    return mlir::success();
+};
+PATTERN_INT(LLVMIntrSMinPat, LLVM::SMinOp, amd64::MOV, sminSmaxMatchReplace<true>);
+PATTERN_INT(LLVMIntrSMaxPat, LLVM::SMaxOp, amd64::MOV, sminSmaxMatchReplace<false>);
+
+auto absMatchReplace = []<unsigned bitwidth,
+    typename XORrr, typename SUBrr, typename SARri, typename, typename
+    >(LLVM::AbsOp op, auto adaptor, mlir::ConversionPatternRewriter& rewriter){
+    // (see https://stackoverflow.com/a/14194764)
+    //auto mask = rewriter.create<SARri>(op.getLoc(), adaptor.getIn());
+    //mask.getProperties().instructionInfoImpl.imm = bitwidth - 1;
+    //auto xorr = rewriter.create<XORrr>(op.getLoc(), adaptor.getIn(), mask);
+    //rewriter.replaceOpWithNewOp<SUBrr>(op, xorr, mask);
+    // do it with a select instead
+    auto zero = rewriter.create<LLVM::ConstantOp>(op.getLoc(), op.getType(), 0);
+    auto isGreaterOrEqualToZero = rewriter.create<LLVM::ICmpOp>(op.getLoc(), LLVM::ICmpPredicate::sge, adaptor.getIn(), zero);
+    auto negated = rewriter.create<LLVM::SubOp>(op.getLoc(), zero, op.getIn());
+    rewriter.replaceOpWithNewOp<LLVM::SelectOp>(op, isGreaterOrEqualToZero, op.getIn(), negated);
+    return mlir::success();
+};
+#define ABS_PAT(bitwidth)\
+    using LLVMIntrAbsPat ## bitwidth = Match<LLVM::AbsOp, bitwidth, absMatchReplace, intBitwidthMatchLambda, 1, amd64::XOR ## bitwidth ## rr, amd64::SUB ## bitwidth ## rr, amd64::SAR ## bitwidth ## ri>;
+
+ABS_PAT(8); ABS_PAT(16); ABS_PAT(32); ABS_PAT(64);
+
+
+// I guess this is the simplest way of getting rid of these
+using LLVMIntrAssumePat        = ErasePat<LLVM::AssumeOp>;
+using LLVMIntrLifetimeStartPat = ErasePat<LLVM::LifetimeStartOp>;
+using LLVMIntrLifetimeEndPat   = ErasePat<LLVM::LifetimeEndOp>;
+using LLVMIntrDbgValuePat      = ErasePat<LLVM::DbgValueOp>;
 
 struct LLVMIntrGenericPat : public mlir::OpConversionPattern<LLVM::CallIntrinsicOp>{
     LLVMIntrGenericPat(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<LLVM::CallIntrinsicOp>(tc, ctx, 1){}
@@ -1611,7 +1687,9 @@ void populateLLVMFloatArithmeticToAMD64ConversionPatterns(mlir::RewritePatternSe
     patterns.add<LLVMConstantFloatPat>(tc, patterns.getContext(), globals);
     patterns.add<
         FP_PATTERN_BITWIDTHS(LLVMFAddPat),
+        FP_PATTERN_BITWIDTHS(LLVMFSubPat),
         FP_PATTERN_BITWIDTHS(LLVMFMulPat),
+        FP_PATTERN_BITWIDTHS(LLVMFDivPat),
         FP_PATTERN_BITWIDTHS(LLVMFloatCallPat),
         LLVMFPToSIPat32_to_32, LLVMFPToSIPat32_to_64, LLVMFPToSIPat64_to_32, LLVMFPToSIPat64_to_64,
         LLVMSIToFPPat32_to_32, LLVMSIToFPPat32_to_64, LLVMSIToFPPat64_to_32, LLVMSIToFPPat64_to_64,
@@ -1625,8 +1703,8 @@ void populateLLVMFloatArithmeticToAMD64ConversionPatterns(mlir::RewritePatternSe
 void populateLLVMMiscToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns, mlir::TypeConverter& tc, GlobalsInfo& globals){
     patterns.add<
         PATTERN_INT_BITWIDTHS(LLVMConstantIntPat),
-        LLVMSelectPat16, LLVMSelectPat32, LLVMSelectPat64,
-        LLVMNullPat, PATTERN_INT_BITWIDTHS(LLVMUndefPat), PATTERN_INT_BITWIDTHS(LLVMPoisonPat), /*LLVMEraseMetadataPat, */LLVMUnreachablePat,
+        LLVMSelectPat8, LLVMSelectPat16, LLVMSelectPat32, LLVMSelectPat64,
+        LLVMNullPat, PATTERN_INT_BITWIDTHS(LLVMUndefPat), PATTERN_INT_BITWIDTHS(LLVMPoisonPat), PATTERN_INT_BITWIDTHS(LLVMFreezePat), LLVMUnreachablePat,
         LLVMGEPPattern, LLVMAllocaPat, PATTERN_INT_BITWIDTHS(LLVMIntLoadPat), PATTERN_INT_BITWIDTHS(LLVMIntStorePat), LLVMPtrToIntPat, LLVMIntToPtrPat,
         LLVMReturnPat, LLVMFuncPat,
         LLVMConstantStringPat, LLVMAddrofPat,
@@ -1638,6 +1716,8 @@ void populateLLVMMiscToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns
         LLVMTruncPat16_to_8, LLVMTruncPat32_to_8, LLVMTruncPat64_to_8, LLVMTruncPat32_to_16, LLVMTruncPat64_to_16, LLVMTruncPat64_to_32,
         // intrinsics
         LLVMIntrMemCpyPat, LLVMIntrMemSetPat,
+        PATTERN_INT_BITWIDTHS(LLVMIntrSMinPat), PATTERN_INT_BITWIDTHS(LLVMIntrSMaxPat), PATTERN_INT_BITWIDTHS(LLVMIntrAbsPat),
+        /* these all get replaced with nothing */ LLVMIntrAssumePat, LLVMIntrDbgValuePat, LLVMIntrLifetimeStartPat, LLVMIntrLifetimeEndPat,
         LLVMIntrGenericPat
     >(tc, patterns.getContext());
     patterns.add<LLVMGlobalPat>(tc, patterns.getContext(), globals);

@@ -58,13 +58,13 @@ int main(int argc, char *argv[]) {
     }
 
     if(args.print()){
-        auto print_sv = *args.print;
-        if(print_sv.contains("input")) printOpts |= PRINT_INPUT;
-        if(print_sv.contains("isel"))  printOpts |= PRINT_ISEL;
-        if(print_sv.contains("asm"))   printOpts |= PRINT_ASM;
+        auto printArgValues = args.print.values();
+        if(llvm::find(printArgValues, "input") != printArgValues.end()) printOpts |= PRINT_INPUT;
+        if(llvm::find(printArgValues, "isel")  != printArgValues.end()) printOpts |= PRINT_ISEL;
+        if(llvm::find(printArgValues, "asm")   != printArgValues.end()) printOpts |= PRINT_ASM;
 
         if(printOpts == PRINT_NONE)
-            errx(EXIT_FAILURE, "Invalid argument for --print: %s", std::string{print_sv}.c_str());
+            errx(EXIT_FAILURE, "Invalid argument for --print, valid arguments are: input, isel, asm");
     }
     
     if(args.debugMore()){

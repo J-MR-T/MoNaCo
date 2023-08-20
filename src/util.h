@@ -335,6 +335,9 @@ namespace ArgParse{
         /// returns the args value
         std::string_view operator*() const;
 
+        /// returns all args values
+        llvm::ArrayRef<std::string> values() const;
+
         bool required() const{
             return kind & REQUIRED;
         }
@@ -386,8 +389,14 @@ namespace ArgParse{
     }
 
     inline std::string_view Arg::operator*() const{
-        assert((parsedArgs.contains(*this) && parsedArgs[*this].size()>=1) && "Trying to access optional argument that has not been set");
-        return parsedArgs[*this].back(); // last element is the most recent one
+        auto vals = this->values();
+        assert(vals.size() >= 1 && "Trying to access optional argument that has not been set");
+        return vals.back(); // last element is the most recent one
+    }
+
+    inline llvm::ArrayRef<std::string> Arg::values() const{
+        assert((parsedArgs.contains(*this)) && "Trying to access optional argument that has not been set");
+        return parsedArgs[*this];
     }
 
     void printHelp(const char *argv0);
@@ -416,7 +425,7 @@ namespace ArgParse{
     }
 
     inline void parseFeatures(){
-        const auto& featuresArg = ArgParse::parsedArgs[ArgParse::args.featuresArg];
+        const auto& featuresArg = ArgParse::args.featuresArg.values();
         auto handleFeature = [&](std::string_view feature_strv){
             if(feature_strv.starts_with("no-"))
                 features[feature_strv.substr(3)] = false;
@@ -477,7 +486,10 @@ inline std::pair<uint8_t* /* buf */, uint8_t* /* bufEnd */> mmapSpace(size_t siz
 }
 
 
-inline void memcpyToLittleEndianBuffer(void* bufStart, std::integral auto value, size_t size = 0){
+template<typename T>
+// std::integral or std::floating_point
+requires std::integral<T> || std::floating_point<T>
+inline void memcpyToLittleEndianBuffer(void* bufStart, T value, size_t size = 0){
      if(size == 0)
         size = sizeof(value);
     // all x86(-64) instructions are little endian, but in accessing allocationSize, we have to take care of endianness
