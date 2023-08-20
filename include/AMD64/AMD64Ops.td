@@ -173,7 +173,7 @@ class MemSIBD_subset<string mnemonic, list<Trait> traits = []>: MemOp<mnemonic, 
         // displacement
         !if(hasDisplacement, (ins "int64_t":$displacementArg),                  (ins))
       ), /* TODO: the properties might be wrong here, as they are always of MemSIBD, not the actual current class */ [{
-      auto& prop = $_state.getOrAddProperties<MemSIBD::Properties>();
+      auto& prop = $_state.getOrAddProperties<Properties>();
       (void) prop;
       }]
       # !if(hasScaleIndex,   "prop.scale = scaleArg;",               "")

@@ -24,6 +24,7 @@ def AMD64_Dialect : Dialect {
   let usePropertiesForAttributes = 1;
 
   // TODO get this to work
+  // the problem is this issue: https://github.com/llvm/llvm-project/issues/63072
   //let isExtensible = 1;
 }
 
