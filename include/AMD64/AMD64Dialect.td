@@ -25,6 +25,7 @@ def AMD64_Dialect : Dialect {
 
   // TODO get this to work
   // the problem is this issue: https://github.com/llvm/llvm-project/issues/63072
+  // its now solved, I haven't upgraded to the newest MLIR yet, but experimentally tried commit https://github.com/llvm/llvm-project/commit/87a14216cd4058154fe59a4031e6fb962ebf0462, and it works.
   //let isExtensible = 1;
 }
 
