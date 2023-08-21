@@ -26,6 +26,18 @@ module{
     // then or with the previous result, should be 0
     %9 = llvm.or %8, %5 : i32
 
-    llvm.return %9 : i32
+    // now try smin, smax, abs
+    %10 = llvm.mlir.constant(-2 : i32) : i32
+    %11 = llvm.mlir.constant(2 : i32) : i32
+    %12 = llvm.intr.smin(%10, %11) : (i32, i32) -> i32 // should be -2
+    %13 = llvm.intr.smax(%10, %11) : (i32, i32) -> i32 // should be 2
+    %14 = "llvm.intr.abs"(%10) <{is_int_min_poison = true}> : (i32) -> i32// should be 2
+    %15 = llvm.mul %14, %12 : i32 // should be -4
+    %16 = llvm.mul %13, %13 : i32 // should be 4
+    %17 = llvm.add %15, %16 : i32 // should be 0
+
+    %18 = llvm.or %17, %9 : i32
+
+    llvm.return %18 : i32
   }
 }
