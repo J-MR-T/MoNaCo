@@ -1291,33 +1291,35 @@ protected:
         };
 
         llvm::SmallVector<std::pair<mlir::BlockArgument, mlir::BlockArgument>, 8> mapArgNumberToArgAndArgItReads(blockArgs.size(), {nullptr, nullptr});
+        llvm::SmallVector<std::pair<mlir::BlockArgument, mlir::Value>, 8> nonBlockArgMovesHandleLast(blockArgs.size(), {nullptr, nullptr});
         llvm::SmallVector<int16_t, 8> numReaders(blockArgs.size(), 0); // indexed by the block arg number, i.e. the slots for the dependent args are empty/0 in here
+
+        unsigned handleLaterCount = 0;
 
         // find the args which are independent, and those which need a topological sorting
         for(auto [arg, operand] : llvm::zip(blockArgs, blockArgOperands)){
-            assert(arg != nullptr && "null block arg");
+            assert(arg     != nullptr && "null block arg");
+            assert(operand != nullptr && "null block arg as operand to another block arg");
             if(auto operandArg = operand.dyn_cast<mlir::BlockArgument>(); operandArg && operandArg.getParentBlock() == arg.getParentBlock()){
                 if(operandArg == arg) {
                     // if its a self-reference/edge, we can simply ignore it, because its SSA: the value only gets defined once, and a ValueSlot only ever holds exactly one value during that value's liveness. In this case this value is this phi, and it is obviously still live, by being used as a block arg, so we can just leave it where it is, don't need to emit any code for it
                     continue;
                 } else /* otherwise we've found a dependant phi */ {
-                    assert(operandArg != nullptr && "null block arg as operand to another block arg");
                     mapArgNumberToArgAndArgItReads[arg.getArgNumber()] = {arg, operandArg};
 
                     assert(numReaders.size()> operandArg.getArgNumber());
                     numReaders[operandArg.getArgNumber()] += 1;
                 }
             }else{
-                // no dependencies, just load the values in any order -> just in the order we encounter them now
-                // load the operand into the slot of the arg
-                handleChainElement(operand, arg);
+                // no dependencies on the operand, but the arg might be depended upon by other args, we can't simply overwrite it now. We just handle it at the end of all dependent things
+                nonBlockArgMovesHandleLast[handleLaterCount++] = {arg, operand};
             }
         }
 
         // handle in toplogical order
         assert(mapArgNumberToArgAndArgItReads.size() < std::numeric_limits<int16_t>::max() && "too many dependent block args"); // TODO maybe make an actual failure?
         for(auto [arg, argThatItReads] : mapArgNumberToArgAndArgItReads){
-            // this map contains all phis, so we can just skip the ones which are independent
+            // this map contains all phis, so we can just skip the ones which we didn't write here earlier
             if(arg == nullptr)
                 continue;
 
@@ -1354,7 +1356,7 @@ protected:
 
         // find the first of the cycle
         for(auto [arg, argThatItReads] : mapArgNumberToArgAndArgItReads){
-            if(arg == nullptr || numReaders[arg.getArgNumber()] == -1)
+            if(arg == nullptr || numReaders[arg.getArgNumber()] <= -1)
                 continue;
 
             assert(numReaders[arg.getArgNumber()] == 1 && "cycle in phi dependencies, but some of the cycle's members have more than one reader, something is wrong here");
@@ -1385,6 +1387,17 @@ protected:
             }
 
             break;
+        }
+
+        // now that we have handled all dependencies, handle everything that might have been depended **upon**, but itself only reads independent things:
+        for(unsigned i = 0; i < handleLaterCount; ++i){
+            auto [arg, operand] = nonBlockArgMovesHandleLast[i];
+            assert(arg != nullptr && "null block arg inserted");
+            assert(operand != nullptr && "can't move from a null value to a block arg");
+
+            assert(numReaders[arg.getArgNumber()] <= 0 && "non-block arg has readers, something is wrong here");
+
+            handleChainElement(operand, arg);
         }
     }
 
