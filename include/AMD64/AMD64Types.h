@@ -33,6 +33,15 @@ inline predicate invert(predicate pred){
 }
 }
 
+namespace SizeChange {
+enum Kind {
+    None,
+    SExt,
+    ZExt,
+    Trunc,
+};
+}
+
 // TODO template this and only have one of the two
 
 // chmpxchg16b is the worst for this

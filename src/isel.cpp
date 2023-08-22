@@ -310,37 +310,37 @@ PATTERN_INT(ConstantIntPat, mlir::arith::ConstantIntOp, amd64::MOV, movMatchRepl
 // sign/zero extensions
 
 /// ZExt from i1 pattern
-struct ExtUII1Pat : mlir::OpConversionPattern<mlir::arith::ExtUIOp> {
-    ExtUII1Pat(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<mlir::arith::ExtUIOp>(tc, ctx, 2){}
-
-    mlir::LogicalResult matchAndRewrite(mlir::arith::ExtUIOp zextOp, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
-        // we're only matching i1s here
-        if(!zextOp.getIn().getType().isInteger(1))
-            return rewriter.notifyMatchFailure(zextOp, "this pattern only extends i1s");
-
-        // to be precise, we're only matching cmps for the moment, although this might change later
-        if(!zextOp.getIn().isa<mlir::OpResult>())
-            return rewriter.notifyMatchFailure(zextOp, "i1 zext pattern only matches cmps, this seems to be a block arg");
-
-        auto cmpi = mlir::dyn_cast<mlir::arith::CmpIOp>(zextOp.getIn().getDefiningOp());
-        if(!cmpi)
-            return rewriter.notifyMatchFailure(zextOp, "only cmps are supported for i1 extension for now");
-
-        assert(zextOp.getOut().getType().isIntOrFloat() && "extui with non-int result type");
-
-        // TODO this doesn't make any sense without a CMOVcc/SETcc for/after the cmp
-        switch(zextOp.getOut().getType().getIntOrFloatBitWidth()){
-            case 8:  rewriter.replaceOp(zextOp, adaptor.getIn() /* the cmpi should be replaced by a SETcc in another pattern, as this sets an 8 bit register anyway, we don't need to do anything here */); break;
-            case 16: rewriter.replaceOpWithNewOp<amd64::MOVZXr16r8>(zextOp, adaptor.getIn()); break;
-            case 32: rewriter.replaceOpWithNewOp<amd64::MOVZXr32r8>(zextOp, adaptor.getIn()); break;
-            case 64: rewriter.replaceOpWithNewOp<amd64::MOVZXr64r8>(zextOp, adaptor.getIn()); break;
-
-            default:
-                return rewriter.notifyMatchFailure(zextOp, "unsupported bitwidth for i1 extension");
-        }
-        return mlir::success();
-    }
-};
+//struct ExtUII1Pat : mlir::OpConversionPattern<mlir::arith::ExtUIOp> {
+//    ExtUII1Pat(mlir::TypeConverter& tc, mlir::MLIRContext* ctx) : mlir::OpConversionPattern<mlir::arith::ExtUIOp>(tc, ctx, 2){}
+//
+//    mlir::LogicalResult matchAndRewrite(mlir::arith::ExtUIOp zextOp, OpAdaptor adaptor, mlir::ConversionPatternRewriter& rewriter) const override {
+//        // we're only matching i1s here
+//        if(!zextOp.getIn().getType().isInteger(1))
+//            return rewriter.notifyMatchFailure(zextOp, "this pattern only extends i1s");
+//
+//        // to be precise, we're only matching cmps for the moment, although this might change later
+//        if(!zextOp.getIn().isa<mlir::OpResult>())
+//            return rewriter.notifyMatchFailure(zextOp, "i1 zext pattern only matches cmps, this seems to be a block arg");
+//
+//        auto cmpi = mlir::dyn_cast<mlir::arith::CmpIOp>(zextOp.getIn().getDefiningOp());
+//        if(!cmpi)
+//            return rewriter.notifyMatchFailure(zextOp, "only cmps are supported for i1 extension for now");
+//
+//        assert(zextOp.getOut().getType().isIntOrFloat() && "extui with non-int result type");
+//
+//        // TODO this doesn't make any sense without a CMOVcc/SETcc for/after the cmp
+//        switch(zextOp.getOut().getType().getIntOrFloatBitWidth()){
+//            case 8:  rewriter.replaceOp(zextOp, adaptor.getIn() [> the cmpi should be replaced by a SETcc in another pattern, as this sets an 8 bit register anyway, we don't need to do anything here <]); break;
+//            case 16: rewriter.replaceOpWithNewOp<amd64::MOVZXr16r8>(zextOp, adaptor.getIn()); break;
+//            case 32: rewriter.replaceOpWithNewOp<amd64::MOVZXr32r8>(zextOp, adaptor.getIn()); break;
+//            case 64: rewriter.replaceOpWithNewOp<amd64::MOVZXr64r8>(zextOp, adaptor.getIn()); break;
+//
+//            default:
+//                return rewriter.notifyMatchFailure(zextOp, "unsupported bitwidth for i1 extension");
+//        }
+//        return mlir::success();
+//    }
+//};
 
 // TODO sign extension for i1
 
@@ -368,23 +368,35 @@ auto truncExtUiSiBitwidthMatcher = []<unsigned outBitwidth>(auto thiis, auto op,
     return mlir::success();
 };
 
-template<unsigned inBitwidth, auto getIn, auto getOut>
+template<unsigned inBitwidth, auto getIn, auto getOut, amd64::SizeChange::Kind kind>
 auto truncExtUiSiMatchReplace = []<unsigned outBitwidth,
-     typename MOVSZX, typename, typename, typename, typename
+     typename MOVSZX, typename SR8ri, typename, typename, typename
 >(auto szextOp, auto adaptor, mlir::ConversionPatternRewriter& rewriter) {
     // we need to take care to truncate an i1 to 0/1, before we 'actually' use it, i.e. do real computations with it on the other side of the MOVZX
     // i1's are represented as 8 bits currently, so we only need to check this in patterns which extend 8 bit
     if constexpr (inBitwidth == 8) /* && */ if(getIn(szextOp).getType().isInteger(1)){
-        // TODO this is wrong for sign extensions
 
-        // assert the 8 bits for the i1
-        assert(mlir::dyn_cast<amd64::GPRegisterTypeInterface>(getIn(adaptor).getType()).getBitwidth() == 8);
+            // assert the 8 bits for the i1
+            assert(mlir::dyn_cast<amd64::GPRegisterTypeInterface>(getIn(adaptor).getType()).getBitwidth() == 8);
+        if constexpr(kind == amd64::SizeChange::Kind::SExt){
+            static_assert(outBitwidth > 8, "This pattern can't sign extend i1 to i8");
 
-        // and it with 1, to truncate it
-        auto AND = rewriter.create<amd64::AND8ri>(szextOp.getLoc(), getIn(adaptor));
-        AND.instructionInfo().imm = 0x1;
-        rewriter.replaceOpWithNewOp<MOVSZX>(szextOp, AND);
-        return mlir::success();
+            // shift it left, then shift it right, to make a mask
+            auto SHL = rewriter.create<amd64::SHL8ri>(szextOp.getLoc(), getIn(adaptor));
+            auto SAR = rewriter.create<amd64::SAR8ri>(szextOp.getLoc(), SHL);
+            SHL.instructionInfo().imm = SAR.instructionInfo().imm = 0x7;
+            // now its sign extended to the 8 bits, then lets let the MOVSZX do its thing
+            rewriter.replaceOpWithNewOp<MOVSZX>(szextOp, SAR);
+            return mlir::success();
+        }else{
+            static_assert(kind == amd64::SizeChange::Kind::ZExt);
+
+            // and it with 1
+            auto AND = rewriter.create<amd64::AND8ri>(szextOp.getLoc(), getIn(adaptor));
+            AND.instructionInfo().imm = 0x1;
+            rewriter.replaceOpWithNewOp<MOVSZX>(szextOp, AND);
+            return mlir::success();
+        }
     }
 
     if constexpr(std::is_same_v<MOVSZX, amd64::MOV32rr>) // use the mov to 64 version of MOV32rr
@@ -401,15 +413,15 @@ auto truncExtUiSiMatchReplace = []<unsigned outBitwidth,
 
 auto arithGetIn = [](auto adaptorOrOp){ return adaptorOrOp.getIn(); };
 auto arithGetOut = [](auto adaptorOrOp){ return adaptorOrOp.getOut(); };
-template<unsigned inBitwidth>
-auto arithTruncExtUiSiMatchReplace = truncExtUiSiMatchReplace<inBitwidth, arithGetIn, arithGetIn>;
+template<unsigned inBitwidth, amd64::SizeChange::Kind kind>
+auto arithTruncExtUiSiMatchReplace = truncExtUiSiMatchReplace<inBitwidth, arithGetIn, arithGetIn, kind>;
 template<unsigned inBitwidth>
 auto arithTruncExtUiSiBitwidthMatcher = truncExtUiSiBitwidthMatcher<inBitwidth, arithGetIn, arithGetIn>;
 
 /// only for 16-64 bits outBitwidth, for 8 we have a special pattern. There are more exceptions: Because not all versions of MOVZX exist, MOVZXr8r8 wouldn't make sense (also invalid in MLIR), MOVZXr64r32 is just a MOV, etc.
 #define EXT_UI_SI_PAT(outBitwidth, inBitwidth) \
-    using ExtUIPat ## inBitwidth ## _to_ ## outBitwidth = Match<mlir::arith::ExtUIOp, outBitwidth, arithTruncExtUiSiMatchReplace<inBitwidth>, arithTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::MOVZX ## r ## outBitwidth ## r ## inBitwidth>; \
-    using ExtSIPat ## inBitwidth ## _to_ ## outBitwidth = Match<mlir::arith::ExtSIOp, outBitwidth, arithTruncExtUiSiMatchReplace<inBitwidth>, arithTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::MOVSX ## r ## outBitwidth ## r ## inBitwidth, NA, NA, NA, NA>;
+    using ExtUIPat ## inBitwidth ## _to_ ## outBitwidth = Match<mlir::arith::ExtUIOp, outBitwidth, arithTruncExtUiSiMatchReplace<inBitwidth, amd64::SizeChange::ZExt>, arithTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::MOVZX ## r ## outBitwidth ## r ## inBitwidth>; \
+    using ExtSIPat ## inBitwidth ## _to_ ## outBitwidth = Match<mlir::arith::ExtSIOp, outBitwidth, arithTruncExtUiSiMatchReplace<inBitwidth, amd64::SizeChange::SExt>, arithTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::MOVSX ## r ## outBitwidth ## r ## inBitwidth, NA, NA, NA, NA>;
 
 // generalizable cases:
 EXT_UI_SI_PAT(16, 8);
@@ -421,13 +433,13 @@ EXT_UI_SI_PAT(64, 8); EXT_UI_SI_PAT(64, 16);
 // cases that are still valid in mlir, but not covered here:
 // - 32 -> 64 (just a MOV)
 // - any weird integer types, but we ignore those anyway
-using ExtUIPat32_to_64 = Match<mlir::arith::ExtUIOp, 64, arithTruncExtUiSiMatchReplace<32>, arithTruncExtUiSiBitwidthMatcher<32>, 1, amd64::MOV32rr>;
+using ExtUIPat32_to_64 = Match<mlir::arith::ExtUIOp, 64, arithTruncExtUiSiMatchReplace<32, amd64::SizeChange::ZExt>, arithTruncExtUiSiBitwidthMatcher<32>, 1, amd64::MOV32rr>;
 // for sign extend, the pattern above would work, but for simplicity, just do it manually here:
-using ExtSIPat32_to_64 = Match<mlir::arith::ExtSIOp, 64, arithTruncExtUiSiMatchReplace<32>, arithTruncExtUiSiBitwidthMatcher<32>, 1, amd64::MOVSXr64r32>;
+using ExtSIPat32_to_64 = Match<mlir::arith::ExtSIOp, 64, arithTruncExtUiSiMatchReplace<32, amd64::SizeChange::SExt>, arithTruncExtUiSiBitwidthMatcher<32>, 1, amd64::MOVSXr64r32>;
 
 // trunc
 #define TRUNC_PAT(outBitwidth, inBitwidth) \
-    using TruncPat ## inBitwidth ## _to_ ## outBitwidth = Match<mlir::arith::TruncIOp, outBitwidth, arithTruncExtUiSiMatchReplace<inBitwidth>, arithTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::MOV ## outBitwidth ## rr>;
+    using TruncPat ## inBitwidth ## _to_ ## outBitwidth = Match<mlir::arith::TruncIOp, outBitwidth, arithTruncExtUiSiMatchReplace<inBitwidth, amd64::SizeChange::Trunc>, arithTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::MOV ## outBitwidth ## rr>;
 TRUNC_PAT(8, 16); TRUNC_PAT(8, 32); TRUNC_PAT(8, 64);
 TRUNC_PAT(16, 32); TRUNC_PAT(16, 64);
 TRUNC_PAT(32, 64);
@@ -1054,17 +1066,24 @@ struct LLVMGlobalPat : public mlir::OpConversionPattern<LLVM::GlobalOp>{
                 assert((intAttr.getType().getIntOrFloatBitWidth() == 1 || intAttr.getType().getIntOrFloatBitWidth() == 8 || intAttr.getType().getIntOrFloatBitWidth() == 16 || intAttr.getType().getIntOrFloatBitWidth() == 32 || intAttr.getType().getIntOrFloatBitWidth() == 64) && "global of invalid bitwidth");
 
                 auto size = intAttr.getType().getIntOrFloatBitWidth()/8;
-                if(size == 0) // has to have been an i1 -> round up to 1 byte
+                auto val = intAttr.getValue().getSExtValue();
+                if(size == 0){ // has to have been an i1 -> round up to 1 byte
                     size = 1;
+                    val&=1;
+                }
+
 
                 bytes.resize(size);
-                memcpyToLittleEndianBuffer(bytes.data(), intAttr.getValue().getSExtValue(), size);
+                memcpyToLittleEndianBuffer(bytes.data(), val, size);
             }else if(auto floatAttr = attr.dyn_cast<mlir::FloatAttr>()){
                 assert((floatAttr.getType().getIntOrFloatBitWidth() == 32 || floatAttr.getType().getIntOrFloatBitWidth() == 64) && "global of invalid bitwidth");
 
                 auto size = floatAttr.getType().getIntOrFloatBitWidth()/8;
                 bytes.resize(size);
-                memcpyToLittleEndianBuffer(bytes.data(), floatAttr.getValueAsDouble(), size);
+                if(size == 4)
+                    memcpyToLittleEndianBuffer(bytes.data(), static_cast<float>(floatAttr.getValueAsDouble()), size);
+                else
+                    memcpyToLittleEndianBuffer(bytes.data(), floatAttr.getValueAsDouble(), size);
             }else if(auto funcAttr = attr.dyn_cast<mlir::FlatSymbolRefAttr>()){
                 op.dump();
                 EXIT_TODO;
@@ -1246,15 +1265,15 @@ SWITCH_PAT(LLVMSwitchPat, LLVM::SwitchOp, 64);
 auto llvmGetIn = [](auto adaptorOrOp){ return adaptorOrOp.getArg(); };
 auto llvmGetOut = [](auto adaptorOrOp){ return adaptorOrOp.getRes(); };
 
-template<unsigned inBitwidth>
-auto llvmTruncExtUiSiMatchReplace = truncExtUiSiMatchReplace<inBitwidth, llvmGetIn, llvmGetOut>;
+template<unsigned inBitwidth, amd64::SizeChange::Kind kind>
+auto llvmTruncExtUiSiMatchReplace = truncExtUiSiMatchReplace<inBitwidth, llvmGetIn, llvmGetOut, kind>;
 template<unsigned inBitwidth>
 auto llvmTruncExtUiSiBitwidthMatcher = truncExtUiSiBitwidthMatcher<inBitwidth, llvmGetIn, llvmGetOut>;
 
 // LLVM SExt/ZExt/Trunc patterns, same as MLIR above, read up there on why this is divided into these weird cases
 #define SZEXT_PAT(outBitwidth, inBitwidth) \
-    using LLVMZExtPat ## inBitwidth ## _to_ ## outBitwidth = Match<LLVM::ZExtOp, outBitwidth, llvmTruncExtUiSiMatchReplace<inBitwidth>, llvmTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::MOVZX ## r ## outBitwidth ## r ## inBitwidth>; \
-    using LLVMSExtPat ## inBitwidth ## _to_ ## outBitwidth = Match<LLVM::SExtOp, outBitwidth, llvmTruncExtUiSiMatchReplace<inBitwidth>, llvmTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::MOVSX ## r ## outBitwidth ## r ## inBitwidth>;
+    using LLVMZExtPat ## inBitwidth ## _to_ ## outBitwidth = Match<LLVM::ZExtOp, outBitwidth, llvmTruncExtUiSiMatchReplace<inBitwidth, amd64::SizeChange::ZExt>, llvmTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::MOVZX ## r ## outBitwidth ## r ## inBitwidth>; \
+    using LLVMSExtPat ## inBitwidth ## _to_ ## outBitwidth = Match<LLVM::SExtOp, outBitwidth, llvmTruncExtUiSiMatchReplace<inBitwidth, amd64::SizeChange::SExt>, llvmTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::MOVSX ## r ## outBitwidth ## r ## inBitwidth>;
 
 // generalizable cases:
 SZEXT_PAT(16, 8);
@@ -1263,11 +1282,11 @@ SZEXT_PAT(64, 8); SZEXT_PAT(64, 16);
 
 #undef SZEXT_PAT
 
-using LLVMZExtPat32_to_64 = Match<LLVM::ZExtOp, 64, llvmTruncExtUiSiMatchReplace<32>, llvmTruncExtUiSiBitwidthMatcher<32>, 1, amd64::MOV32rr>;
-using LLVMSExtPat32_to_64 = Match<LLVM::SExtOp, 64, llvmTruncExtUiSiMatchReplace<32>, llvmTruncExtUiSiBitwidthMatcher<32>, 1, amd64::MOVSXr64r32>;
+using LLVMZExtPat32_to_64 = Match<LLVM::ZExtOp, 64, llvmTruncExtUiSiMatchReplace<32, amd64::SizeChange::ZExt>, llvmTruncExtUiSiBitwidthMatcher<32>, 1, amd64::MOV32rr>;
+using LLVMSExtPat32_to_64 = Match<LLVM::SExtOp, 64, llvmTruncExtUiSiMatchReplace<32, amd64::SizeChange::SExt>, llvmTruncExtUiSiBitwidthMatcher<32>, 1, amd64::MOVSXr64r32>;
 // trunc
 #define TRUNC_PAT(outBitwidth, inBitwidth) \
-    using LLVMTruncPat ## inBitwidth ## _to_ ## outBitwidth = Match<LLVM::TruncOp, outBitwidth, llvmTruncExtUiSiMatchReplace<inBitwidth>, llvmTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::MOV ## outBitwidth ## rr>;
+    using LLVMTruncPat ## inBitwidth ## _to_ ## outBitwidth = Match<LLVM::TruncOp, outBitwidth, llvmTruncExtUiSiMatchReplace<inBitwidth, amd64::SizeChange::Trunc>, llvmTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::MOV ## outBitwidth ## rr>;
 TRUNC_PAT(8, 16); TRUNC_PAT(8, 32); TRUNC_PAT(8, 64);
 TRUNC_PAT(16, 32); TRUNC_PAT(16, 64);
 TRUNC_PAT(32, 64);
@@ -1554,10 +1573,10 @@ PATTERN_FLOAT(LLVMFMulPat, LLVM::FMulOp, amd64::MULS, binOpMatchReplace, floatBi
 PATTERN_FLOAT(LLVMFDivPat, LLVM::FDivOp, amd64::DIVS, binOpMatchReplace, floatBitwidthMatchLambda, 1)
 
 #define FLOAT_CVT_PAT(inBitwidth)                                                                                                                                                                                      \
-    using LLVMFPToSIPat ## inBitwidth ## _to_ ## 32 = Match<LLVM::FPToSIOp, 32, llvmTruncExtUiSiMatchReplace<inBitwidth>, llvmTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::CVT ## SS ## 2 ## SI ## 32 ## rr>; \
-    using LLVMFPToSIPat ## inBitwidth ## _to_ ## 64 = Match<LLVM::FPToSIOp, 64, llvmTruncExtUiSiMatchReplace<inBitwidth>, llvmTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::CVT ## SD ## 2 ## SI ## 64 ## rr>; \
-    using LLVMSIToFPPat ## inBitwidth ## _to_ ## 32 = Match<LLVM::SIToFPOp, 32, llvmTruncExtUiSiMatchReplace<inBitwidth>, llvmTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::CVT ## SI ## 2 ## SS ## 32 ## rr>; \
-    using LLVMSIToFPPat ## inBitwidth ## _to_ ## 64 = Match<LLVM::SIToFPOp, 64, llvmTruncExtUiSiMatchReplace<inBitwidth>, llvmTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::CVT ## SI ## 2 ## SD ## 64 ## rr>;
+    using LLVMFPToSIPat ## inBitwidth ## _to_ ## 32 = Match<LLVM::FPToSIOp, 32, llvmTruncExtUiSiMatchReplace<inBitwidth, amd64::SizeChange::None>, llvmTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::CVT ## SS ## 2 ## SI ## 32 ## rr>; \
+    using LLVMFPToSIPat ## inBitwidth ## _to_ ## 64 = Match<LLVM::FPToSIOp, 64, llvmTruncExtUiSiMatchReplace<inBitwidth, amd64::SizeChange::None>, llvmTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::CVT ## SD ## 2 ## SI ## 64 ## rr>; \
+    using LLVMSIToFPPat ## inBitwidth ## _to_ ## 32 = Match<LLVM::SIToFPOp, 32, llvmTruncExtUiSiMatchReplace<inBitwidth, amd64::SizeChange::None>, llvmTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::CVT ## SI ## 2 ## SS ## 32 ## rr>; \
+    using LLVMSIToFPPat ## inBitwidth ## _to_ ## 64 = Match<LLVM::SIToFPOp, 64, llvmTruncExtUiSiMatchReplace<inBitwidth, amd64::SizeChange::None>, llvmTruncExtUiSiBitwidthMatcher<inBitwidth>, 1, amd64::CVT ## SI ## 2 ## SD ## 64 ## rr>;
 
 FLOAT_CVT_PAT(32);
 FLOAT_CVT_PAT(64);
@@ -1645,7 +1664,6 @@ void populateArithToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns, m
         PATTERN_INT_BITWIDTHS(ShlIPat),
         PATTERN_INT_BITWIDTHS(ShrSIPat),
         PATTERN_INT_BITWIDTHS(ShrUIPat),
-        ExtUII1Pat,
         ExtUIPat8_to_16, ExtUIPat8_to_32, ExtUIPat8_to_64, ExtUIPat16_to_32, ExtUIPat16_to_64, ExtUIPat32_to_64,
         ExtSIPat8_to_16, ExtSIPat8_to_32, ExtSIPat8_to_64, ExtSIPat16_to_32, ExtSIPat16_to_64, ExtSIPat32_to_64,
         TruncPat16_to_8, TruncPat32_to_8, TruncPat64_to_8, TruncPat32_to_16, TruncPat64_to_16, TruncPat64_to_32
@@ -1783,5 +1801,7 @@ void populateAnyKnownAMD64TypeConversionsConversionPatterns(mlir::RewritePattern
     // TODO try to do this concurrently, for function regions
 
     //mlir::applyOpPatternsAndFold({range.begin(), range.end()}, std::move(patterns));
+
+    // TODO this is the current, 'proper' way:
     return mlir::failed(mlir::applyFullConversion(regionOp, target, std::move(patterns)));
 }

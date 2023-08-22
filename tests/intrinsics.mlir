@@ -34,9 +34,11 @@ module{
     %14 = "llvm.intr.abs"(%10) <{is_int_min_poison = true}> : (i32) -> i32// should be 2
     %15 = llvm.mul %14, %12 : i32 // should be -4
     %16 = llvm.mul %13, %13 : i32 // should be 4
-    %17 = llvm.add %15, %16 : i32 // should be 0
+    %absabs = "llvm.intr.abs"(%16) <{is_int_min_poison = true}> : (i32) -> i32// should still be 4
+    %17 = llvm.add %15, %absabs : i32 // should be 0
+    %absabsabs = "llvm.intr.abs"(%17) <{is_int_min_poison = true}> : (i32) -> i32// should still be 0
 
-    %18 = llvm.or %17, %9 : i32
+    %18 = llvm.or %absabsabs, %9 : i32
 
     llvm.return %18 : i32
   }

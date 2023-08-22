@@ -219,8 +219,8 @@ int main(int argc, char *argv[]) {
     }else if(features["force-fallback"]){
         auto obj = llvm::SmallVector<char, 0>();
         // TODO add option for fallback optimization level
-        if(fallbackToLLVMCompilation(*owningModRef, fallbackLLVMCtx, &obj, args.jit(), /* execute */ true, fallbackTargetOpts, fallbackOptLevel))
-            return EXIT_FAILURE;
+        if(auto ret = fallbackToLLVMCompilation(*owningModRef, fallbackLLVMCtx, &obj, args.jit(), /* execute */ true, fallbackTargetOpts, fallbackOptLevel))
+            return ret;
 
         maybeWriteToFile(obj.data(), obj.size());
     }else{ // "normal" case

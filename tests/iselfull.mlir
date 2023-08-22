@@ -79,7 +79,7 @@ module {
     // ASM-NEXT: cmp [[REG1]], [[REG2]]
     %25 = "arith.cmpi"(%19, %15) <{predicate = 5 : i64}> : (i64, i64) -> i1
     // ISEL-NEXT: SETGE{{.*}}gpr8
-    // ISEL-NEXT: [[VAL3:%[0-9]+]] = {{.*}}MOVZXr64r8
+    // ISEL: [[VAL3:%[0-9]+]] = {{.*}}MOVZXr64r8
     %26 = "arith.extui"(%25) : (i1) -> i64
     %27 = "arith.constant"() <{value = 7 : i64}> : () -> i64
     %28 = "arith.andi"(%19, %27) : (i64, i64) -> i64
