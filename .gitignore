@@ -12,6 +12,7 @@ build*/**
 moreBuilds/**
 tests/Output/**
 perf.data*
+measurements
 
 doc
 

@@ -148,20 +148,16 @@ inline std::unique_ptr<llvm::ExecutionEngine> llvmJITCompileMod(std::unique_ptr<
 }
 
 /// returns 0 on success, -1 on failure, whatever the JIT compiled program returns if jit is passed
-inline int fallbackToLLVMCompilation(mlir::ModuleOp mlirMod, llvm::LLVMContext& llvmCtx, llvm::SmallVector<char, 0>* obj, bool jit, bool executeJIT, llvm::TargetOptions TargetOpt = {}, llvm::CodeGenOpt::Level OptLevel = llvm::CodeGenOpt::None){
+inline std::pair<int, std::unique_ptr<llvm::ExecutionEngine>> fallbackToLLVMCompilation(mlir::ModuleOp mlirMod, llvm::LLVMContext& llvmCtx, llvm::SmallVector<char, 0>* obj, bool jit, llvm::TargetOptions TargetOpt = {}, llvm::CodeGenOpt::Level OptLevel = llvm::CodeGenOpt::None){
     if(!obj && !jit){
         llvm::errs() << "No output specified\n";
-        return -1;
-    }
-    if(!jit && executeJIT){
-        llvm::errs() << "JIT execution requested, but without JIT compilation\n";
-        return -1;
+        return {-1, nullptr};
     }
 
     // mlir mod -> llvm dialect mod
     if(lowerToLLVMDialect(mlirMod)){
         llvm::errs() << "Could not lower to LLVM dialect\n";
-        return -1;
+        return {-1, nullptr};
     }
 
     auto* mlirCtx = mlirMod.getContext();
@@ -186,23 +182,17 @@ inline int fallbackToLLVMCompilation(mlir::ModuleOp mlirMod, llvm::LLVMContext& 
     llvm::InitializeNativeTargetDisassembler();
     
     if(jit){
-        auto [jitArgc, jitArgv] = ArgParse::parseJITArgv();
-
         auto engineUP = llvmJITCompileMod(std::move(llvmModUP), TargetOpt, OptLevel);
-        auto main = reinterpret_cast<main_t>(engineUP->getFunctionAddress("main"));
-        if(!main){
+        if(!engineUP){
             llvm::errs() << "Could not JIT compile LLVM module\n";
-            return -1;
+            return {-1, nullptr};
         }
 
-        if(executeJIT)
-            return main(jitArgc, jitArgv);
-        else
-            return 0;
+        return {0, std::move(engineUP)};
     }else if(llvmCompileMod(*llvmModUP, *obj, TargetOpt, OptLevel) != 0){
         llvm::errs() << "Could not compile LLVM module\n";
-        return -1;
+        return {-1, nullptr};
     }
-    return false;
+    return {0, nullptr};
 }
 

@@ -357,7 +357,7 @@ namespace ArgParse{
         const Arg print{     "p",    "print",          0, "Print parts of the compilation process. Expects 'input', 'isel', 'asm', or any combination of those as an argument"};
         const Arg debug{     "d",    "debug",          0, "Print DEBUGLOG information",                                            FLAG};
         const Arg debugMore{ "dd",    "debugMore",      0, "Print maximum debug information (set -d, llvm::DebugFlag, and all -p options)",                                            FLAG};
-        const Arg benchmark{ "b",    "benchmark",      0, "Benchmark the compiler",                                                                                              FLAG};
+        const Arg benchmark{ "b",    "benchmark",      0, "Benchmark the compiler in different ways, set to 'comptime' for compile-time, 'runtime' for run-time and 'all' for both."};
         const Arg iterations{"",     "iterations",     0, "Number of iterations for benchmarking (default: 1)"};
         const Arg jit{       "j",    "jit",            0, "JIT compile, i.e. JIT link and immediately execute the compiled code, with the given (space separated) argvs"};
         const Arg forceFallback{"F", "force-fallback", 0, "shorthand for adding 'force-fallback' to the list of features",                                                       FLAG};
