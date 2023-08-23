@@ -131,6 +131,13 @@ int main(int argc, char *argv[]) {
         }
     };
 
+    auto flushAll = [](){
+        fflush(stdout);
+        fflush(stderr);
+        llvm::outs().flush();
+        llvm::errs().flush();
+    };
+
     llvm::TargetOptions fallbackTargetOpts;
     fallbackTargetOpts.EnableFastISel = true;
     llvm::CodeGenOpt::Level fallbackOptLevel = llvm::CodeGenOpt::Level::None;
@@ -199,7 +206,7 @@ int main(int argc, char *argv[]) {
             llvm::outs() << "LLVM compilation;" << wrapFl(MEASURED_TIME_AS_SECONDS(totalLLVM, iterations)) << ";" << iterations << "\n";
         }else{
             // allocate 2 GiB (small code model)
-            auto [start, end] = mmapSpace(2ll*1024ll*1024ll*1024ll, PROT_READ|PROT_WRITE /* execute will be added later, for security*/);
+            auto [start, end] = mmapSpace(2ll*1024ll*1024ll*1024ll, PROT_READ|PROT_WRITE);
 
             MEASURE_TIME_START(totalMLIR);
 
@@ -213,7 +220,7 @@ int main(int argc, char *argv[]) {
 
                 // second pass: RegAlloc + encoding
                 // - will need a third pass in between to do liveness analysis later
-                auto codeInfo = regallocEncode(start, end, *modClones[i], std::move(globals), false, jit, "main");
+                regallocEncode(start, end, *modClones[i], std::move(globals), false, jit, "main");
             }
 
             MEASURE_TIME_END(totalMLIR);
@@ -267,11 +274,16 @@ int main(int argc, char *argv[]) {
 
             auto main = reinterpret_cast<main_t>(engineUP->getFunctionAddress("main"));
             auto [jitArgc, jitArgv] = ArgParse::parseJITArgv();
+
+            flushAll();
+
             MEASURE_TIME_START(totalLLVM);
             for(unsigned i = 0; i < iterations; i++){
                 main(jitArgc, jitArgv);
             }
             MEASURE_TIME_END(totalLLVM);
+
+            flushAll();
 
             llvm::outs() << "LLVM execution;" << wrapFl(MEASURED_TIME_AS_SECONDS(totalLLVM, iterations)) << ";" << iterations << "\n";
         }else{
@@ -288,19 +300,23 @@ int main(int argc, char *argv[]) {
 
             auto codeInfo = regallocEncode(start, end, *owningModRef, std::move(globals), false, args.jit(), "main");
 
-            auto execStart = (main_t)codeInfo.startSymbolAddr;
-            if(!execStart)
+            auto main = (main_t)codeInfo.startSymbolAddr;
+            if(!main)
                 errx(EXIT_FAILURE, "Could not find main function");
 
             mprotect(codeInfo.textSectionStart, codeInfo.bufEnd - codeInfo.textSectionStart, PROT_READ|PROT_EXEC);
 
             auto [jitArgc, jitArgv] = ArgParse::parseJITArgv();
 
+            flushAll();
+
             MEASURE_TIME_START(totalMoNaCo);
             for(unsigned i = 0; i < iterations; i++){
-                execStart(jitArgc, jitArgv);
+                main(jitArgc, jitArgv);
             }
             MEASURE_TIME_END(totalMoNaCo);
+
+            flushAll();
 
             llvm::outs() << "MoNaCo execution;" << wrapFl(MEASURED_TIME_AS_SECONDS(totalMoNaCo, iterations)) << ";" << iterations << "\n";
         }
@@ -367,11 +383,11 @@ int main(int argc, char *argv[]) {
 
 			DEBUGLOG("main is at: " << (void*)main);
 
-            fflush(stdout);
-
             // make the code non-writable, but executable
             // regallocEncode asserts that the text section starts on a page boundary
             mprotect(codeInfo.textSectionStart, codeInfo.bufEnd - codeInfo.textSectionStart, PROT_READ|PROT_EXEC);
+
+            flushAll();
 
             auto ret =  main(jitArgc, jitArgv);
             return ret;
