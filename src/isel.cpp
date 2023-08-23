@@ -1351,15 +1351,16 @@ auto zeroReplaceTemplated = []<unsigned actualBitwidth,
 PATTERN_INT(LLVMUndefPat,  LLVM::UndefOp,  amd64::MOV, zeroReplaceTemplated, intOrFloatBitwidthMatchLambda);
 PATTERN_INT(LLVMPoisonPat, LLVM::PoisonOp, amd64::MOV, zeroReplaceTemplated, intOrFloatBitwidthMatchLambda);
 
-auto ptrIntReplace =  [](auto op, auto adaptor, mlir::ConversionPatternRewriter& rewriter){
+auto replaceWithOp0 =  [](auto op, auto adaptor, mlir::ConversionPatternRewriter& rewriter){
     // TODO assert pointer/int bitwidths are 64
     rewriter.replaceOp(op, adaptor.getOperands()[0]);
     return mlir::success();
 };
 
-using LLVMFreezePat = SimplePat<LLVM::FreezeOp, ptrIntReplace>;
-using LLVMIntToPtrPat = SimplePat<LLVM::IntToPtrOp, ptrIntReplace>;
-using LLVMPtrToIntPat = SimplePat<LLVM::PtrToIntOp, ptrIntReplace>;
+using LLVMFreezePat   = SimplePat<LLVM::FreezeOp,   replaceWithOp0>;
+using LLVMIntToPtrPat = SimplePat<LLVM::IntToPtrOp, replaceWithOp0>;
+using LLVMPtrToIntPat = SimplePat<LLVM::PtrToIntOp, replaceWithOp0>;
+
 //using LLVMEraseMetadataPat = SimplePat<LLVM::MetadataOp, [](auto op, auto, mlir::ConversionPatternRewriter& rewriter){
 //    rewriter.eraseOp(op);
 //    return mlir::success();
