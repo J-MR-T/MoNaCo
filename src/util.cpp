@@ -89,6 +89,17 @@ void parse(int argc, char *argv[]) {
 
     string argString = ss.str();
 
+    // to allow specifying mulitple flags after one '-'
+    std::stringstream flagss;
+    flagss << "[";
+    for (const auto &arg : args) {
+        if (arg.flag()) {
+            flagss << arg.shortOpt;
+        }
+    }
+    flagss << "]";
+    string flagCharacterSet = flagss.str();
+
     // find all positional args, put them into a vector, then match them to the possible args
     std::vector<string> parsedPositionalArgs{};
     for (int i = 1; i < argc; ++i) {
@@ -137,7 +148,7 @@ cont:
             if(matches.size() > 0)
                 parsedArgs.insert(arg, matches);
         } else {
-            std::regex matchFlagShort{separator + "-[\\w]*" + arg.shortOpt};
+            std::regex matchFlagShort{separator + "-" + flagCharacterSet + "*" + arg.shortOpt};
             std::regex matchFlagLong{separator + "--" + arg.longOpt};
             if (std::regex_search(argString, matchFlagShort) ||
                     std::regex_search(argString, matchFlagLong)) {
