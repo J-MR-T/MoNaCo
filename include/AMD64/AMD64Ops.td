@@ -90,6 +90,7 @@ foreach bitwidth = [32, 64] in {
 // type constraint vs using the type interface as the return value?
 def anygprType: TypeConstraint<Or<[gpr8.predicate, gpr16.predicate, gpr32.predicate, gpr64.predicate]>>;
 def anyfprType: TypeConstraint<Or<[fpr32.predicate, fpr64.predicate]>>;
+def anyRegType: TypeConstraint<Or<[anygprType.predicate, anyfprType.predicate]>>;
 
 // === properties ===
 
@@ -253,11 +254,13 @@ def AllocaOp : MemOp<"AllocaOp"> {
 // TODO maybe we should have a generic meta op, which can define it's regalloc code inline in tablegen? A bit overcomplicated for our current purposes, but might be a nice feature for users
 // TODO both of these not ideal
 def AddrOfGlobal : AMD64_Op<"AddrOfGlobal">{
+  // TODO check that flatsymbolrefattrs are compared via ptr comparison, not bytewise
   let arguments = (ins FlatSymbolRefAttr:$name);
   let results = (outs gpr64:$addr);
 }
 // TODO maybe actually make this AddrOfBlock or something, to support blocks as well, through a union of function name and block pointer or something.
 def AddrOfFunc : AMD64_Op<"AddrOfFunc">{
+  // TODO check that flatsymbolrefattrs are compared via ptr comparison, not bytewise
   let arguments = (ins FlatSymbolRefAttr:$name);
   let results = (outs gpr64:$addr);
 }
@@ -593,7 +596,7 @@ foreach cond = ["Z" /* == E */, "NZ" /* == NE */, "L", "GE", "LE", "G", "C" /* =
 // similar to llvm.call, model the indirect call as a call with a pointer operand
 def CALL : Instruction<"CALL">{
   // Either has a callee (could theoretically be a direct call) or a ptr (has to be indirect call), which is then the first operand
-  let operands = (ins OptionalAttr<FlatSymbolRefAttr>:$callee, /* TODO convert to property */ DefaultValuedAttr<BoolAttr, "false">:$isGuaranteedExternal, Variadic<AnyType>:$operands);
+  let operands = (ins OptionalAttr<FlatSymbolRefAttr>:$callee, /* TODO convert to property */ DefaultValuedAttr<BoolAttr, "false">:$isGuaranteedExternal, Variadic<RegisterTypeInterface>:$operands);
   let results = (outs Optional<RegisterTypeInterface>:$ret); // single return value, or none
   // TODO we will need some info about what size the callee returns, see RET
   // no register constraint, this is special cased in the encoder, because we need to take care of ABI stuff, with int/float returns etc.

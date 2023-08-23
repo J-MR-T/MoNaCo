@@ -137,7 +137,7 @@ cont:
             if(matches.size() > 0)
                 parsedArgs.insert(arg, matches);
         } else {
-            std::regex matchFlagShort{separator + "-[a-zA-z]*" + arg.shortOpt};
+            std::regex matchFlagShort{separator + "-[\\w]*" + arg.shortOpt};
             std::regex matchFlagLong{separator + "--" + arg.longOpt};
             if (std::regex_search(argString, matchFlagShort) ||
                     std::regex_search(argString, matchFlagLong)) {

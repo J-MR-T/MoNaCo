@@ -587,6 +587,7 @@ struct AbstractRegAllocerEncoder{
     // TODO we could try to reduce map usage, and thus hopefully improve performance, by saving the ValueSlot of instruction ops inline, and only using the map for block args. Let's first see if this is even necessary, would probably increase code complexity a lot
     mlir::DenseMap<mlir::Value, ValueSlot> valueToSlot;
 
+    // TODO maaaaybe at some point try to put the blockArgToReg map on the func, but as a property, would make the code nicer to write, but there would be more indirections
     mlir::DenseMap<mlir::BlockArgument, FeReg> blockArgToReg;
 
     // We're doing single pass register allocation and encoding. But it is not entirely possible to do this, without any coupling between the two components, just using the IR. This is because the instruction-selected IR is still too high-level at some points (conditional branches in particular), and we need to generate a lot of new instructions during regalloc. Some of these can be represented as IR, but for many of them it is easier to simply encode them directly
@@ -644,6 +645,7 @@ struct AbstractRegAllocerEncoder{
     // TODO also check this for blc, i think i forgot it there
 
     // repeatedly overwrites the register of the value itself, as it's older values are no longer needed, because they are already encoded, the encoder always uses the current register
+    // TODO "isDestroyedByUse" bool arg, to make it possible to use values directly from their storage regs (if false)
     void loadValueForUse(mlir::Value val, uint8_t useOperandNumber, amd64::OperandRegisterConstraint constraint){
         static_cast<Derived*>(this)->loadValueForUseImpl(val, useOperandNumber, constraint);
     }
@@ -755,6 +757,8 @@ struct AbstractRegAllocerEncoder{
                                             // if it's a float, we need to extend it to double
                                             encoder.encodeRaw(FE_SSE_CVTSS2SDrr, floatArgRegs[floatOperandIndex - 1], floatArgRegs[floatOperandIndex - 1]);
                                     }else{
+                                        assert(operand.getType().isa<amd64::GPRegisterTypeInterface>() && "floats can only have register params");
+
                                         if(intOperandIndex < numIntRegArgs)
                                             moveFromSlotToOperandReg(operand, valueToSlot[operand], intArgRegs[intOperandIndex++]);
                                         else

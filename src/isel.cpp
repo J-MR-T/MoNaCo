@@ -733,12 +733,13 @@ struct LLVMGEPPattern : public mlir::OpConversionPattern<LLVM::GEPOp>{
 template<typename INSTrm>
 auto llvmLoadMatchReplace = [](LLVM::LoadOp op, auto adaptor, mlir::ConversionPatternRewriter& rewriter) {
     // TODO this is an ugly hack, because this op gets unrealized conversion casts as args (ptr in this case), because the ptr type gets converted to an i64, instead of a memloc, so the alloca returning a memloc doesn't work
+    // even if we perform the conversion casts ourselves and insert a 1-2 type conversion from ptr to memloc/i64, this still doesn't work
     auto ptr = adaptor.getAddr();
-    if(ptr.template isa<mlir::OpResult>() && mlir::isa<amd64::LEA64rm>(ptr.getDefiningOp()) && 
-        mlir::isa<mlir::OpResult>(ptr.getDefiningOp()->getOperand(0))) /* && */ if(auto allocaOp = mlir::dyn_cast<amd64::AllocaOp>(ptr.getDefiningOp()->getOperand(0).getDefiningOp())){
-            rewriter.replaceOpWithNewOp<INSTrm>(op, allocaOp);
-            return mlir::success();
-        }
+    if(auto cast = mlir::dyn_cast_if_present<mlir::UnrealizedConversionCastOp>(ptr.getDefiningOp())){
+        assert(cast->getNumOperands() == 1 && mlir::isa<amd64::memLocType>(cast->getOperand(0).getType()));
+        rewriter.replaceOpWithNewOp<INSTrm>(op, cast->getOperand(0));
+        return mlir::success();
+    }
 
     auto mem = rewriter.create<amd64::MemB>(op.getLoc(), ptr);
     rewriter.replaceOpWithNewOp<INSTrm>(op, mem);
@@ -765,11 +766,12 @@ using LLVMFloatLoadPat64 = Match<LLVM::LoadOp, 64, llvmFloatLoadMatchReplace<amd
 template<typename INSTmr>
 auto llvmStoreMatchReplace = [](LLVM::StoreOp op, auto adaptor, mlir::ConversionPatternRewriter& rewriter) {
     // TODO this is an ugly hack, because this op gets unrealized conversion casts as args (ptr in this case), because the ptr type gets converted to an i64, instead of a memloc, so the alloca returning a memloc doesn't work
+    // even if we perform the conversion casts ourselves and insert a 1-2 type conversion from ptr to memloc/i64, this still doesn't work
     auto ptr = adaptor.getAddr();
     auto val = adaptor.getValue();
-    if(ptr.template isa<mlir::OpResult>() && mlir::isa<amd64::LEA64rm>(ptr.getDefiningOp()) && 
-        mlir::isa<mlir::OpResult>(ptr.getDefiningOp()->getOperand(0))) /* && */ if(auto allocaOp = mlir::dyn_cast<amd64::AllocaOp>(ptr.getDefiningOp()->getOperand(0).getDefiningOp())){
-        rewriter.replaceOpWithNewOp<INSTmr>(op, allocaOp, val);
+    if(auto cast = mlir::dyn_cast_if_present<mlir::UnrealizedConversionCastOp>(ptr.getDefiningOp())){
+        assert(cast->getNumOperands() == 1 && mlir::isa<amd64::memLocType>(cast->getOperand(0).getType()));
+        rewriter.replaceOpWithNewOp<INSTmr>(op, cast->getOperand(0), val);
         return mlir::success();
     }
 
@@ -823,10 +825,8 @@ struct LLVMAllocaPat : public mlir::OpConversionPattern<mlir::LLVM::AllocaOp>{
         assert(op.getElemType().has_value());
         auto elemSize = dl.getTypeSize(*op.getElemType());
 
-        auto alloca = rewriter.create<amd64::AllocaOp>(op.getLoc(), elemSize*numElems);
-        // TODO technically this is garbage, because we already know the exact number, but we need to distinguish between memloc and i64 types, normal ptr are i64, to enable arithmetic, but allocas have to give a memloc. I need to get it done, and this should work
-        rewriter.replaceOpWithNewOp<amd64::LEA64rm>(op, alloca);
-
+        // gets converted to i64 with target materialization from type converter
+        rewriter.replaceOpWithNewOp<amd64::AllocaOp>(op, elemSize*numElems);
         return mlir::success();
     }
 };
@@ -1350,13 +1350,14 @@ auto zeroReplaceTemplated = []<unsigned actualBitwidth,
 
 PATTERN_INT(LLVMUndefPat,  LLVM::UndefOp,  amd64::MOV, zeroReplaceTemplated, intOrFloatBitwidthMatchLambda);
 PATTERN_INT(LLVMPoisonPat, LLVM::PoisonOp, amd64::MOV, zeroReplaceTemplated, intOrFloatBitwidthMatchLambda);
-PATTERN_INT(LLVMFreezePat, LLVM::FreezeOp, amd64::MOV, zeroReplaceTemplated, intOrFloatBitwidthMatchLambda);
 
 auto ptrIntReplace =  [](auto op, auto adaptor, mlir::ConversionPatternRewriter& rewriter){
     // TODO assert pointer/int bitwidths are 64
     rewriter.replaceOp(op, adaptor.getOperands()[0]);
     return mlir::success();
 };
+
+using LLVMFreezePat = SimplePat<LLVM::FreezeOp, ptrIntReplace>;
 using LLVMIntToPtrPat = SimplePat<LLVM::IntToPtrOp, ptrIntReplace>;
 using LLVMPtrToIntPat = SimplePat<LLVM::PtrToIntOp, ptrIntReplace>;
 //using LLVMEraseMetadataPat = SimplePat<LLVM::MetadataOp, [](auto op, auto, mlir::ConversionPatternRewriter& rewriter){
@@ -1590,10 +1591,15 @@ FLOAT_CVT_PAT(64);
 // TODO maybe expose the patterns and let the user decide which ones to use, instead of defining endless populate functions. Type conversions as global lambdas. I'd keep a 'populate all' function though. Biggest problem with this is stupid Cpp with header vs impl files...
 
 void populateLLVMToAMD64TypeConversions(mlir::TypeConverter& tc){
+    // TODO this would be a much nicer solution, but for some reason, things that shouldn't accept memlocs (should instead invoke the materialization), do... (call for example)
+    //tc.addConversion([](mlir::LLVM::LLVMPointerType type, llvm::SmallVectorImpl<mlir::Type>& possibleTypes) {
+    //    possibleTypes.push_back(amd64::gpr64Type::get(type.getContext()));
+    //    possibleTypes.push_back(amd64::memLocType::get(type.getContext()));
+    //    return mlir::success();
+    //});
     tc.addConversion([](mlir::LLVM::LLVMPointerType type) -> std::optional<mlir::Type>{
         return amd64::gpr64Type::get(type.getContext());
     });
-    // TODO
 }
 
 void populateDefaultTypesToAMD64TypeConversions(mlir::TypeConverter& tc){
@@ -1625,9 +1631,27 @@ void populateDefaultTypesToAMD64TypeConversions(mlir::TypeConverter& tc){
     tc.addConversion([](amd64::RegisterTypeInterface type) -> std::optional<mlir::Type>{
         return type;
     });
+
     tc.addConversion([](amd64::memLocType type) -> std::optional<mlir::Type>{
         return type;
     });
+    // memloc to ptr(i64) conversion
+    tc.addTargetMaterialization([](mlir::OpBuilder& builder, amd64::gpr64Type type, mlir::ValueRange inputs, mlir::Location loc) -> std::optional<mlir::Value>{
+        if(inputs.size() != 1)
+            return nullptr; // unrecoverable materialization, nullopt would mean recoverable
+        if(!inputs[0].getType().isa<amd64::memLocType>())
+            return {}; // possibly recoverable
+        return builder.create<amd64::LEA64rm>(loc, type, inputs);
+    });
+    // ptr(i64) to memloc conversion
+    //tc.addTargetMaterialization([](mlir::OpBuilder& builder, amd64::memLocType type, mlir::ValueRange inputs, mlir::Location loc) -> std::optional<mlir::Value>{
+    //    if(inputs.size() != 1 || !inputs[0].getType().isa<amd64::gpr64Type>())
+    //        return nullptr; // unrecoverable materialization, nullopt would mean recoverable
+    //    if(auto lea = inputs[0].getDefiningOp<amd64::LEA64rm>())
+    //        return lea.getMem();
+    //
+    //    return builder.create<amd64::MemB>(loc, type, inputs);
+    //});
     // TODO this might be entirely stupid
     tc.addConversion([&tc](mlir::FunctionType functionType) -> std::optional<mlir::Type>{
         llvm::SmallVector<mlir::Type, 6> inputs;
@@ -1722,7 +1746,7 @@ void populateLLVMMiscToAMD64ConversionPatterns(mlir::RewritePatternSet& patterns
     patterns.add<
         PATTERN_INT_BITWIDTHS(LLVMConstantIntPat),
         LLVMSelectPat8, LLVMSelectPat16, LLVMSelectPat32, LLVMSelectPat64,
-        LLVMNullPat, PATTERN_INT_BITWIDTHS(LLVMUndefPat), PATTERN_INT_BITWIDTHS(LLVMPoisonPat), PATTERN_INT_BITWIDTHS(LLVMFreezePat), LLVMUnreachablePat,
+        LLVMNullPat, PATTERN_INT_BITWIDTHS(LLVMUndefPat), PATTERN_INT_BITWIDTHS(LLVMPoisonPat), LLVMFreezePat, LLVMUnreachablePat,
         LLVMGEPPattern, LLVMAllocaPat, PATTERN_INT_BITWIDTHS(LLVMIntLoadPat), PATTERN_INT_BITWIDTHS(LLVMIntStorePat), LLVMPtrToIntPat, LLVMIntToPtrPat,
         LLVMReturnPat, LLVMFuncPat,
         LLVMConstantStringPat, LLVMAddrofPat,
