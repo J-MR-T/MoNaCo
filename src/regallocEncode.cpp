@@ -1704,8 +1704,9 @@ MCDescriptor regallocEncode(uint8_t* buf, uint8_t* bufEnd, mlir::ModuleOp mod, G
         dumpAfterEncodingDone(mod, regallocer.globals, regallocer.encoder.blocksToBuffer, codeInfo);
 
     DEBUGLOG(".data section starts at absolute address: " << codeInfo.dataSectionStart);
-    if(codeInfo.startSymbolAddr)
+    if(codeInfo.startSymbolAddr){
         DEBUGLOG("Start symbol \"" << codeInfo.startSymbol << "\" is at " << codeInfo.startSymbolAddr);
+    }
 
     DEBUGLOG(".text section starts at absolute address: " << codeInfo.textSectionStart);
 
