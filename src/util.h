@@ -288,7 +288,8 @@ namespace ArgParse{
         Feature("fallback",          "Fall back to MLIR module compilation through the LLVM toolchain if MoNaCo compilation failes", false),
         Feature("codegen-dce",       "Eliminate dead instructions generated in codegen",                                             false),
         Feature("unreachable-abort", "Call `abort()` on unreachable instructions instead of simply ignoring unreachables",           false),
-        Feature("omit-one-use-value-spills", "Try to omit spilling and re-loading values that only have one use, which comes immediately afterwards", false)
+        Feature("omit-one-use-value-spills", "Try to omit spilling and re-loading values that only have one use, which comes immediately afterwards", false),
+        Feature("llvm-time-trace", "Akin to -ftime-trace on clang", false)
     );
 
     extern std::array<bool, features.size> enabled;
@@ -451,6 +452,7 @@ namespace ArgParse{
 
 using main_t = int(*)(int, char**);
 
+// dlsym, but with error checking, the pointer returned is always valid
 inline void* checked_dlsym(llvm::StringRef name){
     // TODO do this in a better way, without construcing a std::string in between
     // TODO add possible caching to this, and enable it via template arg or smth
@@ -469,6 +471,7 @@ inline void* checked_dlsym(llvm::StringRef name){
 /// read an mlir module from a file
 mlir::OwningOpRef<mlir::ModuleOp> readMLIRMod(const llvm::StringRef filename, mlir::MLIRContext& ctx);
 
+// use mmap in a way that doesn't generate a signal on failure
 inline std::pair<uint8_t* /* buf */, uint8_t* /* bufEnd */> mmapSpace(size_t size, int finalProt){
     auto pageSize = getpagesize();
     if(size % pageSize != 0)

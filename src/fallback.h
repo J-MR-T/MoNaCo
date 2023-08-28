@@ -141,6 +141,7 @@ inline std::unique_ptr<llvm::ExecutionEngine> llvmJITCompileMod(std::unique_ptr<
 
     // TODO probably need to deallocate this in some way or another
     auto engine = std::unique_ptr<llvm::ExecutionEngine>(builder.create());
+    //DEBUGLOG("lazy compilation: " << engine->isCompilingLazily());
     if (!engine)
         err(1, "could not create engine: %s", error.c_str());
 

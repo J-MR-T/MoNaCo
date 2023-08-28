@@ -99,6 +99,10 @@ int main(int argc, char *argv[]) {
         printOpts |= PRINT_INPUT | PRINT_ISEL | PRINT_ASM;
     }
 
+    if(features["llvm-time-trace"]){
+        llvm::timeTraceProfilerInitialize(0, "jit");
+    }
+
     mlir::MLIRContext ctx;
     ctx.loadAllAvailableDialects();
     ctx.loadDialect<amd64::AMD64Dialect>();
@@ -204,6 +208,8 @@ int main(int argc, char *argv[]) {
             }
 
             llvm::outs() << "LLVM compilation;" << wrapFl(MEASURED_TIME_AS_SECONDS(totalLLVM, iterations)) << ";" << iterations << "\n";
+            if(features["llvm-time-trace"])
+                llvm::timeTraceProfilerWrite(llvm::outs());
         }else{
             // allocate 2 GiB (small code model)
             auto [start, end] = mmapSpace(2ll*1024ll*1024ll*1024ll, PROT_READ|PROT_WRITE);
@@ -335,6 +341,9 @@ int main(int argc, char *argv[]) {
 
         if(args.jit()){
             auto main = reinterpret_cast<main_t>(engineUP->getFunctionAddress("main"));
+            if(!main)
+                errx(EXIT_FAILURE, "Could not compile main function");
+
             auto [jitArgc, jitArgv] = ArgParse::parseJITArgv();
             return main(jitArgc, jitArgv);
         }
@@ -394,6 +403,10 @@ int main(int argc, char *argv[]) {
         }
 
         maybeWriteToFile(start, end - start);
+    }
+
+    if(features["llvm-time-trace"]){
+        llvm::timeTraceProfilerCleanup();
     }
 
     return EXIT_SUCCESS;

@@ -238,6 +238,8 @@ def AllocaOp : MemOp<"AllocaOp"> {
   let arguments = (ins Property<"uint32_t">:$size, Property<"uint32_t">:$rbpOffset);
   let results = (outs memLoc:$memloc);
 
+  let description = "Allocate an $n$-byte wide stack slot. Only allowed in the entry block";
+
   let encoding = [{
     assert(getProperties().rbpOffset != 0 && "rbp offset not set for alloca when encoding");
     return FE_MEM(FE_BP, 0, FE_NOREG, getProperties().rbpOffset);
