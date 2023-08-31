@@ -22,6 +22,11 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 include "AMD64/AMD64OpInterfaces.td"
 include "AMD64/AMD64TypeInterfaces.td"
 
+// TODO folds for
+// - immediates
+// - constants (ADD64ri with another MOV64ri as operand)
+// - memory operands (LEA with MemB as operand (or vice versa), is just identity)
+
 // not currently in use, just as a reference
 /*  TEST, TODO remove later
 include "mlir/IR/EnumAttr.td"
@@ -217,6 +222,7 @@ def MemB : MemSIBD_subset<"MemB">;
 let hasBase = 0, hasScaleIndex = 0, hasDisplacement = 1 in
 def MemD : MemSIBD_subset<"MemD">;
 
+// currently unused
 def RawMemoryOp : MemOp<"RawMemoryOp"> {
   let arguments = (ins Property<"FeOp">:$feMem);
   let results = (outs memLoc:$memloc);
@@ -558,7 +564,7 @@ def JMP : Instruction<"JMP", [Terminator]>{
 
 // conditional jumps as terminator, 2 successors, with invert condition interface
 // heavily based on the cf.cond_br, just without the condition
-class Jcc<string mnemonic, string invertedJumpMnemonic> : Instruction<mnemonic, [Terminator, AttrSizedOperandSegments, ConditionalJumpInterface]>{
+class Jcc<string mnemonic, string invertedJumpMnemonic> : Instruction<mnemonic, [Terminator, AttrSizedOperandSegments, ConditionalJumpOpInterface]>{
   let operands = (ins Variadic<AnyType>:$trueDestOperands, Variadic<AnyType>:$falseDestOperands);
 
   let successors = (successor AnySuccessor:$trueDest, AnySuccessor:$falseDest);
@@ -582,7 +588,7 @@ defm "" : JccAndInverted<"JC", "JNC">; // == "JB", "JAE"
 defm "" : JccAndInverted<"JBE", "JA">;
 
 // SETcc
-class SETcc<string mnemonic, string cond> : Instruction<mnemonic, [PredicateInterface, Pure]> {
+class SETcc<string mnemonic, string cond> : Instruction<mnemonic, [PredicateOpInterface, Pure]> {
   let operands = (ins);
   let results = (outs gpr8:$result);
 

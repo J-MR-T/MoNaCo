@@ -489,7 +489,7 @@ auto condBrMatchReplace = [](auto thiis, auto /* some kind of cond branch, eithe
 
         // TODO how do I remove this MOV8ri, if it's only used here? erasing it results in an error about failing to legalize the erased op
         return mlir::success();
-    } else if(auto setccPredicate = mlir::dyn_cast<amd64::PredicateInterface>(adaptor.getCondition().getDefiningOp())){
+    } else if(auto setccPredicate = mlir::dyn_cast<amd64::PredicateOpInterface>(adaptor.getCondition().getDefiningOp())){
         // conditional branch
 
         auto cmpi = mlir::dyn_cast<IntegerCmpOp>(op.getCondition().getDefiningOp());

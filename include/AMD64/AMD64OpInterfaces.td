@@ -39,7 +39,7 @@ def EncodeOpInterface : OpInterface<"EncodeOpInterface">{
   let cppNamespace = "::amd64";
 }
 
-def PredicateInterface : OpInterface<"PredicateInterface">{
+def PredicateOpInterface : OpInterface<"PredicateOpInterface">{
   let description = [{
     This is an interface for all AMD64 Ops which have prediactes. They can be queried using this interface.
   }];
@@ -52,7 +52,7 @@ def PredicateInterface : OpInterface<"PredicateInterface">{
 }
 
 // TODO can maybe simplify this, by also extending MLIRs built-in branch op interface
-def ConditionalJumpInterface : OpInterface<"ConditionalJumpInterface", [InstructionOpInterface, PredicateInterface]>{
+def ConditionalJumpOpInterface : OpInterface<"ConditionalJumpOpInterface", [InstructionOpInterface, PredicateOpInterface]>{
   let description = [{
     This is an interface for AMD64 Jump Ops. They can specify how they are inverted using this interface, and their destinations and destination arguments can be queried.
   }];

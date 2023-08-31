@@ -125,7 +125,7 @@ public:
     /// encode a Jcc, encoding the minimal number of jumps
     /// TODO this is a bit hiddeous: have to slightly break abstraction, because this needs the register allocator to do some work
     template<auto destSetupNoCrit, auto destSetupCrit>
-    bool encodeJcc(auto& regallocer, amd64::ConditionalJumpInterface jcc, mlir::Block* nextBB = nullptr){
+    bool encodeJcc(auto& regallocer, amd64::ConditionalJumpOpInterface jcc, mlir::Block* nextBB = nullptr){
         auto trueBB = jcc.getTrueDest();
         auto falseBB = jcc.getFalseDest();
         assert(trueBB && falseBB && "Conditional jump has no true or no false destination");
@@ -234,7 +234,7 @@ public:
         using namespace mlir::OpTrait;
         using mlir::dyn_cast;
 
-        assert(!mlir::isa<amd64::JMP>(instrOp.getOperation()) && !mlir::isa<amd64::ConditionalJumpInterface>(instrOp.getOperation()) && "Use encodeJMP or encodeJcc instead");
+        assert(!mlir::isa<amd64::JMP>(instrOp.getOperation()) && !mlir::isa<amd64::ConditionalJumpOpInterface>(instrOp.getOperation()) && "Use encodeJMP or encodeJcc instead");
 
 #ifndef NDEBUG
 		auto [opConstr1, opConstr2] = instrOp.getOperandRegisterConstraints();
@@ -315,7 +315,7 @@ public:
         // - jumps: not handled here, see encodeJMP/encodeJcc
         assert(mnemonic != FE_CALL && "Calls are handled by encodeCall");
         assert(mnemonic != FE_JMP && "Unconditional jumps are handled by encodeJMP");
-        assert(!mlir::isa<amd64::ConditionalJumpInterface>(instrOp.getOperation()) && "Conditional jumps are handled by encodeJcc");
+        assert(!mlir::isa<amd64::ConditionalJumpOpInterface>(instrOp.getOperation()) && "Conditional jumps are handled by encodeJcc");
         
         if(instrOp->hasTrait<SpecialCase<Special::DIV>::Impl>()) [[unlikely]] {
             // in this case we need to simply XOR edx, edx, which also zeroes the upper 32 bits of rdx
@@ -1437,7 +1437,7 @@ protected:
 
             handleCFGEdgeHelper<false>(blockArgs, blockArgOperands);
             encoder.encodeJMP(jmp, nextBlock);
-        }else if(auto jcc = mlir::dyn_cast<amd64::ConditionalJumpInterface>(*instrIt)){
+        }else if(auto jcc = mlir::dyn_cast<amd64::ConditionalJumpOpInterface>(*instrIt)){
             for(auto dst: {jcc.getTrueDest(), jcc.getFalseDest()}){
                 auto blockArgs = dst->getArguments();
                 tryAllocateSlotsForBlockArgsOfSuccessor(blockArgs);

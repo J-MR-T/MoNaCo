@@ -286,7 +286,7 @@ namespace ArgParse{
     constexpr auto features = Features(
         Feature("force-fallback",    "Force fallback to MLIR module compilation through the LLVM toolchain",                         false),
         Feature("fallback",          "Fall back to MLIR module compilation through the LLVM toolchain if MoNaCo compilation failes", false),
-        Feature("codegen-dce",       "Eliminate dead instructions generated in codegen",                                             false),
+        Feature("codegen-dce",       "Eliminate trivially dead instructions generated in codegen. Be aware that this can cause unexpected behavior if used in combination with flag-setting instructions, other than AND or CMP, whose results are unused.",                                             false),
         Feature("unreachable-abort", "Call `abort()` on unreachable instructions instead of simply ignoring unreachables",           false),
         Feature("omit-one-use-value-spills", "Try to omit spilling and re-loading values that only have one use, which comes immediately afterwards", false),
         Feature("llvm-time-trace", "Akin to -ftime-trace on clang", false)
