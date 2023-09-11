@@ -299,6 +299,7 @@ public:
             }
 
             // immediate operand
+            // TODO for all current instructions this is fine, but there was an instruciton with an immediate operand that's not the last operand, this would need to be refined.
             if(instrOp->hasTrait<SpecialCase<Special::HasImm>::Impl>()){
                 assert(machineOperandsCovered < 3 && "Something went deeply wrong, there are more than 4 operands");
                 operands[machineOperandsCovered] = instrOp.instructionInfo().imm;

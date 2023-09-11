@@ -117,4 +117,3 @@ using SETAE8r = SETNC8r;
 } // end namespace amd64
 
 #endif
-
