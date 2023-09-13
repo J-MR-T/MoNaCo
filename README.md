@@ -130,6 +130,6 @@ make -e
 
 ### Testing
 
-MoNaCo uses `lit` and `FileCheck` for testing, please see [`blc`](https://github.com/J-MR-T/blc/blob/master/README.md) for details. The only difference in `blc`'s and MoNaCo's testing setups is that MoNaCo does not require `lit -j1` for tests, the tests can be run in parallel.
+MoNaCo uses `lit` and `FileCheck` for testing, please see [`blc`](https://github.com/J-MR-T/blc/blob/master/README.md#tests) for details. The only difference in `blc`'s and MoNaCo's testing setups is that MoNaCo does not require `lit -j1` for tests, the tests can be run in parallel.
 
 <!-- TODO link thesis pdf as soon as I've put it somewhere adequate -->
