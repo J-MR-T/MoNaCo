@@ -491,6 +491,7 @@ foreach bitwidth = ["8", "16", "32", "64"] in {
         def MOVSX # "r" # bitwidth # "m" # innerBitwidth: Instruction<"MOVSX" # "r" # bitwidth # "m" # innerBitwidth, [Pure]>;
 
         // movzx
+        // movzx64r32x does not exist, thats just a regular mov32rx
         if !not(!eq(innerBitwidth, "32")) then{
           let operands = (ins innerGprType:$src1) in
           def MOVZX # "r" # bitwidth # "r" # innerBitwidth: Instruction<"MOVZX" # "r" # bitwidth # "r" # innerBitwidth, [Pure]>;

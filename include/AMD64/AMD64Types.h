@@ -245,7 +245,8 @@ enum class Special{
 // the way to define these seems so hacky...
 namespace mlir::OpTrait{
 
-// TODO does this need to be parametrized? Is 1 = 1 enough?
+// TODO does this need to be parametrized? Is 0 = 0 enough?
+//      probably not. Anything but 0 is not supported atm anyway
 /// lots of x86 instructions have the first operand as the destination -> this trait signals that
 template<unsigned N>
 class Operand0IsDestN{
