@@ -121,7 +121,7 @@ The `AMD64` dialect is specified in [`include/AMD64`](include/AMD64) and [`lib/A
 
 [`lib/fadec`](lib/fadec) contains a submodule pointing to the [Fadec x86-64 encoder library](https://git.sr.ht/~aengelke/fadec/).
 
-As MLIR's build system is based on CMake, we also use CMake for interoperability. But as CMake has some usability issues, a Makefile is provided for convenience, although note that it has some hardcoded paths for `LLVM_BUILD_DIR` and `LLVM_RELEASE_BUILD_DIR`, so to build MoNaCo, please ensure you're using the exact commit specified in the Makefile, and:
+As MLIR's build system is based on CMake, we also use CMake for interoperability. But as CMake has some usability issues, a Makefile is provided for convenience, although note that it has some hard-coded paths for `LLVM_BUILD_DIR` and `LLVM_RELEASE_BUILD_DIR`, so to build MoNaCo, please ensure you're using the exact commit specified in the Makefile, and:
 ```console
 export LLVM_BUILD_DIR=...
 export LLVM_RELEASE_BUILD_DIR=...
@@ -132,4 +132,6 @@ make -e
 
 MoNaCo uses `lit` and `FileCheck` for testing, please see [`blc`](https://github.com/J-MR-T/blc/blob/master/README.md#tests) for details. The only difference in `blc`'s and MoNaCo's testing setups is that MoNaCo does not require `lit -j1` for tests, the tests can be run in parallel.
 
-<!-- TODO link thesis pdf as soon as I've put it somewhere adequate -->
+# Full Thesis
+The thesis is available in its entirety [here](misc/thesis.pdf).
+
